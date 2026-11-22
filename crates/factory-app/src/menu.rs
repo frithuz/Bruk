@@ -312,7 +312,7 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(sync_project_issues),
             MenuItem::new("Issue Source & Intake…")
                 .disabled(!snapshot.has_projects)
-                .on_select(open_intake_rules),
+                .on_select(|| store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)),
             MenuItem::separator(),
             MenuItem::new("Project Settings…")
                 .disabled(!snapshot.has_projects)
@@ -539,11 +539,6 @@ fn open_work_queue_window() {
 fn sync_project_issues() {
     store::open_work_queue();
     store::sync_work_queue();
-    main_window().focus();
-}
-
-fn open_intake_rules() {
-    store::open_work_queue_intake_editor();
     main_window().focus();
 }
 

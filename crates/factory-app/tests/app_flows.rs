@@ -493,23 +493,36 @@ fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
     app.press("role:button[Start Ad-hoc Run]").unwrap();
     app.wait_for("Cut v2.4.0 release candidate").unwrap();
 
-    // Edit and save intake rules inline.
-    app.press("role:button[Edit intake rules]").unwrap();
-    app.wait_for("Save Rules").unwrap();
-    app.clear("id:wq-intake-required").unwrap();
-    app.type_text("id:wq-intake-required", "bot-ready").unwrap();
-    app.press("role:button[Save Rules]").unwrap();
-    app.wait_for(
-        "Open issues labeled bot-ready become work. Bugs go to Fix issue, docs to Docs refresh, everything else to Triage new issues.",
-    )
-    .unwrap();
-
     // Hide and restore the inspector via View › Hide Inspector (⌥⌘I).
     assert!(app.screen().shows("Bruk will update the issue"));
     app.press_key("alt+mod+i").unwrap();
     assert!(!app.screen().shows("Bruk will update the issue"));
     app.press_key("alt+mod+i").unwrap();
     app.wait_for("Bruk will update the issue").unwrap();
+
+    // "Edit intake rules" navigates to this project's Issues & intake Project Settings page.
+    app.press("role:button[Edit intake rules]").unwrap();
+    app.wait_for("api-gateway · Issues & intake").unwrap();
+    assert!(app.screen().shows("Project settings"));
+    assert!(app.screen().shows("Intake rules"));
+    assert_eq!(
+        app.screen().input_text("id:ps-github-repo").unwrap(),
+        Some("acme/api-gateway")
+    );
+
+    // Switch to another project's Work queue and verify "Edit intake rules" opens that project's settings.
+    app.press("role:button[marketing-site]").unwrap();
+    app.wait_for("id:sidebar-work-queue-2").unwrap();
+    app.press("id:sidebar-work-queue-2").unwrap();
+    app.wait_for("marketing-site · GitHub Issues · acme/marketing-site")
+        .unwrap();
+    app.press("role:button[Edit intake rules]").unwrap();
+    app.wait_for("marketing-site · Issues & intake").unwrap();
+    assert!(app.screen().shows("Intake rules"));
+    assert_eq!(
+        app.screen().input_text("id:ps-github-repo").unwrap(),
+        Some("acme/marketing-site")
+    );
 }
 
 #[test]

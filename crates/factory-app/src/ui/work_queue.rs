@@ -2,8 +2,8 @@
 //! and right-hand issue inspector matching `04 WorkQueue.png`.
 
 use factory_core::{
-    IntakeRule, ProjectSettingsTab, ProjectWorkQueue, UnmatchedIssue, WorkQueueItem,
-    WorkQueueStage, WorkQueueViewMode,
+    ProjectSettingsTab, ProjectWorkQueue, UnmatchedIssue, WorkQueueItem, WorkQueueStage,
+    WorkQueueViewMode,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
@@ -18,10 +18,6 @@ const INSPECTOR_WIDTH: f32 = 294.0;
 /// Main Work Queue split view (board/list canvas on left, contextual inspector on right).
 pub(crate) fn work_queue_view() -> impl IntoElement {
     let workflow_picker_open = signal(false);
-    let draft_required_label = signal(String::new());
-    let draft_bug_workflow = signal(String::new());
-    let draft_docs_workflow = signal(String::new());
-    let draft_fallback_workflow = signal(String::new());
     let ad_hoc_workflow = signal("Release prep".to_owned());
     let ad_hoc_title = signal(String::new());
 
@@ -77,7 +73,6 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
             let selected_issue = store::selected_work_queue_issue()
                 .filter(|num| queue.item(*num).is_some())
                 .or_else(|| queue.default_selected_issue());
-            let editing_intake = store::work_queue_editing_intake();
             let ad_hoc_open = store::work_queue_ad_hoc_open();
             let unmatched_expanded = store::work_queue_unmatched_expanded();
 
@@ -85,23 +80,7 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
                 .flex_1()
                 .p(px(18.0))
                 .gap(px(14.0))
-                .child(intake_banner(
-                    &queue,
-                    editing_intake,
-                    draft_required_label,
-                    draft_bug_workflow,
-                    draft_docs_workflow,
-                    draft_fallback_workflow,
-                ));
-
-            if editing_intake {
-                body = body.child(intake_rules_editor_card(
-                    draft_required_label,
-                    draft_bug_workflow,
-                    draft_docs_workflow,
-                    draft_fallback_workflow,
-                ));
-            }
+                .child(intake_banner(&queue));
 
             if ad_hoc_open {
                 body = body.child(ad_hoc_run_card(&queue, ad_hoc_workflow, ad_hoc_title));
@@ -134,30 +113,9 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
         }))
 }
 
-// --- Intake Banner & Inline Editors -----------------------------------------------------
+// --- Intake Banner & Ad-Hoc Run Card ----------------------------------------------------
 
-fn intake_banner(
-    queue: &ProjectWorkQueue,
-    editing_intake: bool,
-    draft_required_label: Signal<String>,
-    draft_bug_workflow: Signal<String>,
-    draft_docs_workflow: Signal<String>,
-    draft_fallback_workflow: Signal<String>,
-) -> impl IntoElement {
-    let required_label = queue.required_label.clone();
-    let bug_wf = queue
-        .intake_rules
-        .iter()
-        .find(|r| r.label.eq_ignore_ascii_case("bug"))
-        .map(|r| r.workflow_name.clone())
-        .unwrap_or_else(|| "Fix issue".to_owned());
-    let docs_wf = queue
-        .intake_rules
-        .iter()
-        .find(|r| r.label.eq_ignore_ascii_case("docs"))
-        .map(|r| r.workflow_name.clone())
-        .unwrap_or_else(|| "Docs refresh".to_owned());
-    let fallback_wf = queue.fallback_workflow.clone();
+fn intake_banner(queue: &ProjectWorkQueue) -> impl IntoElement {
     let summary_text = queue.intake_summary_sentence();
 
     view()
@@ -188,17 +146,10 @@ fn intake_banner(
         )
         .child(
             button()
+                .test_id("wq-edit-intake-rules")
                 .accessibility_label("Edit intake rules")
-                .on_press(move || {
-                    if editing_intake {
-                        store::set_work_queue_editing_intake(false);
-                    } else {
-                        draft_required_label.set(required_label.clone());
-                        draft_bug_workflow.set(bug_wf.clone());
-                        draft_docs_workflow.set(docs_wf.clone());
-                        draft_fallback_workflow.set(fallback_wf.clone());
-                        store::set_work_queue_editing_intake(true);
-                    }
+                .on_press(|| {
+                    store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)
                 })
                 .flex_shrink_0()
                 .hover(|s| s.opacity(0.8))
@@ -208,150 +159,12 @@ fn intake_banner(
                         .border_b_1()
                         .border_color(palette::link_blue())
                         .child(
-                            text(if editing_intake {
-                                "Close rules"
-                            } else {
-                                "Edit intake rules"
-                            })
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(palette::link_blue()),
-                        ),
-                ),
-        )
-}
-
-fn intake_rules_editor_card(
-    draft_required_label: Signal<String>,
-    draft_bug_workflow: Signal<String>,
-    draft_docs_workflow: Signal<String>,
-    draft_fallback_workflow: Signal<String>,
-) -> impl IntoElement {
-    let save = move || {
-        let rules = vec![
-            IntakeRule {
-                label: "bug".to_owned(),
-                workflow_name: draft_bug_workflow.get_untracked(),
-            },
-            IntakeRule {
-                label: "docs".to_owned(),
-                workflow_name: draft_docs_workflow.get_untracked(),
-            },
-        ];
-        store::save_work_queue_intake_rules(
-            draft_required_label.get_untracked(),
-            rules,
-            draft_fallback_workflow.get_untracked(),
-        );
-    };
-
-    view()
-        .p(px(14.0))
-        .rounded(px(10.0))
-        .border_1()
-        .border_color(palette::border_color())
-        .bg(palette::card_bg())
-        .gap(px(10.0))
-        .child(
-            text("Intake rules")
-                .text_size(px(13.0))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            view()
-                .flex_row()
-                .gap(px(10.0))
-                .child(labeled_input_field(
-                    "wq-intake-required",
-                    "Required label",
-                    draft_required_label,
-                ))
-                .child(labeled_input_field(
-                    "wq-intake-bug",
-                    "Bug label → Workflow",
-                    draft_bug_workflow,
-                ))
-                .child(labeled_input_field(
-                    "wq-intake-docs",
-                    "Docs label → Workflow",
-                    draft_docs_workflow,
-                ))
-                .child(labeled_input_field(
-                    "wq-intake-fallback",
-                    "Fallback workflow",
-                    draft_fallback_workflow,
-                )),
-        )
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_end()
-                .gap(px(8.0))
-                .child(
-                    button()
-                        .on_press(|| store::set_work_queue_editing_intake(false))
-                        .px(px(11.0))
-                        .py(px(5.5))
-                        .rounded(px(7.0))
-                        .border_1()
-                        .border_color(palette::border_color())
-                        .bg(palette::control_bg())
-                        .hover(|s| s.bg(palette::subtle_surface_bg()))
-                        .child(
-                            text("Cancel")
-                                .text_size(px(12.0))
+                            text("Edit intake rules")
+                                .text_size(px(12.5))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(palette::text_primary()),
-                        ),
-                )
-                .child(
-                    button()
-                        .on_press(save)
-                        .px(px(12.0))
-                        .py(px(5.5))
-                        .rounded(px(7.0))
-                        .bg(palette::nav_active_bg())
-                        .active(|s| s.opacity(0.8))
-                        .child(
-                            text("Save Rules")
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(palette::nav_active_fg()),
+                                .text_color(palette::link_blue()),
                         ),
                 ),
-        )
-}
-
-fn labeled_input_field(
-    test_id: &'static str,
-    label: &'static str,
-    value: Signal<String>,
-) -> impl IntoElement {
-    view()
-        .flex_1()
-        .min_w(px(0.0))
-        .gap(px(4.0))
-        .child(
-            text(label)
-                .text_size(px(11.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(palette::text_muted()),
-        )
-        .child(
-            input()
-                .test_id(test_id)
-                .value(move || value.get())
-                .on_change(move |next: &str| value.set(next.to_owned()))
-                .px(px(9.0))
-                .py(px(6.0))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(palette::border_color())
-                .bg(palette::control_bg())
-                .text_size(px(12.0))
-                .text_color(palette::text_primary()),
         )
 }
 

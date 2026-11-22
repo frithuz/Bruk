@@ -58,7 +58,6 @@ struct AppState {
     work_queue_view_mode: WorkQueueViewMode,
     work_queue_selected_issue: Option<u32>,
     work_queue_inspector_visible: bool,
-    work_queue_editing_intake: bool,
     work_queue_ad_hoc_open: bool,
     work_queue_unmatched_expanded: bool,
     workflows_overviews: BTreeMap<String, ProjectWorkflowsOverview>,
@@ -339,7 +338,6 @@ impl AppState {
             work_queue_view_mode: WorkQueueViewMode::Board,
             work_queue_selected_issue,
             work_queue_inspector_visible: true,
-            work_queue_editing_intake: false,
             work_queue_ad_hoc_open: false,
             work_queue_unmatched_expanded: false,
             workflows_overviews,
@@ -1062,7 +1060,6 @@ pub(crate) fn open_work_queue_for_project(id: ProjectId) {
         s.active_view = ActiveView::WorkQueue;
         if project_changed {
             s.work_queue_selected_issue = None;
-            s.work_queue_editing_intake = false;
             s.work_queue_ad_hoc_open = false;
             s.work_queue_unmatched_expanded = false;
         }
@@ -1499,34 +1496,6 @@ pub(crate) fn toggle_work_queue_inspector() {
     });
 }
 
-pub(crate) fn work_queue_editing_intake() -> bool {
-    state().with(|s| s.work_queue_editing_intake)
-}
-
-pub(crate) fn set_work_queue_editing_intake(editing: bool) {
-    state().update(|s| {
-        s.work_queue_editing_intake = editing;
-        if editing {
-            s.work_queue_ad_hoc_open = false;
-        }
-    });
-}
-
-pub(crate) fn open_work_queue_intake_editor() {
-    state().update(|s| {
-        if s.selected_project.is_none() {
-            s.selected_project = s.factory.projects().first().map(|p| p.id);
-        }
-        if let Some(pid) = s.selected_project {
-            s.expanded_projects.insert(pid);
-        }
-        s.active_view = ActiveView::WorkQueue;
-        s.work_queue_editing_intake = true;
-        s.work_queue_ad_hoc_open = false;
-        s.sync_selected_issue_for_active_project();
-    });
-}
-
 pub(crate) fn work_queue_ad_hoc_open() -> bool {
     state().with(|s| s.work_queue_ad_hoc_open)
 }
@@ -1534,9 +1503,6 @@ pub(crate) fn work_queue_ad_hoc_open() -> bool {
 pub(crate) fn set_work_queue_ad_hoc_open(open: bool) {
     state().update(|s| {
         s.work_queue_ad_hoc_open = open;
-        if open {
-            s.work_queue_editing_intake = false;
-        }
     });
 }
 
@@ -1550,7 +1516,6 @@ pub(crate) fn open_work_queue_ad_hoc() {
         }
         s.active_view = ActiveView::WorkQueue;
         s.work_queue_ad_hoc_open = true;
-        s.work_queue_editing_intake = false;
         s.sync_selected_issue_for_active_project();
     });
 }
@@ -1762,20 +1727,6 @@ pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
         }
     });
     launched
-}
-
-pub(crate) fn save_work_queue_intake_rules(
-    required_label: String,
-    rules: Vec<IntakeRule>,
-    fallback_workflow: String,
-) {
-    state().update(|s| {
-        let name = s.selected_project_name();
-        let queue = s.ensure_queue_mut(&name);
-        queue.update_intake_rules(required_label, rules, fallback_workflow);
-        s.work_queue_editing_intake = false;
-        s.status_message = Some(format!("Updated intake rules for '{name}'"));
-    });
 }
 
 pub(crate) fn has_queued_work_issues() -> bool {
