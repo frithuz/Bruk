@@ -1,0 +1,9 @@
+{
+  "name": "Software Factory",
+  "id": "com.softwarefactory.app",
+  "version": "0.1.0",
+  "build": 1,
+  "appearance": "system",
+  "rust": "crates/factory-app",
+  "root": "App"
+}
