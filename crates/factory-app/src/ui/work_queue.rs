@@ -148,9 +148,7 @@ fn intake_banner(queue: &ProjectWorkQueue) -> impl IntoElement {
             button()
                 .test_id("wq-edit-intake-rules")
                 .accessibility_label("Edit intake rules")
-                .on_press(|| {
-                    store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)
-                })
+                .on_press(|| store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake))
                 .flex_shrink_0()
                 .hover(|s| s.opacity(0.8))
                 .active(|s| s.opacity(0.65))

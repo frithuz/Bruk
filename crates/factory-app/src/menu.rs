@@ -312,7 +312,9 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(sync_project_issues),
             MenuItem::new("Issue Source & Intake…")
                 .disabled(!snapshot.has_projects)
-                .on_select(|| store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)),
+                .on_select(|| {
+                    store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)
+                }),
             MenuItem::separator(),
             MenuItem::new("Project Settings…")
                 .disabled(!snapshot.has_projects)
