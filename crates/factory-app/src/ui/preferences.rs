@@ -1,8 +1,9 @@
 //! Native macOS Preferences window (`⌘,`) with tabbed settings and provider account management.
 
 use factory_core::{
-    AppearanceMode, CliAccount, ConnectionTestState, DefaultLandingView, OpenRouterKey,
-    PreferencesTab, ProviderKind, format_whole_or_cents,
+    AppearanceMode, CliAccount, ConnectionTestState, CoreUpdatePolicy, DefaultLandingView,
+    MachineAgentKind, MachineConnectionStatus, MachinePlatform, MachineRecord, OpenRouterKey,
+    PreferencesTab, ProviderKind, SchemaCompatibility, format_whole_or_cents,
 };
 use nsh_base::{button, input};
 use nsh_core::{
@@ -25,6 +26,21 @@ enum ProviderEditor {
     ChangeModel(String),
     RenameKey(String),
     ConfirmRemove(String),
+}
+
+/// Active inline editor or disclosure panel inside the Machines detail pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum MachinePrefsEditor {
+    AddMachine,
+    ChangeUser(u64),
+    EditJumpHost(u64),
+    ShowHostKey(u64),
+    ChangeSshKey(u64),
+    ChangeCoreUpdates(u64),
+    ConfirmAgentSignOut(u64, MachineAgentKind),
+    ChangeSessionsAtOnce(u64),
+    EditProjects(u64),
+    ConfirmRemove(u64),
 }
 
 /// Declarative secondary macOS window hosting application Preferences.
@@ -1628,77 +1644,1574 @@ fn appearance_tab() -> impl IntoElement {
     )
 }
 
-// --- Machines Tab -----------------------------------------------------------------------
+// --- Machines Tab (matching 22 PreferencesMachines.png) ---------------------------------
 
 fn machines_tab() -> impl IntoElement {
+    let active_editor: Signal<Option<MachinePrefsEditor>> = signal(None);
+
+    // Inline editor draft signals.
+    let draft_text = signal(String::new());
+    let draft_add_name = signal(String::new());
+    let draft_add_ipv4 = signal(String::new());
+    let draft_add_port = signal("22".to_owned());
+    let draft_add_user = signal("wald".to_owned());
+    let draft_add_platform = signal(MachinePlatform::Linux);
+
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
             .flex_1()
             .p(px(22.0))
-            .gap(px(16.0))
-            .child(dynamic(move || {
-                let prefs = store::preferences().machines;
-                let machines = store::machines();
-                let connected = store::connected_machine_count();
-                let disconnected = store::disconnected_machine_count();
-
+            .child(
                 view()
-                    .gap(px(16.0))
-                    .child(
-                        grouped_card("Worker Scheduling")
-                            .child(card_divider())
-                            .child(setting_row(
-                                "Max concurrent runs per machine",
-                                "Upper bound on parallel agent runs scheduled on one host.",
-                                stepper_control(
-                                    format!("{}", prefs.max_concurrent_runs),
-                                    "Decrease max concurrent runs",
-                                    "Increase max concurrent runs",
-                                    || store::step_max_concurrent_runs(-1),
-                                    || store::step_max_concurrent_runs(1),
-                                ),
-                            ))
-                            .child(card_divider())
-                            .child(setting_row(
-                                "Heartbeat interval",
-                                "How often remote worker hosts report capacity and status.",
-                                stepper_control(
-                                    format!("{}s", prefs.heartbeat_interval_secs),
-                                    "Decrease heartbeat interval",
-                                    "Increase heartbeat interval",
-                                    || store::step_heartbeat_interval(-5),
-                                    || store::step_heartbeat_interval(5),
-                                ),
-                            ))
-                            .child(card_divider())
-                            .child(toggle_row(
-                                "Prefer local Mac when slots are free",
-                                "Schedule runs locally before spilling over to remote builders.",
-                                prefs.prefer_local_machine,
-                                store::toggle_prefer_local_machine,
-                            ))
-                            .child(card_divider())
-                            .child(toggle_row(
-                                "Automatically reconnect offline runners",
-                                "Retry SSH/daemon connections when a remote host drops.",
-                                prefs.auto_reconnect_runners,
-                                store::toggle_auto_reconnect_runners,
-                            )),
-                    )
-                    .child(
-                        grouped_card("Configured Fleet")
-                            .child(card_divider())
-                            .child(static_row(
-                                "Active workers",
-                                format!(
-                                    "{connected} connected · {disconnected} disconnected ({} total)",
-                                    machines.len()
-                                ),
-                                false,
-                            )),
-                    )
-            })),
+                    .flex_row()
+                    .items_start()
+                    .gap(px(18.0))
+                    .child(machines_left_rail(
+                        active_editor,
+                        draft_add_name,
+                        draft_add_ipv4,
+                        draft_add_port,
+                        draft_add_user,
+                        draft_add_platform,
+                    ))
+                    .child(machines_detail_column(
+                        active_editor,
+                        draft_text,
+                        draft_add_name,
+                        draft_add_ipv4,
+                        draft_add_port,
+                        draft_add_user,
+                        draft_add_platform,
+                    )),
+            ),
     )
+}
+
+fn machines_left_rail(
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+    draft_add_name: Signal<String>,
+    draft_add_ipv4: Signal<String>,
+    draft_add_port: Signal<String>,
+    draft_add_user: Signal<String>,
+    draft_add_platform: Signal<MachinePlatform>,
+) -> impl IntoElement {
+    view().w(px(222.0)).flex_shrink_0().child(dynamic(move || {
+        let fleet = store::machines_fleet();
+        let selected_id = store::selected_prefs_machine_id();
+        let adding = active_editor.get() == Some(MachinePrefsEditor::AddMachine);
+
+        let mut card = view()
+            .rounded(px(10.0))
+            .border_1()
+            .border_color(palette::border_color())
+            .bg(palette::card_bg())
+            .p(px(8.0))
+            .gap(px(3.0));
+
+        for machine in &fleet.machines {
+            let is_selected = !adding && selected_id == Some(machine.id);
+            card = card.child(machine_prefs_list_row(machine, is_selected, active_editor));
+        }
+
+        card = card.child(
+            view().pt(px(8.0)).px(px(4.0)).pb(px(2.0)).items_start().child(
+                secondary_button_id("prefs-machine-add", "Add Machine...", move || {
+                    store::clear_preferences_messages();
+                    draft_add_name.set(String::new());
+                    draft_add_ipv4.set(String::new());
+                    draft_add_port.set("22".to_owned());
+                    draft_add_user.set("wald".to_owned());
+                    draft_add_platform.set(MachinePlatform::Linux);
+                    active_editor.set(Some(MachinePrefsEditor::AddMachine));
+                }),
+            ),
+        );
+
+        card
+    }))
+}
+
+fn machine_prefs_list_row(
+    machine: &MachineRecord,
+    selected: bool,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+) -> impl IntoElement {
+    let id = machine.id;
+    let slug = slugify(&machine.name);
+    let test_id = format!("prefs-machine-item-{slug}");
+
+    let row_bg = if selected {
+        palette::nav_active_bg()
+    } else {
+        AdaptiveColor::TRANSPARENT
+    };
+    let title_color = if selected {
+        palette::nav_active_fg()
+    } else {
+        palette::text_primary()
+    };
+    let subtitle_color = if selected {
+        AdaptiveColor::new(rgba(0xFFFFFFD9), rgba(0xFFFFFFD9))
+    } else {
+        palette::text_muted()
+    };
+
+    button()
+        .test_id(&test_id)
+        .accessibility_label(machine.name.clone())
+        .on_press(move || {
+            active_editor.set(None);
+            store::select_prefs_machine(id);
+        })
+        .w_full()
+        .rounded(px(8.0))
+        .px(px(10.0))
+        .py(px(7.5))
+        .items_start()
+        .gap(px(1.5))
+        .bg(row_bg)
+        .hover(move |s| {
+            if selected {
+                s
+            } else {
+                s.bg(palette::sidebar_hover_bg())
+            }
+        })
+        .active(|s| s.opacity(0.85))
+        .child(
+            text(machine.name.clone())
+                .text_size(px(13.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(title_color),
+        )
+        .child(
+            text(machine.prefs_os_short.clone())
+                .text_size(px(11.5))
+                .text_color(subtitle_color),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn machines_detail_column(
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+    draft_text: Signal<String>,
+    draft_add_name: Signal<String>,
+    draft_add_ipv4: Signal<String>,
+    draft_add_port: Signal<String>,
+    draft_add_user: Signal<String>,
+    draft_add_platform: Signal<MachinePlatform>,
+) -> impl IntoElement {
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .gap(px(14.0))
+        .child(dynamic(move || {
+            let editor = active_editor.get();
+            if editor == Some(MachinePrefsEditor::AddMachine) {
+                return add_machine_prefs_card(
+                    active_editor,
+                    draft_add_name,
+                    draft_add_ipv4,
+                    draft_add_port,
+                    draft_add_user,
+                    draft_add_platform,
+                )
+                .into_element();
+            }
+
+            let fleet = store::machines_fleet();
+            if let Some(machine) = store::selected_prefs_machine() {
+                machine_prefs_detail_pane(machine, fleet.wald_schema, active_editor, draft_text)
+                    .into_element()
+            } else {
+                grouped_card("Machines")
+                    .child(card_divider())
+                    .child(
+                        view().p(px(16.0)).child(
+                            text("No machines configured yet. Add a remote SSH host to get started.")
+                                .text_size(px(12.5))
+                                .text_color(palette::text_muted()),
+                        ),
+                    )
+                    .into_element()
+            }
+        }))
+}
+
+fn add_machine_prefs_card(
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+    draft_name: Signal<String>,
+    draft_ipv4: Signal<String>,
+    draft_port: Signal<String>,
+    draft_user: Signal<String>,
+    draft_platform: Signal<MachinePlatform>,
+) -> impl IntoElement {
+    let platform = draft_platform.get();
+    let submit = move || {
+        let name = draft_name.get_untracked();
+        let ipv4 = draft_ipv4.get_untracked();
+        let port = draft_port.get_untracked();
+        let user = draft_user.get_untracked();
+        let selected_platform = draft_platform.get_untracked();
+        if store::add_prefs_machine(&name, &ipv4, &port, &user, selected_platform) {
+            active_editor.set(None);
+        }
+    };
+
+    view()
+        .gap(px(12.0))
+        .child(
+            view().gap(px(1.5)).child(
+                text("Add machine")
+                    .text_size(px(16.0))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(palette::text_primary()),
+            ),
+        )
+        .child(
+            grouped_card("SSH connection").child(card_divider()).child(
+                view()
+                    .p(px(16.0))
+                    .gap(px(12.0))
+                    .child(form_field(
+                        "Machine name",
+                        input()
+                            .test_id("prefs-new-machine-name")
+                            .value(move || draft_name.get())
+                            .on_change(move |v: &str| draft_name.set(v.to_owned()))
+                            .placeholder("e.g. build-box-02")
+                            .app_class("font-mono")
+                            .px(px(10.0))
+                            .py(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::card_inset_bg())
+                            .rounded(px(7.0))
+                            .text_color(palette::text_primary()),
+                    ))
+                    .child(
+                        view()
+                            .flex_row()
+                            .gap(px(12.0))
+                            .child(
+                                view().flex_1().child(form_field(
+                                    "IPv4 or hostname",
+                                    input()
+                                        .test_id("prefs-new-machine-ipv4")
+                                        .value(move || draft_ipv4.get())
+                                        .on_change(move |v: &str| draft_ipv4.set(v.to_owned()))
+                                        .placeholder("10.0.4.55")
+                                        .app_class("font-mono")
+                                        .px(px(10.0))
+                                        .py(px(7.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::card_inset_bg())
+                                        .rounded(px(7.0))
+                                        .text_color(palette::text_primary()),
+                                )),
+                            )
+                            .child(
+                                view().w(px(96.0)).child(form_field(
+                                    "Port",
+                                    input()
+                                        .test_id("prefs-new-machine-port")
+                                        .value(move || draft_port.get())
+                                        .on_change(move |v: &str| draft_port.set(v.to_owned()))
+                                        .placeholder("22")
+                                        .app_class("font-mono")
+                                        .px(px(10.0))
+                                        .py(px(7.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::card_inset_bg())
+                                        .rounded(px(7.0))
+                                        .text_color(palette::text_primary()),
+                                )),
+                            )
+                            .child(
+                                view().flex_1().child(form_field(
+                                    "SSH user",
+                                    input()
+                                        .test_id("prefs-new-machine-user")
+                                        .value(move || draft_user.get())
+                                        .on_change(move |v: &str| draft_user.set(v.to_owned()))
+                                        .placeholder("wald")
+                                        .app_class("font-mono")
+                                        .px(px(10.0))
+                                        .py(px(7.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::card_inset_bg())
+                                        .rounded(px(7.0))
+                                        .text_color(palette::text_primary()),
+                                )),
+                            ),
+                    )
+                    .child(form_field(
+                        "Platform",
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .child(machine_platform_option(
+                                MachinePlatform::Linux,
+                                platform,
+                                draft_platform,
+                            ))
+                            .child(machine_platform_option(
+                                MachinePlatform::Mac,
+                                platform,
+                                draft_platform,
+                            ))
+                            .child(machine_platform_option(
+                                MachinePlatform::Windows,
+                                platform,
+                                draft_platform,
+                            )),
+                    ))
+                    .child(
+                        text(
+                            "Wald only connects with SSH keys from the macOS Keychain SSH agent. Password sign-in is not supported.",
+                        )
+                        .text_size(px(11.5))
+                        .text_color(palette::text_muted()),
+                    )
+                    .child(preferences_error_banner())
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(secondary_button("Cancel", move || {
+                                store::clear_preferences_messages();
+                                active_editor.set(None);
+                            }))
+                            .child(
+                                button()
+                                    .test_id("prefs-new-machine-submit")
+                                    .on_press(submit)
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .rounded(px(7.0))
+                                    .bg(palette::nav_active_bg())
+                                    .active(|s| s.opacity(0.8))
+                                    .child(
+                                        text("Add Machine")
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette::nav_active_fg()),
+                                    ),
+                            ),
+                    ),
+            ),
+        )
+}
+
+fn machine_platform_option(
+    platform: MachinePlatform,
+    active: MachinePlatform,
+    draft_platform: Signal<MachinePlatform>,
+) -> impl IntoElement {
+    let selected = platform == active;
+    button()
+        .test_id(&format!("prefs-new-machine-platform-{}", platform.short_badge()))
+        .on_press(move || draft_platform.set(platform))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(6.5))
+        .border_1()
+        .border_color(if selected {
+            palette::card_selected_border()
+        } else {
+            palette::border_color()
+        })
+        .bg(if selected {
+            palette::card_selected_bg()
+        } else {
+            palette::control_bg()
+        })
+        .child(
+            text(platform.display_name())
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(if selected {
+                    palette::link_blue()
+                } else {
+                    palette::text_secondary()
+                }),
+        )
+}
+
+fn machine_prefs_detail_pane(
+    machine: MachineRecord,
+    wald_schema: u32,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+    draft_text: Signal<String>,
+) -> impl IntoElement {
+    let id = machine.id;
+    let is_local = machine.is_local;
+    let editor = active_editor.get();
+
+    let is_changing_user = editor == Some(MachinePrefsEditor::ChangeUser(id));
+    let is_editing_jump_host = editor == Some(MachinePrefsEditor::EditJumpHost(id));
+    let is_showing_host_key = editor == Some(MachinePrefsEditor::ShowHostKey(id));
+    let is_changing_ssh_key = editor == Some(MachinePrefsEditor::ChangeSshKey(id));
+    let is_changing_core_updates = editor == Some(MachinePrefsEditor::ChangeCoreUpdates(id));
+    let is_confirming_claude_signout =
+        editor == Some(MachinePrefsEditor::ConfirmAgentSignOut(id, MachineAgentKind::ClaudeCode));
+    let is_confirming_codex_signout =
+        editor == Some(MachinePrefsEditor::ConfirmAgentSignOut(id, MachineAgentKind::Codex));
+    let is_changing_sessions = editor == Some(MachinePrefsEditor::ChangeSessionsAtOnce(id));
+    let is_editing_projects = editor == Some(MachinePrefsEditor::EditProjects(id));
+    let is_confirming_remove = editor == Some(MachinePrefsEditor::ConfirmRemove(id));
+
+    let status_color = match machine.status {
+        MachineConnectionStatus::Connected => palette::success_text(),
+        MachineConnectionStatus::Disconnected => palette::workflow_now_amber(),
+        MachineConnectionStatus::NotSyncing | MachineConnectionStatus::Unreachable => {
+            palette::destructive_text()
+        }
+    };
+
+    let schema_color = match machine.compatibility(wald_schema) {
+        SchemaCompatibility::InSync => {
+            if machine.status.is_offline() {
+                palette::text_muted()
+            } else {
+                palette::success_text()
+            }
+        }
+        SchemaCompatibility::CoreUpdateSuggested => palette::pill_warning_text(),
+        SchemaCompatibility::NeedsNewerWald => palette::destructive_text(),
+    };
+
+    let current_user = machine.ssh_user.clone();
+    let current_jump = machine.jump_host.clone().unwrap_or_default();
+    let has_jump = machine.jump_host.is_some();
+    let current_ssh_key = machine.ssh_key_name.clone();
+    let current_sessions = machine.max_sessions_at_once.to_string();
+    let machine_name_for_claude = machine.name.clone();
+    let machine_name_for_codex = machine.name.clone();
+    let machine_name_for_remove = machine.name.clone();
+    let host_key_full = machine.host_key_full.clone();
+    let host_key_type = machine.host_key_type.clone();
+    let host_key_fp = machine.host_key_fingerprint.clone();
+    let host_key_trusted = machine.host_key_trusted_on.clone();
+    let current_policy = machine.core_update_policy;
+    let allowed_projects = machine.allowed_projects.clone();
+    let claude_signed_in = machine.claude_signed_in;
+    let codex_signed_in = machine.codex_signed_in;
+
+    // --- System card ---
+    let system_card = grouped_card("System")
+        .child(card_divider())
+        .child(static_row(
+            "Operating system",
+            machine.os_detail.clone(),
+            false,
+        ))
+        .child(card_divider())
+        .child(static_row("Kernel", machine.kernel.clone(), true))
+        .child(card_divider())
+        .child(static_row(
+            "Architecture",
+            machine.architecture.clone(),
+            true,
+        ))
+        .child(card_divider())
+        .child(static_row(
+            "Hardware",
+            machine.hardware_memory.clone(),
+            false,
+        ))
+        .child(card_divider())
+        .child(static_row("Hostname", machine.hostname.clone(), true));
+
+    // --- Access card ---
+    let port_display = if is_local {
+        "Local socket".to_owned()
+    } else {
+        machine.ssh_port.to_string()
+    };
+
+    let user_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("User"))
+                        .child(
+                            text(machine.ssh_user.clone())
+                                .app_class("font-mono")
+                                .text_size(px(12.5))
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(when(
+                    move || !is_local,
+                    move || {
+                        let user_val = current_user.clone();
+                        secondary_button_id("prefs-machine-change-user", "Change...", move || {
+                            store::clear_preferences_messages();
+                            draft_text.set(user_val.clone());
+                            active_editor.set(Some(MachinePrefsEditor::ChangeUser(id)));
+                        })
+                    },
+                )),
+        )
+        .child(when(
+            move || is_changing_user,
+            move || {
+                inline_single_field_editor(
+                    draft_text,
+                    "SSH username",
+                    true,
+                    "Save User",
+                    move || {
+                        if store::update_prefs_machine_user(id, &draft_text.get_untracked()) {
+                            active_editor.set(None);
+                        }
+                    },
+                    move || {
+                        store::clear_preferences_messages();
+                        active_editor.set(None);
+                    },
+                )
+            },
+        ));
+
+    let jump_value_el = {
+        let mut t = text(
+            machine
+                .jump_host
+                .clone()
+                .unwrap_or_else(|| "None".to_owned()),
+        )
+        .text_size(px(12.5))
+        .text_color(palette::text_primary());
+        if has_jump {
+            t = t.app_class("font-mono");
+        }
+        t
+    };
+
+    let jump_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Jump host"))
+                        .child(jump_value_el),
+                )
+                .child(when(
+                    move || !is_local,
+                    move || {
+                        let jump_val = current_jump.clone();
+                        let btn_label = if has_jump { "Change..." } else { "Add..." };
+                        secondary_button_id("prefs-machine-edit-jump-host", btn_label, move || {
+                            store::clear_preferences_messages();
+                            draft_text.set(jump_val.clone());
+                            active_editor.set(Some(MachinePrefsEditor::EditJumpHost(id)));
+                        })
+                    },
+                )),
+        )
+        .child(when(
+            move || is_editing_jump_host,
+            move || {
+                inline_single_field_editor(
+                    draft_text,
+                    "bastion.example.com (blank for None)",
+                    true,
+                    "Save Jump Host",
+                    move || {
+                        if store::update_prefs_machine_jump_host(id, &draft_text.get_untracked()) {
+                            active_editor.set(None);
+                        }
+                    },
+                    move || {
+                        store::clear_preferences_messages();
+                        active_editor.set(None);
+                    },
+                )
+            },
+        ));
+
+    let host_key_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Host key"))
+                        .child(
+                            view().flex_1().min_w(px(0.0)).child(
+                                text(machine.host_key_summary())
+                                    .app_class("font-mono")
+                                    .text_size(px(12.0))
+                                    .text_color(palette::text_primary()),
+                            ),
+                        ),
+                )
+                .child(when(
+                    move || !is_local,
+                    move || {
+                        let btn_label = if is_showing_host_key { "Hide" } else { "Show" };
+                        secondary_button_id("prefs-machine-show-host-key", btn_label, move || {
+                            if active_editor.get_untracked()
+                                == Some(MachinePrefsEditor::ShowHostKey(id))
+                            {
+                                active_editor.set(None);
+                            } else {
+                                active_editor.set(Some(MachinePrefsEditor::ShowHostKey(id)));
+                            }
+                        })
+                    },
+                )),
+        )
+        .child(when(
+            move || is_showing_host_key,
+            move || {
+                view()
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::card_inset_bg())
+                    .p(px(10.0))
+                    .gap(px(4.0))
+                    .child(
+                        text(format!(
+                            "Trusted host key · {} · {} · verified {}",
+                            host_key_type, host_key_fp, host_key_trusted
+                        ))
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                    )
+                    .child(
+                        text(host_key_full.clone())
+                            .app_class("font-mono")
+                            .text_size(px(11.0))
+                            .text_color(palette::text_muted()),
+                    )
+            },
+        ));
+
+    let access_card = grouped_card("Access")
+        .child(card_divider())
+        .child(static_row("IPv4", machine.ipv4.clone(), true))
+        .child(card_divider())
+        .child(static_row("IPv6", machine.ipv6.clone(), true))
+        .child(card_divider())
+        .child(static_row("Port", port_display, true))
+        .child(card_divider())
+        .child(user_row)
+        .child(card_divider())
+        .child(jump_row)
+        .child(card_divider())
+        .child(host_key_row);
+
+    // --- SSH key card ---
+    let ssh_key_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Key in use"))
+                        .child(
+                            text(machine.ssh_key_in_use_label())
+                                .text_size(px(12.5))
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(when(
+                    move || !is_local,
+                    move || {
+                        let key_val = current_ssh_key.clone();
+                        secondary_button_id("prefs-machine-change-ssh-key", "Change...", move || {
+                            store::clear_preferences_messages();
+                            draft_text.set(key_val.clone());
+                            active_editor.set(Some(MachinePrefsEditor::ChangeSshKey(id)));
+                        })
+                    },
+                )),
+        )
+        .child(when(
+            move || is_changing_ssh_key,
+            move || ssh_key_picker_editor(id, draft_text, active_editor),
+        ));
+
+    let ssh_key_card = grouped_card("SSH key")
+        .child(card_divider())
+        .child(ssh_key_row)
+        .child(card_divider())
+        .child(static_row(
+            "Fingerprint",
+            machine.ssh_key_short_fingerprint.clone(),
+            true,
+        ))
+        .child(card_divider())
+        .child(static_row(
+            "Provided by",
+            machine.ssh_key_provider.clone(),
+            false,
+        ))
+        .child(
+            view().px(px(16.0)).pt(px(2.0)).pb(px(12.0)).child(
+                text("Wald only connects with SSH keys. Password sign-in is not supported.")
+                    .text_size(px(11.5))
+                    .text_color(palette::text_muted()),
+            ),
+        );
+
+    // --- Wald core card ---
+    let data_schema_row = view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .flex_row()
+                .items_center()
+                .gap(px(12.0))
+                .child(row_label("Data schema"))
+                .child(
+                    text(machine.data_schema_detail(wald_schema))
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(schema_color),
+                ),
+        )
+        .child(secondary_button_id(
+            "prefs-machine-check-core",
+            "Check Now",
+            move || store::check_prefs_machine_core(id),
+        ));
+
+    let core_updates_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Core updates"))
+                        .child(
+                            text(machine.core_update_policy.label())
+                                .text_size(px(12.5))
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-change-core-updates",
+                    "Change...",
+                    move || {
+                        store::clear_preferences_messages();
+                        if active_editor.get_untracked()
+                            == Some(MachinePrefsEditor::ChangeCoreUpdates(id))
+                        {
+                            active_editor.set(None);
+                        } else {
+                            active_editor.set(Some(MachinePrefsEditor::ChangeCoreUpdates(id)));
+                        }
+                    },
+                )),
+        )
+        .child(when(
+            move || is_changing_core_updates,
+            move || core_update_policy_picker(id, current_policy, active_editor),
+        ));
+
+    let wald_core_card = grouped_card("Wald core")
+        .child(card_divider())
+        .child(static_row("Installed", machine.core_version.clone(), true))
+        .child(card_divider())
+        .child(data_schema_row)
+        .child(card_divider())
+        .child(static_row(
+            "Install path",
+            machine.core_install_path.clone(),
+            true,
+        ))
+        .child(card_divider())
+        .child(core_updates_row)
+        .child(
+            view().px(px(16.0)).pt(px(2.0)).pb(px(12.0)).child(
+                text(
+                    "Versions only matter when the data schema differs. Wald and the core compare schemas on every connection.",
+                )
+                .text_size(px(11.5))
+                .text_color(palette::text_muted()),
+            ),
+        );
+
+    // --- Agents on this machine card ---
+    let claude_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Claude Code"))
+                        .child(
+                            view().flex_1().min_w(px(0.0)).child(
+                                text(machine.claude_status_summary())
+                                    .text_size(px(12.5))
+                                    .text_color(palette::text_primary()),
+                            ),
+                        ),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-claude-auth",
+                    if claude_signed_in {
+                        "Sign Out..."
+                    } else {
+                        "Sign In..."
+                    },
+                    move || {
+                        store::clear_preferences_messages();
+                        if claude_signed_in {
+                            active_editor.set(Some(MachinePrefsEditor::ConfirmAgentSignOut(
+                                id,
+                                MachineAgentKind::ClaudeCode,
+                            )));
+                        } else {
+                            active_editor.set(None);
+                            store::set_prefs_machine_agent_signed_in(
+                                id,
+                                MachineAgentKind::ClaudeCode,
+                                true,
+                            );
+                        }
+                    },
+                )),
+        )
+        .child(when(
+            move || is_confirming_claude_signout,
+            move || {
+                agent_signout_confirm_banner(
+                    id,
+                    MachineAgentKind::ClaudeCode,
+                    machine_name_for_claude.clone(),
+                    active_editor,
+                )
+            },
+        ));
+
+    let codex_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Codex"))
+                        .child(
+                            view().flex_1().min_w(px(0.0)).child(
+                                text(machine.codex_status_summary())
+                                    .text_size(px(12.5))
+                                    .text_color(palette::text_primary()),
+                            ),
+                        ),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-codex-auth",
+                    if codex_signed_in {
+                        "Sign Out..."
+                    } else {
+                        "Sign In..."
+                    },
+                    move || {
+                        store::clear_preferences_messages();
+                        if codex_signed_in {
+                            active_editor.set(Some(MachinePrefsEditor::ConfirmAgentSignOut(
+                                id,
+                                MachineAgentKind::Codex,
+                            )));
+                        } else {
+                            active_editor.set(None);
+                            store::set_prefs_machine_agent_signed_in(
+                                id,
+                                MachineAgentKind::Codex,
+                                true,
+                            );
+                        }
+                    },
+                )),
+        )
+        .child(when(
+            move || is_confirming_codex_signout,
+            move || {
+                agent_signout_confirm_banner(
+                    id,
+                    MachineAgentKind::Codex,
+                    machine_name_for_codex.clone(),
+                    active_editor,
+                )
+            },
+        ));
+
+    let agents_card = grouped_card("Agents on this machine")
+        .child(card_divider())
+        .child(claude_row)
+        .child(card_divider())
+        .child(codex_row)
+        .child(card_divider())
+        .child(static_row(
+            "OpenRouter",
+            "The project's key is sent per session from this Mac's Keychain, never stored on the machine"
+                .to_owned(),
+            false,
+        ));
+
+    // --- Work card ---
+    let sessions_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Sessions at once"))
+                        .child(
+                            text(machine.max_sessions_at_once.to_string())
+                                .text_size(px(12.5))
+                                .tabular_nums()
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-change-sessions",
+                    "Change...",
+                    move || {
+                        store::clear_preferences_messages();
+                        draft_text.set(current_sessions.clone());
+                        active_editor.set(Some(MachinePrefsEditor::ChangeSessionsAtOnce(id)));
+                    },
+                )),
+        )
+        .child(when(
+            move || is_changing_sessions,
+            move || sessions_limit_editor(id, draft_text, active_editor),
+        ));
+
+    let projects_row = view()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .py(px(10.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .child(row_label("Projects"))
+                        .child(
+                            view().flex_1().min_w(px(0.0)).child(
+                                text(machine.allowed_projects_summary())
+                                    .text_size(px(12.5))
+                                    .text_color(palette::text_primary()),
+                            ),
+                        ),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-edit-projects",
+                    if is_editing_projects { "Done" } else { "Edit..." },
+                    move || {
+                        store::clear_preferences_messages();
+                        if active_editor.get_untracked()
+                            == Some(MachinePrefsEditor::EditProjects(id))
+                        {
+                            active_editor.set(None);
+                        } else {
+                            active_editor.set(Some(MachinePrefsEditor::EditProjects(id)));
+                        }
+                    },
+                )),
+        )
+        .child(when(
+            move || is_editing_projects,
+            move || machine_projects_editor(id, allowed_projects.clone()),
+        ));
+
+    let work_card = grouped_card("Work")
+        .child(card_divider())
+        .child(static_row(
+            "Workspace folder",
+            machine.workspace_folder.clone(),
+            true,
+        ))
+        .child(card_divider())
+        .child(sessions_row)
+        .child(card_divider())
+        .child(projects_row);
+
+    // --- Detail Header ---
+    let header_row = view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .child(
+            text(machine.name.clone())
+                .text_size(px(16.0))
+                .font_weight(FontWeight::BOLD)
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(
+                    text(machine.status.label())
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(status_color),
+                )
+                .child(secondary_button_id(
+                    "prefs-machine-test-connection",
+                    "Test Connection",
+                    move || store::test_prefs_machine_connection(id),
+                )),
+        );
+
+    let mut container = view()
+        .gap(px(14.0))
+        .child(header_row)
+        .child(preferences_error_banner())
+        .child(preferences_feedback_caption())
+        .child(system_card)
+        .child(access_card)
+        .child(ssh_key_card)
+        .child(wald_core_card)
+        .child(agents_card)
+        .child(work_card);
+
+    if !is_local {
+        container = container
+            .child(
+                view().items_start().child(
+                    button()
+                        .test_id("prefs-machine-remove")
+                        .accessibility_label("Remove Machine...")
+                        .on_press(move || {
+                            store::clear_preferences_messages();
+                            active_editor.set(Some(MachinePrefsEditor::ConfirmRemove(id)));
+                        })
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .active(|s| s.opacity(0.8))
+                        .child(
+                            text("Remove Machine...")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::destructive_text()),
+                        ),
+                ),
+            )
+            .child(when(
+                move || is_confirming_remove,
+                move || {
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(12.0))
+                        .p(px(12.0))
+                        .rounded(px(9.0))
+                        .border_1()
+                        .border_color(palette::destructive_text())
+                        .bg(palette::card_bg())
+                        .child(
+                            text(format!(
+                                "Remove '{}' from Wald? Sessions on the host will keep running.",
+                                machine_name_for_remove
+                            ))
+                            .text_size(px(12.5))
+                            .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(secondary_button("Cancel", move || {
+                                    active_editor.set(None);
+                                }))
+                                .child(
+                                    button()
+                                        .test_id("prefs-machine-remove-confirm")
+                                        .on_press(move || {
+                                            if store::remove_prefs_machine(id) {
+                                                active_editor.set(None);
+                                            }
+                                        })
+                                        .px(px(12.0))
+                                        .py(px(6.0))
+                                        .rounded(px(7.0))
+                                        .bg(palette::destructive_text())
+                                        .active(|s| s.opacity(0.8))
+                                        .child(
+                                            text("Remove Machine")
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(palette::nav_active_fg()),
+                                        ),
+                                ),
+                        )
+                },
+            ));
+    } else {
+        container = container.child(
+            text("This Mac is the local machine and cannot be removed.")
+                .text_size(px(12.0))
+                .text_color(palette::text_muted()),
+        );
+    }
+
+    container
+}
+
+fn ssh_key_picker_editor(
+    machine_id: u64,
+    draft_key: Signal<String>,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+) -> impl IntoElement {
+    const KEY_PRESETS: &[(&str, &str, &str)] = &[
+        ("wald-build", "ED25519", "SHA256:q3Ff…8kPw"),
+        ("wald-ci", "ED25519", "SHA256:k8Lm…2pRt"),
+        ("wald-deploy", "ED25519", "SHA256:z8Kp…1mQr"),
+        ("id_ed25519_work", "ED25519", "SHA256:p4Tn…6wVx"),
+    ];
+
+    let mut chips = view().flex_row().flex_wrap().gap(px(6.0));
+    for (name, key_type, fp) in KEY_PRESETS {
+        let name_str = *name;
+        let type_str = *key_type;
+        let fp_str = *fp;
+        chips = chips.child(
+            button()
+                .test_id(&format!("prefs-machine-ssh-preset-{name_str}"))
+                .on_press(move || {
+                    if store::update_prefs_machine_ssh_key(machine_id, name_str, type_str, fp_str) {
+                        active_editor.set(None);
+                    }
+                })
+                .px(px(8.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    text(format!("{name_str} · {type_str}"))
+                        .app_class("font-mono")
+                        .text_size(px(11.5))
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
+
+    view()
+        .pt(px(4.0))
+        .gap(px(8.0))
+        .child(chips)
+        .child(inline_single_field_editor(
+            draft_key,
+            "SSH key label in macOS Keychain",
+            true,
+            "Save Key",
+            move || {
+                if store::update_prefs_machine_ssh_key(
+                    machine_id,
+                    &draft_key.get_untracked(),
+                    "ED25519",
+                    "SHA256:v7Rm…3kLq",
+                ) {
+                    active_editor.set(None);
+                }
+            },
+            move || {
+                store::clear_preferences_messages();
+                active_editor.set(None);
+            },
+        ))
+}
+
+fn core_update_policy_picker(
+    machine_id: u64,
+    current_policy: CoreUpdatePolicy,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+) -> impl IntoElement {
+    let mut options = view()
+        .pt(px(4.0))
+        .gap(px(6.0));
+    for policy in CoreUpdatePolicy::ALL {
+        let policy_val = *policy;
+        let selected = policy_val == current_policy;
+        let test_id = match policy_val {
+            CoreUpdatePolicy::SuggestAskFirst => "prefs-machine-core-policy-suggest",
+            CoreUpdatePolicy::AutoWhenBehind => "prefs-machine-core-policy-auto",
+            CoreUpdatePolicy::ManualOnly => "prefs-machine-core-policy-manual",
+        };
+        options = options.child(
+            button()
+                .test_id(test_id)
+                .on_press(move || {
+                    store::set_prefs_machine_core_update_policy(machine_id, policy_val);
+                    active_editor.set(None);
+                })
+                .w_full()
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(if selected {
+                    palette::card_selected_border()
+                } else {
+                    palette::border_color()
+                })
+                .bg(if selected {
+                    palette::card_selected_bg()
+                } else {
+                    palette::card_inset_bg()
+                })
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .child(
+                    text(policy_val.label())
+                        .text_size(px(12.0))
+                        .font_weight(if selected {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::NORMAL
+                        })
+                        .text_color(if selected {
+                            palette::link_blue()
+                        } else {
+                            palette::text_primary()
+                        }),
+                )
+                .child(when(
+                    move || selected,
+                    || icons::check(palette::link_blue()),
+                )),
+        );
+    }
+    options
+}
+
+fn agent_signout_confirm_banner(
+    machine_id: u64,
+    agent: MachineAgentKind,
+    machine_name: String,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+) -> impl IntoElement {
+    let confirm_id = match agent {
+        MachineAgentKind::ClaudeCode => "prefs-machine-claude-signout-confirm",
+        MachineAgentKind::Codex => "prefs-machine-codex-signout-confirm",
+    };
+    view()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(10.0))
+        .p(px(10.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_inset_bg())
+        .child(
+            text(format!(
+                "Sign out of {} in Wald's isolated config on {}?",
+                agent.label(),
+                machine_name
+            ))
+            .text_size(px(12.0))
+            .text_color(palette::text_primary()),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(secondary_button("Cancel", move || {
+                    active_editor.set(None);
+                }))
+                .child(
+                    button()
+                        .test_id(confirm_id)
+                        .on_press(move || {
+                            store::set_prefs_machine_agent_signed_in(machine_id, agent, false);
+                            active_editor.set(None);
+                        })
+                        .px(px(11.0))
+                        .py(px(5.5))
+                        .rounded(px(7.0))
+                        .bg(palette::destructive_text())
+                        .active(|s| s.opacity(0.8))
+                        .child(
+                            text("Sign Out")
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::nav_active_fg()),
+                        ),
+                ),
+        )
+}
+
+fn sessions_limit_editor(
+    machine_id: u64,
+    draft_sessions: Signal<String>,
+    active_editor: Signal<Option<MachinePrefsEditor>>,
+) -> impl IntoElement {
+    let mut chips = view().flex_row().flex_wrap().gap(px(6.0));
+    for count in [1u32, 2, 4, 6, 8] {
+        let count_str = count.to_string();
+        chips = chips.child(
+            button()
+                .test_id(&format!("prefs-machine-sessions-preset-{count}"))
+                .on_press(move || {
+                    if store::update_prefs_machine_max_sessions(machine_id, &count_str) {
+                        active_editor.set(None);
+                    }
+                })
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    text(count.to_string())
+                        .text_size(px(12.0))
+                        .tabular_nums()
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
+
+    view()
+        .pt(px(4.0))
+        .gap(px(8.0))
+        .child(chips)
+        .child(inline_single_field_editor(
+            draft_sessions,
+            "1 to 32",
+            true,
+            "Save Limit",
+            move || {
+                if store::update_prefs_machine_max_sessions(
+                    machine_id,
+                    &draft_sessions.get_untracked(),
+                ) {
+                    active_editor.set(None);
+                }
+            },
+            move || {
+                store::clear_preferences_messages();
+                active_editor.set(None);
+            },
+        ))
+}
+
+fn machine_projects_editor(machine_id: u64, allowed_projects: Vec<String>) -> impl IntoElement {
+    let available = store::available_machine_project_names();
+    let mut chips = view().flex_row().flex_wrap().gap(px(8.0)).pt(px(4.0));
+    for project in available {
+        let allowed = allowed_projects.iter().any(|p| p == &project);
+        let slug = slugify(&project);
+        let project_for_click = project.clone();
+        chips = chips.child(
+            button()
+                .test_id(&format!("prefs-machine-project-{slug}"))
+                .accessibility_label(format!("Toggle project {project}"))
+                .on_press(move || {
+                    store::toggle_prefs_machine_project(machine_id, &project_for_click)
+                })
+                .px(px(10.0))
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(if allowed {
+                    palette::card_selected_border()
+                } else {
+                    palette::border_color()
+                })
+                .bg(if allowed {
+                    palette::card_selected_bg()
+                } else {
+                    palette::control_bg()
+                })
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .child(
+                    text(if allowed { "✓" } else { "+" })
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(if allowed {
+                            palette::link_blue()
+                        } else {
+                            palette::text_muted()
+                        }),
+                )
+                .child(
+                    text(project)
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if allowed {
+                            palette::link_blue()
+                        } else {
+                            palette::text_secondary()
+                        }),
+                ),
+        );
+    }
+    chips
+}
+
+fn secondary_button_id(
+    test_id: &str,
+    label: &'static str,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .test_id(test_id)
+        .accessibility_label(label)
+        .on_press(on_press)
+        .flex_shrink_0()
+        .px(px(12.0))
+        .py(px(5.5))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.8))
+        .child(
+            text(label)
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
+        )
+}
+
+fn slugify(value: &str) -> String {
+    value
+        .to_ascii_lowercase()
+        .replace(|c: char| !c.is_ascii_alphanumeric(), "-")
 }
 
 // --- Extensions Tab ---------------------------------------------------------------------

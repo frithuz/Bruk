@@ -240,7 +240,8 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
         app.wait_for("Default landing view").unwrap();
 
         app.press("id:prefs-tab-machines").unwrap();
-        app.wait_for("Max concurrent runs per machine").unwrap();
+        app.wait_for("Ubuntu 24.04.1 LTS").unwrap();
+        assert!(app.screen().shows("Test Connection"));
 
         app.press("id:prefs-tab-extensions").unwrap();
         app.wait_for("Installed Extensions").unwrap();
@@ -1208,4 +1209,201 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     app.press("id:machine-session-open-45").unwrap();
     app.wait_for("Edit Workflow").unwrap();
     assert!(app.screen().shows("api-gateway · Run #45"));
+}
+
+#[test]
+fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Open Preferences and navigate to the Machines tab.
+    app.press("role:button[Preferences]").unwrap();
+    app.wait_for("id:prefs-tab-machines").unwrap();
+    app.press("id:prefs-tab-machines").unwrap();
+    app.wait_for("Ubuntu 24.04.1 LTS").unwrap();
+
+    // Verify left rail machines list and Add Machine button match 22 PreferencesMachines.png.
+    assert!(app.screen().shows("This Mac"));
+    assert!(app.screen().shows("macOS 26.1 · arm64"));
+    assert!(app.screen().shows("build-box-01"));
+    assert!(app.screen().shows("Ubuntu 24.04 · x86_64"));
+    assert!(app.screen().shows("win-ci-02"));
+    assert!(app.screen().shows("Windows 11 · x86_64"));
+    assert!(app.screen().shows("gpu-01"));
+    assert!(app.screen().shows("Fedora 41 · x86_64"));
+    assert!(app.screen().shows("mini-lab"));
+    assert!(app.screen().shows("macOS 15.6 · arm64"));
+    assert!(app.screen().shows("Add Machine..."));
+
+    // Verify default selected build-box-01 detail header and all 6 sections.
+    assert!(app.screen().shows("Connected"));
+    assert!(app.screen().shows("Test Connection"));
+
+    // System card
+    assert!(app.screen().shows("System"));
+    assert!(app.screen().shows("Operating system"));
+    assert!(app.screen().shows("Ubuntu 24.04.1 LTS"));
+    assert!(app.screen().shows("Kernel"));
+    assert!(app.screen().shows("Linux 6.8.0-48"));
+    assert!(app.screen().shows("Architecture"));
+    assert!(app.screen().shows("x86_64"));
+    assert!(app.screen().shows("Hardware"));
+    assert!(app.screen().shows("16 cores · 64 GB memory"));
+    assert!(app.screen().shows("Hostname"));
+
+    // Access card
+    assert!(app.screen().shows("Access"));
+    assert!(app.screen().shows("10.0.4.21"));
+    assert!(app.screen().shows("fd00::4:21"));
+    assert!(app.screen().shows("22"));
+    assert!(app.screen().shows("wald"));
+    assert!(app.screen().shows("None"));
+    assert!(
+        app.screen()
+            .shows("ED25519 SHA256:Y7nR…2fKa · trusted Nov 3")
+    );
+
+    // SSH key card
+    assert!(app.screen().shows("SSH key"));
+    assert!(app.screen().shows("wald-build · ED25519"));
+    assert!(app.screen().shows("SHA256:q3Ff…8kPw"));
+    assert!(app.screen().shows("SSH agent (macOS Keychain)"));
+    assert!(
+        app.screen()
+            .shows("Wald only connects with SSH keys. Password sign-in is not supported.")
+    );
+
+    // Wald core card
+    assert!(app.screen().shows("Wald core"));
+    assert!(app.screen().shows("0.8.5"));
+    assert!(app.screen().shows("7 · same as this app · in sync"));
+    assert!(app.screen().shows("Check Now"));
+    assert!(app.screen().shows("/home/wald/.wald/core"));
+    assert!(
+        app.screen()
+            .shows("Suggest when its schema is behind · ask first")
+    );
+    assert!(app.screen().shows(
+        "Versions only matter when the data schema differs. Wald and the core compare schemas on every connection."
+    ));
+
+    // Agents on this machine card
+    assert!(app.screen().shows("Agents on this machine"));
+    assert!(
+        app.screen()
+            .shows("/usr/local/bin/claude · isolated config · signed in inside Wald")
+    );
+    assert!(
+        app.screen()
+            .shows("/home/wald/.local/bin/codex · isolated config · signed in inside Wald")
+    );
+    assert!(app.screen().shows(
+        "The project's key is sent per session from this Mac's Keychain, never stored on the machine"
+    ));
+
+    // Work card and bottom Remove Machine action
+    assert!(app.screen().shows("Work"));
+    assert!(app.screen().shows("/home/wald/work"));
+    assert!(app.screen().shows("Sessions at once"));
+    assert!(app.screen().shows("4"));
+    assert!(app.screen().shows("api-gateway, marketing-site, mobile-app"));
+    assert!(app.screen().shows("Remove Machine..."));
+
+    // Interactive flows on build-box-01:
+    // 1. Test Connection & Check Now
+    app.press("id:prefs-machine-test-connection").unwrap();
+    app.wait_for("SSH connected to wald@10.0.4.21 (14 ms) · Wald core 0.8.5 (schema 7).")
+        .unwrap();
+
+    app.press("id:prefs-machine-check-core").unwrap();
+    app.wait_for("Core 0.8.5 on build-box-01 matches data schema 7 — no update needed.")
+        .unwrap();
+
+    // 2. Show/Hide Host key
+    app.press("id:prefs-machine-show-host-key").unwrap();
+    app.wait_for("Trusted host key · ED25519 · SHA256:Y7nR…2fKa · verified Nov 3")
+        .unwrap();
+    app.press("id:prefs-machine-show-host-key").unwrap();
+
+    // 3. Add a Jump host
+    app.press("id:prefs-machine-edit-jump-host").unwrap();
+    app.wait_for("id:prefs-inline-input").unwrap();
+    app.type_text("id:prefs-inline-input", "bastion.prod.internal")
+        .unwrap();
+    app.press("role:button[Save Jump Host]").unwrap();
+    app.wait_for("bastion.prod.internal").unwrap();
+
+    // 4. Change SSH user
+    app.press("id:prefs-machine-change-user").unwrap();
+    app.clear("id:prefs-inline-input").unwrap();
+    app.type_text("id:prefs-inline-input", "runner").unwrap();
+    app.press("role:button[Save User]").unwrap();
+    app.wait_for("Updated SSH user to 'runner'.").unwrap();
+
+    // 5. Switch SSH key via preset
+    app.press("id:prefs-machine-change-ssh-key").unwrap();
+    app.wait_for("id:prefs-machine-ssh-preset-wald-deploy")
+        .unwrap();
+    app.press("id:prefs-machine-ssh-preset-wald-deploy").unwrap();
+    app.wait_for("wald-deploy · ED25519").unwrap();
+
+    // 6. Change Core updates policy
+    app.press("id:prefs-machine-change-core-updates").unwrap();
+    app.wait_for("id:prefs-machine-core-policy-auto").unwrap();
+    app.press("id:prefs-machine-core-policy-auto").unwrap();
+    app.wait_for("Update automatically when its schema is behind")
+        .unwrap();
+
+    // 7. Sign out and sign back into Claude Code on this machine
+    app.press("id:prefs-machine-claude-auth").unwrap();
+    app.wait_for("id:prefs-machine-claude-signout-confirm")
+        .unwrap();
+    app.press("id:prefs-machine-claude-signout-confirm")
+        .unwrap();
+    app.wait_for("/usr/local/bin/claude · isolated config · not signed in")
+        .unwrap();
+    app.press("id:prefs-machine-claude-auth").unwrap();
+    app.wait_for("/usr/local/bin/claude · isolated config · signed in inside Wald")
+        .unwrap();
+
+    // 8. Change Sessions at once and edit Projects
+    app.press("id:prefs-machine-change-sessions").unwrap();
+    app.wait_for("id:prefs-machine-sessions-preset-6").unwrap();
+    app.press("id:prefs-machine-sessions-preset-6").unwrap();
+    app.wait_for("Sessions at once set to 6.").unwrap();
+
+    app.press("id:prefs-machine-edit-projects").unwrap();
+    app.wait_for("id:prefs-machine-project-mobile-app").unwrap();
+    app.press("id:prefs-machine-project-mobile-app").unwrap();
+    app.wait_for("api-gateway, marketing-site").unwrap();
+
+    // 9. Switch to another machine (gpu-01 & This Mac)
+    app.press("id:prefs-machine-item-gpu-01").unwrap();
+    app.wait_for("Fedora 41 Workstation").unwrap();
+    assert!(app.screen().shows("8 · ahead of this app (7) · not syncing"));
+
+    app.press("id:prefs-machine-item-this-mac").unwrap();
+    app.wait_for("Darwin 25.1.0").unwrap();
+    assert!(
+        app.screen()
+            .shows("This Mac is the local machine and cannot be removed.")
+    );
+
+    // 10. Add a new machine and then remove it
+    app.press("id:prefs-machine-add").unwrap();
+    app.wait_for("id:prefs-new-machine-name").unwrap();
+    app.type_text("id:prefs-new-machine-name", "staging-arm-01")
+        .unwrap();
+    app.type_text("id:prefs-new-machine-ipv4", "10.0.4.88")
+        .unwrap();
+    app.press("id:prefs-new-machine-submit").unwrap();
+    app.wait_for("Added machine 'staging-arm-01'.").unwrap();
+    assert!(app.screen().shows("10.0.4.88"));
+
+    app.press("id:prefs-machine-remove").unwrap();
+    app.wait_for("id:prefs-machine-remove-confirm").unwrap();
+    app.press("id:prefs-machine-remove-confirm").unwrap();
+    app.wait_for("Removed machine 'staging-arm-01'.").unwrap();
 }

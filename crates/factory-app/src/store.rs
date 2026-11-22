@@ -7,15 +7,16 @@ use std::{
 };
 
 use factory_core::{
-    AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
-    DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, EditorSelection,
-    ExitField, ExitOperator, FactoryState, InboxItem, IntakeRule, IssueSourceKind,
-    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineRecord, MachinesFleet,
-    NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
-    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
-    RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
-    WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
-    WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
+    AppPreferences, AppearanceMode, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
+    DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor,
+    EditorSelection, ExitField, ExitOperator, FactoryState, InboxItem, IntakeRule, IssueSourceKind,
+    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform,
+    MachineRecord, MachinesFleet, NewMachineDraft, PreferencesTab, Project, ProjectDatabase,
+    ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
+    ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
+    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowEditorDocument,
+    WorkflowId, WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter,
+    WorkflowsSort,
 };
 use nsh_core::{platform::Appearance, prelude::*};
 
@@ -94,6 +95,7 @@ struct AppState {
     preferences_focused: bool,
     preferences_tab: PreferencesTab,
     selected_provider_id: String,
+    selected_prefs_machine_id: Option<u64>,
     preferences_feedback: Option<String>,
     preferences_error: Option<String>,
     project_settings: BTreeMap<String, ProjectSettings>,
@@ -254,6 +256,7 @@ impl AppState {
                     preferences_focused: false,
                     preferences_tab: PreferencesTab::Providers,
                     selected_provider_id,
+                    selected_prefs_machine_id: selected_machine_id,
                     preferences_feedback: None,
                     preferences_error: None,
                     project_settings,
@@ -376,6 +379,7 @@ impl AppState {
                     preferences_focused: false,
                     preferences_tab: PreferencesTab::Providers,
                     selected_provider_id,
+                    selected_prefs_machine_id: selected_machine_id,
                     preferences_feedback: None,
                     preferences_error: None,
                     project_settings,
@@ -1567,14 +1571,6 @@ pub(crate) fn select_machine(id: u64) {
     });
 }
 
-pub(crate) fn connected_machine_count() -> usize {
-    state().with(|s| s.machines_fleet.connected_count())
-}
-
-pub(crate) fn disconnected_machine_count() -> usize {
-    state().with(|s| s.machines_fleet.offline_count())
-}
-
 pub(crate) fn disconnect_machine(id: u64) {
     state().update(|s| match s.machines_fleet.disconnect_machine(id) {
         Ok(machine) => {
@@ -2256,36 +2252,292 @@ pub(crate) enum GeneralFlag {
     AutoCheckUpdates,
 }
 
-pub(crate) fn step_max_concurrent_runs(delta: i32) {
+pub(crate) fn selected_prefs_machine_id() -> Option<u64> {
+    state().with(|s| {
+        s.selected_prefs_machine_id
+            .filter(|id| s.machines_fleet.machine(*id).is_some())
+            .or_else(|| s.machines_fleet.default_selected_id())
+    })
+}
+
+pub(crate) fn selected_prefs_machine() -> Option<MachineRecord> {
+    state().with(|s| {
+        let id = s
+            .selected_prefs_machine_id
+            .filter(|id| s.machines_fleet.machine(*id).is_some())
+            .or_else(|| s.machines_fleet.default_selected_id())?;
+        s.machines_fleet.machine(id).cloned()
+    })
+}
+
+pub(crate) fn select_prefs_machine(id: u64) {
     state().update(|s| {
-        let next = (s.preferences.machines.max_concurrent_runs as i32 + delta).clamp(1, 16) as u32;
-        s.preferences.machines.max_concurrent_runs = next;
-        s.persist_preferences();
+        if s.machines_fleet.machine(id).is_some() {
+            s.selected_prefs_machine_id = Some(id);
+            s.preferences_error = None;
+            s.preferences_feedback = None;
+        }
     });
 }
 
-pub(crate) fn step_heartbeat_interval(delta: i32) {
-    state().update(|s| {
-        let next =
-            (s.preferences.machines.heartbeat_interval_secs as i32 + delta).clamp(5, 120) as u32;
-        s.preferences.machines.heartbeat_interval_secs = next;
-        s.persist_preferences();
+pub(crate) fn test_prefs_machine_connection(id: u64) {
+    state().update(|s| match s.machines_fleet.test_connection(id) {
+        Ok(msg) => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(msg);
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
     });
 }
 
-pub(crate) fn toggle_auto_reconnect_runners() {
-    state().update(|s| {
-        s.preferences.machines.auto_reconnect_runners =
-            !s.preferences.machines.auto_reconnect_runners;
-        s.persist_preferences();
+pub(crate) fn update_prefs_machine_user(id: u64, user: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| match s.machines_fleet.set_ssh_user(id, user) {
+        Ok(()) => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Updated SSH user to '{}'.", user.trim()));
+            ok = true;
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+    ok
+}
+
+pub(crate) fn update_prefs_machine_jump_host(id: u64, jump_host: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| match s.machines_fleet.set_jump_host(id, jump_host) {
+        Ok(()) => {
+            s.preferences_error = None;
+            let trimmed = jump_host.trim();
+            s.preferences_feedback = Some(
+                if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") {
+                    "Cleared jump host.".to_owned()
+                } else {
+                    format!("Jump host set to '{trimmed}'.")
+                },
+            );
+            ok = true;
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+    ok
+}
+
+pub(crate) fn update_prefs_machine_ssh_key(
+    id: u64,
+    key_name: &str,
+    key_type: &str,
+    fingerprint: &str,
+) -> bool {
+    let mut ok = false;
+    state().update(
+        |s| match s.machines_fleet.set_ssh_key(id, key_name, key_type, fingerprint) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback =
+                    Some(format!("SSH key set to '{}'.", key_name.trim()));
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+    ok
+}
+
+pub(crate) fn check_prefs_machine_core(id: u64) {
+    state().update(|s| match s.machines_fleet.check_core_now(id) {
+        Ok(msg) => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(msg);
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
     });
 }
 
-pub(crate) fn toggle_prefer_local_machine() {
-    state().update(|s| {
-        s.preferences.machines.prefer_local_machine = !s.preferences.machines.prefer_local_machine;
-        s.persist_preferences();
+pub(crate) fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePolicy) {
+    state().update(
+        |s| match s.machines_fleet.set_core_update_policy(id, policy) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback =
+                    Some(format!("Core update policy set to '{}'.", policy.short_label()));
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+}
+
+pub(crate) fn set_prefs_machine_agent_signed_in(
+    id: u64,
+    agent: MachineAgentKind,
+    signed_in: bool,
+) {
+    state().update(
+        |s| match s.machines_fleet.set_agent_signed_in(id, agent, signed_in) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(if signed_in {
+                    format!("Signed in to {} inside Wald.", agent.label())
+                } else {
+                    format!("Signed out of {} on this machine.", agent.label())
+                });
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+}
+
+pub(crate) fn update_prefs_machine_max_sessions(id: u64, value_str: &str) -> bool {
+    let parsed = value_str.trim().parse::<u32>();
+    let mut ok = false;
+    state().update(|s| match parsed {
+        Ok(n) => match s.machines_fleet.set_max_sessions_at_once(id, n) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Sessions at once set to {n}."));
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+        Err(_) => {
+            s.preferences_error = Some("Sessions at once must be a number between 1 and 32.".to_owned());
+        }
     });
+    ok
+}
+
+pub(crate) fn toggle_prefs_machine_project(id: u64, project_name: &str) {
+    let project = project_name.to_owned();
+    state().update(
+        |s| match s.machines_fleet.toggle_project_access(id, &project) {
+            Ok(enabled) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(if enabled {
+                    format!("Allowed '{project}' on this machine.")
+                } else {
+                    format!("Removed '{project}' from this machine.")
+                });
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+}
+
+pub(crate) fn add_prefs_machine(
+    name: &str,
+    ipv4: &str,
+    port: &str,
+    user: &str,
+    platform: MachinePlatform,
+) -> bool {
+    let trimmed_name = name.trim();
+    let trimmed_user = if user.trim().is_empty() {
+        "wald"
+    } else {
+        user.trim()
+    };
+    let trimmed_port = if port.trim().is_empty() {
+        "22"
+    } else {
+        port.trim()
+    };
+    let address = if ipv4.trim().is_empty() {
+        String::new()
+    } else if ipv4.contains(':') {
+        ipv4.trim().to_owned()
+    } else {
+        format!("{}:{trimmed_port}", ipv4.trim())
+    };
+    let ssh_target = if trimmed_name.is_empty() {
+        String::new()
+    } else {
+        format!("{trimmed_user}@{trimmed_name}")
+    };
+    let draft = NewMachineDraft {
+        name: trimmed_name.to_owned(),
+        platform,
+        os_label: String::new(),
+        arch: String::new(),
+        address,
+        ssh_target,
+        allowed_projects: vec![
+            "api-gateway".to_owned(),
+            "marketing-site".to_owned(),
+            "mobile-app".to_owned(),
+        ],
+    };
+
+    let mut added_ok = false;
+    state().update(|s| match s.machines_fleet.add_machine(draft) {
+        Ok(added) => {
+            let new_id = added.id;
+            let new_name = added.name.clone();
+            s.selected_prefs_machine_id = Some(new_id);
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Added machine '{new_name}'."));
+            added_ok = true;
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+    added_ok
+}
+
+pub(crate) fn remove_prefs_machine(id: u64) -> bool {
+    let mut removed_ok = false;
+    state().update(|s| match s.machines_fleet.remove_machine(id) {
+        Ok(removed) => {
+            if s.selected_prefs_machine_id == Some(id) {
+                s.selected_prefs_machine_id = s.machines_fleet.default_selected_id();
+            }
+            if s.selected_machine_id == Some(id) {
+                s.selected_machine_id = s.machines_fleet.default_selected_id();
+            }
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Removed machine '{}'.", removed.name));
+            removed_ok = true;
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+    removed_ok
+}
+
+pub(crate) fn available_machine_project_names() -> Vec<String> {
+    state().with(|s| {
+        let mut names: Vec<String> = s
+            .factory
+            .projects()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        for fallback in ["api-gateway", "marketing-site", "mobile-app"] {
+            if !names.iter().any(|n| n == fallback) {
+                names.push(fallback.to_owned());
+            }
+        }
+        names
+    })
 }
 
 pub(crate) fn toggle_allow_project_mcp_servers() {
