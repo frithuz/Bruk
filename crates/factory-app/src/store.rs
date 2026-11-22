@@ -36,6 +36,7 @@ pub(crate) enum ActiveView {
     Workflows,
     WorkflowEditor,
     WorkflowRun,
+    ProjectSettings,
     Workspace,
     RegisterProject,
 }
@@ -120,8 +121,6 @@ struct AppState {
     preferences_feedback: Option<String>,
     preferences_error: Option<String>,
     project_settings: BTreeMap<String, ProjectSettings>,
-    project_settings_open: bool,
-    project_settings_focused: bool,
     project_settings_tab: ProjectSettingsTab,
     project_settings_feedback: Option<String>,
     project_settings_error: Option<String>,
@@ -403,8 +402,6 @@ impl AppState {
             preferences_feedback: None,
             preferences_error: None,
             project_settings,
-            project_settings_open: false,
-            project_settings_focused: false,
             project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
             project_settings_feedback: None,
             project_settings_error: None,
@@ -827,7 +824,10 @@ pub(crate) fn set_demo_mode(enabled: bool) {
             | ActiveView::Inbox
             | ActiveView::Machines
             | ActiveView::RegisterProject => prev_active_view,
-            ActiveView::WorkQueue | ActiveView::Workflows | ActiveView::Workspace
+            ActiveView::WorkQueue
+            | ActiveView::Workflows
+            | ActiveView::ProjectSettings
+            | ActiveView::Workspace
                 if has_projects =>
             {
                 prev_active_view
@@ -3429,32 +3429,22 @@ pub(crate) fn reset_preferences_to_defaults() {
     apply_appearance_mode(AppearanceMode::System);
 }
 
-// --- Project Settings Window ------------------------------------------------------------
-
-pub(crate) fn project_settings_open() -> bool {
-    state().with(|s| s.project_settings_open)
-}
-
-pub(crate) fn project_settings_focused() -> bool {
-    state().with(|s| s.project_settings_focused)
-}
-
-pub(crate) fn set_project_settings_focused(focused: bool) {
-    state().update(|s| {
-        s.project_settings_focused = focused;
-    });
-}
+// --- Project Settings -------------------------------------------------------------------
 
 pub(crate) fn open_project_settings() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
         }
-        s.project_settings_open = true;
-        s.project_settings_focused = true;
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::ProjectSettings;
         s.project_settings_error = None;
         s.project_settings_feedback = None;
+        s.status_message = None;
     });
+    main_window().focus();
 }
 
 pub(crate) fn open_project_settings_for_project(id: ProjectId) {
@@ -3462,11 +3452,12 @@ pub(crate) fn open_project_settings_for_project(id: ProjectId) {
         s.selected_project = Some(id);
         s.expanded_projects.insert(id);
         s.project_settings_tab = ProjectSettingsTab::IssuesAndIntake;
-        s.project_settings_open = true;
-        s.project_settings_focused = true;
+        s.active_view = ActiveView::ProjectSettings;
         s.project_settings_error = None;
         s.project_settings_feedback = None;
+        s.status_message = None;
     });
+    main_window().focus();
 }
 
 pub(crate) fn open_project_settings_tab(tab: ProjectSettingsTab) {
@@ -3474,21 +3465,16 @@ pub(crate) fn open_project_settings_tab(tab: ProjectSettingsTab) {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
         }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
         s.project_settings_tab = tab;
-        s.project_settings_open = true;
-        s.project_settings_focused = true;
+        s.active_view = ActiveView::ProjectSettings;
         s.project_settings_error = None;
         s.project_settings_feedback = None;
+        s.status_message = None;
     });
-}
-
-pub(crate) fn close_project_settings() {
-    state().update(|s| {
-        s.project_settings_open = false;
-        s.project_settings_focused = false;
-        s.project_settings_error = None;
-        s.project_settings_feedback = None;
-    });
+    main_window().focus();
 }
 
 pub(crate) fn project_settings_tab() -> ProjectSettingsTab {

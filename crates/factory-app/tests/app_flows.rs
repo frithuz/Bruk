@@ -634,17 +634,18 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
 }
 
 #[test]
-fn project_settings_window_renders_issues_intake_and_interactive_tabs() {
+fn project_settings_view_renders_issues_intake_and_interactive_tabs() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
     let mut app = start_with_demo_db(db_path);
     assert!(app.window_state("project-settings").unwrap().is_none());
 
-    // Open api-gateway Project Settings from the expanded sidebar tree.
+    // Open api-gateway Project Settings inside the main panel from the expanded sidebar tree.
     app.press("id:sidebar-project-settings-1").unwrap();
-    app.wait_for("api-gateway — Project Settings").unwrap();
-    assert!(app.window_state("project-settings").unwrap().is_some());
+    app.wait_for("api-gateway · Issues & intake").unwrap();
+    assert!(app.window_state("project-settings").unwrap().is_none());
+    assert!(app.screen().shows("Project settings"));
 
     // Verify all 6 left sidebar tabs.
     assert!(app.screen().shows("General"));
@@ -783,11 +784,14 @@ fn project_settings_window_renders_issues_intake_and_interactive_tabs() {
 
     app.press("id:ps-tab-agents-limits").unwrap();
     app.wait_for("Budget & guardrails").unwrap();
+    assert!(app.screen().shows("api-gateway · Agents & limits"));
     assert!(app.screen().shows("$5.00"));
     assert!(app.screen().shows("$120.00"));
+    assert!(app.window_state("project-settings").unwrap().is_none());
 
-    // Close the Project Settings window cleanly.
-    app.press_window_close("project-settings").unwrap();
+    // Navigate back to Dashboard inside the main window cleanly.
+    app.press_key("mod+shift+d").unwrap();
+    app.wait_for("Issues resolved").unwrap();
     assert!(app.window_state("project-settings").unwrap().is_none());
 }
 
@@ -1759,7 +1763,8 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     // Project Settings for the real project has no fake repo, rules, workflows, or secrets.
     app.press("id:sidebar-project-settings-1").unwrap();
-    app.wait_for("my-service — Project Settings").unwrap();
+    app.wait_for("my-service · Issues & intake").unwrap();
+    assert!(app.window_state("project-settings").unwrap().is_none());
     assert!(app.screen().shows(
         "No intake rules configured yet. Add a rule to route labeled issues to a workflow."
     ));

@@ -78,5 +78,4 @@ fn app_surface() -> impl IntoElement {
         .child(ui::shell())
         .child(ui::menubar::menubar_popover_window())
         .child(ui::preferences::preferences_window())
-        .child(ui::project_settings::project_settings_window())
 }

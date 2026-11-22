@@ -1,4 +1,4 @@
-//! Native macOS Project Settings window with sidebar sections and placeholder data.
+//! Project Settings view inside the main panel with section sidebar and detail panes.
 //!
 //! Default `Issues & intake` pane matches `05 ProjectSettings.png`.
 
@@ -7,91 +7,84 @@ use factory_core::{
     ProjectSettingsTab, ProviderKind,
 };
 use nsh_base::{button, input};
-use nsh_core::{
-    desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes, WindowKind, WindowPosition},
-    element::desktop::{current_window, window},
-    prelude::*,
-};
+use nsh_core::prelude::*;
 
 use crate::{
     store,
     ui::{icons, palette},
 };
 
-/// Declarative secondary macOS window hosting per-project settings.
-pub(crate) fn project_settings_window() -> impl IntoElement {
-    let mut title_bar = TitleBarOptions::default();
-    title_bar.style = TitleBarStyle::Hidden;
-    title_bar.height = Some(px(38.0));
-
-    let mut attrs = WindowAttributes::default();
-    attrs.title_bar = Some(title_bar);
-    attrs.resizable = Some(true);
-    attrs.min_size = Some(Some(Size::new(px(780.0), px(580.0))));
-    attrs.close_on_escape = Some(true);
-
-    window()
-        .id("project-settings")
-        .kind(WindowKind::Dialog)
-        .parent("main")
-        .default_size(Size::new(px(940.0), px(720.0)))
-        .default_position(WindowPosition::ParentCenter)
-        .title(move || store::active_project_settings().window_title())
-        .attributes(attrs)
-        .open(store::project_settings_open)
-        .on_open_change(|change| {
-            if !change.open {
-                store::close_project_settings();
-            }
-        })
-        .content(project_settings_surface)
-}
-
-fn project_settings_surface() -> impl IntoElement {
-    store::set_project_settings_focused(true);
-    current_window().on_focus_change(store::set_project_settings_focused);
-
+/// Main-panel Project Settings split view: section rail on the left, settings content on the right.
+pub(crate) fn project_settings_view() -> impl IntoElement {
     view()
         .flex_1()
+        .min_w(px(0.0))
         .min_h(px(0.0))
         .bg(palette::canvas_bg())
         .text_color(palette::text_primary())
-        .child(title_bar_header())
-        .child(
-            view()
-                .flex_1()
-                .min_h(px(0.0))
-                .flex_row()
-                .child(settings_sidebar())
-                .child(settings_content_pane()),
-        )
+        .child(when(
+            || store::selected_project().is_none(),
+            project_settings_empty_state,
+        ))
+        .child(when(
+            || store::selected_project().is_some(),
+            || {
+                view()
+                    .flex_1()
+                    .min_w(px(0.0))
+                    .min_h(px(0.0))
+                    .flex_row()
+                    .child(settings_sidebar())
+                    .child(settings_content_pane())
+            },
+        ))
 }
 
-// --- Window Header & Left Sidebar -------------------------------------------------------
-
-fn title_bar_header() -> impl IntoElement {
+fn project_settings_empty_state() -> impl IntoElement {
     view()
-        .h(px(38.0))
-        .flex_shrink_0()
+        .test_id("project-settings-empty-state")
+        .flex_1()
         .items_center()
         .justify_center()
-        .bg(palette::header_bg())
-        .border_b_1()
-        .border_color(palette::border_color())
-        .window_drag(true)
+        .p(px(32.0))
+        .gap(px(10.0))
         .child(
-            text(move || store::active_project_settings().window_title())
-                .text_size(px(13.5))
+            text("No project selected")
+                .text_size(px(17.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(palette::text_primary()),
         )
+        .child(
+            text("Register a local repository to configure its issue source, intake rules, and environment.")
+                .text_size(px(13.0))
+                .text_color(palette::text_muted()),
+        )
+        .child(
+            button()
+                .on_press(store::open_register_project)
+                .mt(px(4.0))
+                .h(px(34.0))
+                .px(px(15.0))
+                .rounded(px(8.0))
+                .bg(palette::nav_active_bg())
+                .items_center()
+                .justify_center()
+                .child(
+                    text("Register a Project")
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::nav_active_fg()),
+                ),
+        )
 }
+
+// --- Left Section Rail ------------------------------------------------------------------
 
 fn settings_sidebar() -> impl IntoElement {
     let mut rail = view()
         .w(px(196.0))
         .flex_shrink_0()
-        .bg(palette::sidebar_bg())
+        .bg(palette::canvas_bg())
         .border_r_1()
         .border_color(palette::border_color())
         .px(px(10.0))

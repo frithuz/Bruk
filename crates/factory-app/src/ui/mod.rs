@@ -7,7 +7,7 @@ mod machines;
 pub(crate) mod menubar;
 mod palette;
 pub(crate) mod preferences;
-pub(crate) mod project_settings;
+mod project_settings;
 mod register_project;
 mod work_queue;
 mod workflow_editor;
@@ -147,6 +147,7 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::Workflows => "Workflows".to_owned(),
                 ActiveView::WorkflowEditor => store::active_workflow_editor().workflow_name,
                 ActiveView::WorkflowRun => store::active_workflow_run().workflow_name,
+                ActiveView::ProjectSettings => "Project settings".to_owned(),
                 ActiveView::RegisterProject => "Register Project".to_owned(),
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| p.name)
@@ -199,6 +200,18 @@ fn header_title_block() -> impl IntoElement {
                         format!("{} · No runs yet", run.project_name)
                     } else {
                         format!("{} · Run #{}", run.project_name, run.run_number)
+                    }
+                }
+                ActiveView::ProjectSettings => {
+                    let settings = store::active_project_settings();
+                    if settings.project_name.is_empty() {
+                        "No project selected".to_owned()
+                    } else {
+                        format!(
+                            "{} · {}",
+                            settings.project_name,
+                            store::project_settings_tab().label()
+                        )
                     }
                 }
                 ActiveView::RegisterProject => "Track local repositories in SQLite".to_owned(),
@@ -1536,6 +1549,10 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                 )
         })
         .child({
+            let is_settings_active = move || {
+                store::active_view() == ActiveView::ProjectSettings
+                    && store::selected_project_id() == Some(id)
+            };
             let settings_test_id = format!("sidebar-project-settings-{id}");
             button()
                 .test_id(&settings_test_id)
@@ -1554,12 +1571,30 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                         .gap(px(7.0))
                         .px(px(9.0))
                         .py(px(5.0))
-                        .child(icons::settings_gear(12.5, palette::text_muted()))
-                        .child(
-                            text("Project settings")
-                                .text_size(px(12.0))
-                                .text_color(palette::text_primary()),
-                        ),
+                        .rounded(px(6.5))
+                        .bg(move || {
+                            if is_settings_active() {
+                                palette::nav_active_bg()
+                            } else {
+                                AdaptiveColor::TRANSPARENT
+                            }
+                        })
+                        .child(icons::settings_gear(12.5, move || {
+                            if is_settings_active() {
+                                palette::nav_active_fg()
+                            } else {
+                                palette::text_muted()
+                            }
+                        }))
+                        .child(text("Project settings").text_size(px(12.0)).text_color(
+                            move || {
+                                if is_settings_active() {
+                                    palette::nav_active_fg()
+                                } else {
+                                    palette::text_primary()
+                                }
+                            },
+                        )),
                 )
         })
 }
@@ -1603,6 +1638,10 @@ fn content_pane() -> impl IntoElement {
                 .child(when(
                     || store::active_view() == ActiveView::WorkflowRun,
                     workflow_run::workflow_run_view,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::ProjectSettings,
+                    project_settings::project_settings_view,
                 ))
                 .child(when(
                     || store::active_view() == ActiveView::Workspace,

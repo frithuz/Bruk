@@ -133,7 +133,7 @@ fn workflow_selector_card() -> impl IntoElement {
                                 .hover(|s| s.bg(palette::subtle_surface_bg()))
                                 .active(|s| s.opacity(0.8))
                                 .child(
-                                    text("Project Settings…")
+                                    text("Project Settings")
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(palette::text_primary()),

@@ -480,9 +480,7 @@ fn open_project_dialog() {
 }
 
 fn close_active_window() {
-    if store::project_settings_open() && store::project_settings_focused() {
-        store::close_project_settings();
-    } else if store::preferences_open() && store::preferences_focused() {
+    if store::preferences_open() && store::preferences_focused() {
         store::close_preferences();
     } else {
         main_window().close();
