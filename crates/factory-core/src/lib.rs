@@ -9,6 +9,7 @@ pub mod engine;
 pub mod model;
 pub mod preferences;
 pub mod storage;
+pub mod work_queue;
 
 pub use dashboard::{
     DashboardDataset, DashboardGranularity, DashboardInsight, DashboardQuery, DashboardSnapshot,
@@ -28,3 +29,7 @@ pub use preferences::{
     format_dollars_cents, format_whole_or_cents,
 };
 pub use storage::{ProjectDatabase, StorageError, default_db_path};
+pub use work_queue::{
+    IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue, WorkQueueError,
+    WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+};

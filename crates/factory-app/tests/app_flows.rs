@@ -334,3 +334,116 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
     app.wait_for("Cancelled run #2").unwrap();
     assert!(app.screen().shows("Run #2 · Cancelled (0/4)"));
 }
+
+#[test]
+fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Open api-gateway's Work queue from the expanded sidebar tree.
+    app.press("id:sidebar-work-queue-1").unwrap();
+    app.wait_for("api-gateway · GitHub Issues · acme/api-gateway")
+        .unwrap();
+
+    // Verify reference banner, columns, cards, sidebar slot summary, and right inspector.
+    assert!(app.screen().shows("Work queue"));
+    assert!(app.screen().shows(
+        "Open issues labeled agent-ready become work. Bugs go to Fix issue, docs to Docs refresh, everything else to Triage new issues."
+    ));
+    assert!(app.screen().shows("Ready for agents"));
+    assert!(app.screen().shows("In progress"));
+    assert!(app.screen().shows("Needs you"));
+    assert!(app.screen().shows("Done this week"));
+    assert!(app.screen().shows("Add request ID to error responses"));
+    assert!(
+        app.screen()
+            .shows("Retry once on 503 from the auth service")
+    );
+    assert!(app.screen().shows("Document the rate-limit headers"));
+    assert!(app.screen().shows("Move CI to Node 24"));
+    assert!(app.screen().shows("Codex · loop attempt 1 of 3"));
+    assert!(app.screen().shows("Expose rate-limit headers"));
+    assert!(app.screen().shows("Claude · step 2 of 4"));
+    assert!(app.screen().shows("Flaky session refresh test"));
+    assert!(app.screen().shows("Review gate"));
+    assert!(app.screen().shows("Return 429 instead of 500 on burst"));
+    assert!(app.screen().shows("Typo in auth error message"));
+    assert!(app.screen().shows("2 of 2 busy · 3 waiting"));
+    assert!(app.screen().shows("acme/api-gateway #331"));
+    assert!(app.screen().shows("Open on GitHub"));
+    assert!(app.screen().shows("label bug → Fix issue"));
+    assert!(app.screen().shows("1 of 3"));
+    assert!(app.screen().shows("When an agent slot frees"));
+    assert!(app.screen().shows("Software Factory will update the issue"));
+    assert!(
+        app.screen()
+            .shows("9 open issues don't match the intake rules")
+    );
+
+    // Reassign workflow for #331 via the inspector picker.
+    app.press("id:wq-inspector-use-another-workflow").unwrap();
+    app.wait_for("Assign workflow").unwrap();
+    app.press("role:button[Dependency upgrade]").unwrap();
+    app.wait_for("manual override → Dependency upgrade")
+        .unwrap();
+
+    // Start #331 immediately from the inspector.
+    app.press("id:wq-inspector-start-now").unwrap();
+    app.wait_for("Started issue #331 as run #45").unwrap();
+    assert!(app.screen().shows("3 of 2 busy · 2 waiting"));
+
+    // Select #318 via Review button and approve its review gate.
+    app.press("id:wq-card-review-318").unwrap();
+    app.wait_for("acme/api-gateway #318").unwrap();
+    app.press("id:wq-inspector-approve").unwrap();
+    app.wait_for("Approved review gate for #318 — PR merged")
+        .unwrap();
+
+    // Toggle to List view and back to Board view.
+    app.press("role:button[List]").unwrap();
+    app.wait_for("id:wq-list-row-334").unwrap();
+    app.press("role:button[Board]").unwrap();
+    app.wait_for("id:wq-card-334").unwrap();
+
+    // Expand unmatched issues and queue #338.
+    app.press("id:wq-unmatched-toggle").unwrap();
+    app.wait_for("Evaluate Envoy vs custom Rust ingress proxy")
+        .unwrap();
+    app.press("id:wq-queue-unmatched-338").unwrap();
+    app.wait_for("8 open issues don't match the intake rules")
+        .unwrap();
+
+    // Sync pulls the next mocked issue (#340) from the backlog.
+    app.press("id:wq-header-sync").unwrap();
+    app.wait_for("Propagate traceparent header to downstream gRPC calls")
+        .unwrap();
+
+    // Launch an ad-hoc run from the header CTA.
+    app.press("id:wq-header-adhoc").unwrap();
+    app.wait_for("Start an ad-hoc run").unwrap();
+    app.type_text("id:wq-adhoc-title", "Cut v2.4.0 release candidate")
+        .unwrap();
+    app.press("role:button[Start Ad-hoc Run]").unwrap();
+    app.wait_for("Cut v2.4.0 release candidate").unwrap();
+
+    // Edit and save intake rules inline.
+    app.press("role:button[Edit intake rules]").unwrap();
+    app.wait_for("Save Rules").unwrap();
+    app.clear("id:wq-intake-required").unwrap();
+    app.type_text("id:wq-intake-required", "bot-ready").unwrap();
+    app.press("role:button[Save Rules]").unwrap();
+    app.wait_for(
+        "Open issues labeled bot-ready become work. Bugs go to Fix issue, docs to Docs refresh, everything else to Triage new issues.",
+    )
+    .unwrap();
+
+    // Hide and restore the inspector via View › Hide Inspector (⌥⌘I).
+    assert!(app.screen().shows("Software Factory will update the issue"));
+    app.press_key("alt+mod+i").unwrap();
+    assert!(!app.screen().shows("Software Factory will update the issue"));
+    app.press_key("alt+mod+i").unwrap();
+    app.wait_for("Software Factory will update the issue")
+        .unwrap();
+}

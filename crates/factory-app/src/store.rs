@@ -1,15 +1,16 @@
 //! Reactive per-surface application state backed by `factory-core` and SQLite.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     sync::{Arc, Mutex},
 };
 
 use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
-    DashboardSnapshot, DefaultLandingView, DryRunExecutor, FactoryState, InboxItem, MachineNode,
-    MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId, RunId, RunStatus, Workflow,
-    WorkflowId, WorkflowRun,
+    DashboardSnapshot, DefaultLandingView, DryRunExecutor, FactoryState, InboxItem, IntakeRule,
+    MachineNode, MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId,
+    ProjectWorkQueue, RunId, RunStatus, WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun,
 };
 use nsh_core::{platform::Appearance, prelude::*};
 
@@ -19,6 +20,7 @@ pub(crate) enum ActiveView {
     Dashboard,
     Inbox,
     Machines,
+    WorkQueue,
     Workspace,
     RegisterProject,
 }
@@ -31,8 +33,16 @@ struct AppState {
     using_sample_projects: bool,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
+    expanded_projects: BTreeSet<ProjectId>,
     selected_workflow: Option<WorkflowId>,
     selected_run: Option<RunId>,
+    work_queues: BTreeMap<String, ProjectWorkQueue>,
+    work_queue_view_mode: WorkQueueViewMode,
+    work_queue_selected_issue: Option<u32>,
+    work_queue_inspector_visible: bool,
+    work_queue_editing_intake: bool,
+    work_queue_ad_hoc_open: bool,
+    work_queue_unmatched_expanded: bool,
     dashboard_dataset: DashboardDataset,
     dashboard_granularity: DashboardGranularity,
     dashboard_period_offset: i32,
@@ -95,6 +105,21 @@ impl AppState {
                 let factory = FactoryState::with_projects(projects);
                 let selected_project = factory.projects().first().map(|project| project.id);
                 let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+                let mut expanded_projects = BTreeSet::new();
+                if let Some(pid) = selected_project {
+                    expanded_projects.insert(pid);
+                }
+                let mut work_queues = BTreeMap::new();
+                for project in factory.projects() {
+                    work_queues.insert(
+                        project.name.clone(),
+                        ProjectWorkQueue::for_project(&project.name),
+                    );
+                }
+                let work_queue_selected_issue = selected_project
+                    .and_then(|pid| factory.project(pid))
+                    .and_then(|project| work_queues.get(&project.name))
+                    .and_then(ProjectWorkQueue::default_selected_issue);
                 Self {
                     factory,
                     db: Some(Arc::new(Mutex::new(db))),
@@ -102,8 +127,16 @@ impl AppState {
                     using_sample_projects,
                     active_view,
                     selected_project,
+                    expanded_projects,
                     selected_workflow,
                     selected_run: None,
+                    work_queues,
+                    work_queue_view_mode: WorkQueueViewMode::Board,
+                    work_queue_selected_issue,
+                    work_queue_inspector_visible: true,
+                    work_queue_editing_intake: false,
+                    work_queue_ad_hoc_open: false,
+                    work_queue_unmatched_expanded: false,
                     dashboard_dataset,
                     dashboard_granularity: DashboardGranularity::Week,
                     dashboard_period_offset: 0,
@@ -127,6 +160,21 @@ impl AppState {
                 let factory = FactoryState::with_projects(DashboardDataset::sample_projects());
                 let selected_project = factory.projects().first().map(|project| project.id);
                 let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+                let mut expanded_projects = BTreeSet::new();
+                if let Some(pid) = selected_project {
+                    expanded_projects.insert(pid);
+                }
+                let mut work_queues = BTreeMap::new();
+                for project in factory.projects() {
+                    work_queues.insert(
+                        project.name.clone(),
+                        ProjectWorkQueue::for_project(&project.name),
+                    );
+                }
+                let work_queue_selected_issue = selected_project
+                    .and_then(|pid| factory.project(pid))
+                    .and_then(|project| work_queues.get(&project.name))
+                    .and_then(ProjectWorkQueue::default_selected_issue);
                 let preferences = AppPreferences::sample();
                 let selected_provider_id = default_selected_provider_id(&preferences);
                 Self {
@@ -136,8 +184,16 @@ impl AppState {
                     using_sample_projects: true,
                     active_view: ActiveView::Dashboard,
                     selected_project,
+                    expanded_projects,
                     selected_workflow,
                     selected_run: None,
+                    work_queues,
+                    work_queue_view_mode: WorkQueueViewMode::Board,
+                    work_queue_selected_issue,
+                    work_queue_inspector_visible: true,
+                    work_queue_editing_intake: false,
+                    work_queue_ad_hoc_open: false,
+                    work_queue_unmatched_expanded: false,
                     dashboard_dataset,
                     dashboard_granularity: DashboardGranularity::Week,
                     dashboard_period_offset: 0,
@@ -157,6 +213,38 @@ impl AppState {
                     registration_error: Some(format!("Database unavailable: {err}")),
                 }
             }
+        }
+    }
+
+    fn selected_project_name(&self) -> String {
+        self.selected_project
+            .and_then(|id| self.factory.project(id))
+            .or_else(|| self.factory.projects().first())
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "api-gateway".to_owned())
+    }
+
+    fn ensure_queue_mut(&mut self, project_name: &str) -> &mut ProjectWorkQueue {
+        self.work_queues
+            .entry(project_name.to_owned())
+            .or_insert_with(|| ProjectWorkQueue::for_project(project_name))
+    }
+
+    fn queue_for_name(&self, project_name: &str) -> ProjectWorkQueue {
+        self.work_queues
+            .get(project_name)
+            .cloned()
+            .unwrap_or_else(|| ProjectWorkQueue::for_project(project_name))
+    }
+
+    fn sync_selected_issue_for_active_project(&mut self) {
+        let name = self.selected_project_name();
+        let selected_issue = self.work_queue_selected_issue;
+        let queue = self.ensure_queue_mut(&name);
+        let valid = selected_issue.is_some_and(|num| queue.item(num).is_some());
+        if !valid {
+            let default_issue = queue.default_selected_issue();
+            self.work_queue_selected_issue = default_issue;
         }
     }
 
@@ -317,9 +405,77 @@ pub(crate) fn selected_project() -> Option<Project> {
 pub(crate) fn select_project(id: ProjectId) {
     state().update(|s| {
         s.selected_project = Some(id);
+        s.expanded_projects.insert(id);
         s.active_view = ActiveView::Workspace;
         s.selected_run = s.factory.runs_for_project(id).first().map(|run| run.id);
+        s.sync_selected_issue_for_active_project();
         s.status_message = None;
+    });
+}
+
+pub(crate) fn is_project_expanded(id: ProjectId) -> bool {
+    state().with(|s| s.expanded_projects.contains(&id))
+}
+
+pub(crate) fn toggle_project_expanded(id: ProjectId) {
+    state().update(|s| {
+        if !s.expanded_projects.remove(&id) {
+            s.expanded_projects.insert(id);
+        }
+    });
+}
+
+pub(crate) fn open_work_queue() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::WorkQueue;
+        s.sync_selected_issue_for_active_project();
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_work_queue_for_project(id: ProjectId) {
+    state().update(|s| {
+        let project_changed = s.selected_project != Some(id);
+        s.selected_project = Some(id);
+        s.expanded_projects.insert(id);
+        s.active_view = ActiveView::WorkQueue;
+        if project_changed {
+            s.work_queue_selected_issue = None;
+            s.work_queue_editing_intake = false;
+            s.work_queue_ad_hoc_open = false;
+            s.work_queue_unmatched_expanded = false;
+        }
+        s.sync_selected_issue_for_active_project();
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_project_workflow(project_id: ProjectId, workflow_name: &str) {
+    let target = workflow_name.to_owned();
+    state().update(|s| {
+        s.selected_project = Some(project_id);
+        s.expanded_projects.insert(project_id);
+        if let Some(wf) = s
+            .factory
+            .workflows()
+            .iter()
+            .find(|wf| wf.name.eq_ignore_ascii_case(&target))
+        {
+            s.selected_workflow = Some(wf.id);
+        }
+        s.active_view = ActiveView::Workspace;
+        s.selected_run = s
+            .factory
+            .runs_for_project(project_id)
+            .first()
+            .map(|run| run.id);
+        s.status_message = Some(format!("Opened workflow '{target}'"));
     });
 }
 
@@ -347,11 +503,18 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 if s.using_sample_projects {
                     s.factory = FactoryState::with_projects(vec![project]);
                     s.using_sample_projects = false;
+                    s.expanded_projects.clear();
                 } else {
                     s.factory.insert_project(project);
                 }
+                s.work_queues
+                    .entry(saved_name.clone())
+                    .or_insert_with(|| ProjectWorkQueue::for_project(&saved_name));
                 s.selected_project = Some(id);
+                s.expanded_projects.insert(id);
                 s.selected_run = None;
+                s.work_queue_selected_issue = None;
+                s.sync_selected_issue_for_active_project();
                 s.registration_error = None;
                 s.status_message = Some(format!("Registered project '{saved_name}'"));
                 created = true;
@@ -425,6 +588,343 @@ pub(crate) fn remove_project(id: ProjectId) {
 }
 
 // --- Dashboard state --------------------------------------------------------------------
+
+// --- Work Queue state -------------------------------------------------------------------
+
+pub(crate) fn active_work_queue() -> ProjectWorkQueue {
+    state().with(|s| {
+        let name = s.selected_project_name();
+        s.queue_for_name(&name)
+    })
+}
+
+pub(crate) fn work_queue_for_project(id: ProjectId) -> ProjectWorkQueue {
+    state().with(|s| {
+        let name = s
+            .factory
+            .project(id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "api-gateway".to_owned());
+        s.queue_for_name(&name)
+    })
+}
+
+pub(crate) fn work_queue_view_mode() -> WorkQueueViewMode {
+    state().with(|s| s.work_queue_view_mode)
+}
+
+pub(crate) fn set_work_queue_view_mode(mode: WorkQueueViewMode) {
+    state().update(|s| {
+        s.work_queue_view_mode = mode;
+    });
+}
+
+pub(crate) fn selected_work_queue_issue() -> Option<u32> {
+    state().with(|s| s.work_queue_selected_issue)
+}
+
+pub(crate) fn select_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        s.work_queue_selected_issue = Some(issue_number);
+        s.work_queue_inspector_visible = true;
+    });
+}
+
+pub(crate) fn work_queue_inspector_visible() -> bool {
+    state().with(|s| s.work_queue_inspector_visible)
+}
+
+pub(crate) fn toggle_work_queue_inspector() {
+    state().update(|s| {
+        s.work_queue_inspector_visible = !s.work_queue_inspector_visible;
+    });
+}
+
+pub(crate) fn work_queue_editing_intake() -> bool {
+    state().with(|s| s.work_queue_editing_intake)
+}
+
+pub(crate) fn set_work_queue_editing_intake(editing: bool) {
+    state().update(|s| {
+        s.work_queue_editing_intake = editing;
+        if editing {
+            s.work_queue_ad_hoc_open = false;
+        }
+    });
+}
+
+pub(crate) fn open_work_queue_intake_editor() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::WorkQueue;
+        s.work_queue_editing_intake = true;
+        s.work_queue_ad_hoc_open = false;
+        s.sync_selected_issue_for_active_project();
+    });
+}
+
+pub(crate) fn work_queue_ad_hoc_open() -> bool {
+    state().with(|s| s.work_queue_ad_hoc_open)
+}
+
+pub(crate) fn set_work_queue_ad_hoc_open(open: bool) {
+    state().update(|s| {
+        s.work_queue_ad_hoc_open = open;
+        if open {
+            s.work_queue_editing_intake = false;
+        }
+    });
+}
+
+pub(crate) fn open_work_queue_ad_hoc() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::WorkQueue;
+        s.work_queue_ad_hoc_open = true;
+        s.work_queue_editing_intake = false;
+        s.sync_selected_issue_for_active_project();
+    });
+}
+
+pub(crate) fn work_queue_unmatched_expanded() -> bool {
+    state().with(|s| s.work_queue_unmatched_expanded)
+}
+
+pub(crate) fn toggle_work_queue_unmatched_expanded() {
+    state().update(|s| {
+        s.work_queue_unmatched_expanded = !s.work_queue_unmatched_expanded;
+    });
+}
+
+pub(crate) fn start_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.start_issue(issue_number) {
+            Ok(run_number) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!(
+                    "Started issue #{issue_number} as run #{run_number}"
+                ));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn start_next_queued_issue() {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.start_next_queued() {
+            Ok((issue_number, run_number)) => {
+                s.active_view = ActiveView::WorkQueue;
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!(
+                    "Started next queued issue #{issue_number} as run #{run_number}"
+                ));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &str) {
+    let wf = workflow_name.to_owned();
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.reassign_workflow(issue_number, &wf) {
+            Ok(()) => {
+                s.status_message = Some(format!("Assigned #{issue_number} to workflow '{wf}'"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn skip_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.skip_issue(issue_number) {
+            Ok(()) => {
+                let next_selected = queue.default_selected_issue();
+                s.work_queue_selected_issue = next_selected;
+                s.status_message = Some(format!("Skipped issue #{issue_number}"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn approve_work_queue_review(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.approve_review(issue_number) {
+            Ok(()) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!(
+                    "Approved review gate for #{issue_number} — PR merged"
+                ));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn request_changes_work_queue_review(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.request_changes(issue_number) {
+            Ok(()) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!(
+                    "Requested changes on #{issue_number} — resumed agent run"
+                ));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn stop_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.stop_in_progress(issue_number) {
+            Ok(()) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!("Stopped run for #{issue_number} and re-queued"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn requeue_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.requeue_issue(issue_number) {
+            Ok(()) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!("Re-queued issue #{issue_number}"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn queue_unmatched_work_issue(issue_number: u32) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.queue_unmatched_issue(issue_number) {
+            Ok(()) => {
+                s.work_queue_selected_issue = Some(issue_number);
+                s.status_message = Some(format!("Added issue #{issue_number} to Ready for agents"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn sync_work_queue() {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        let slug = queue.repo_slug.clone();
+        match queue.sync_issues() {
+            Some(imported) => {
+                s.work_queue_selected_issue = Some(imported.issue_number);
+                s.status_message = Some(format!(
+                    "Synced {slug} — queued #{} {}",
+                    imported.issue_number, imported.title
+                ));
+            }
+            None => {
+                s.status_message = Some(format!("Synced {slug} — work queue is up to date"));
+            }
+        }
+    });
+}
+
+pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
+    let wf = workflow_name.to_owned();
+    let prompt = title.to_owned();
+    let mut launched = false;
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        match queue.launch_ad_hoc(&wf, &prompt) {
+            Ok((issue_no, run_no)) => {
+                s.work_queue_selected_issue = Some(issue_no);
+                s.work_queue_ad_hoc_open = false;
+                s.status_message = Some(format!(
+                    "Started ad-hoc run #{run_no} ({wf}): {}",
+                    prompt.trim()
+                ));
+                launched = true;
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+    launched
+}
+
+pub(crate) fn save_work_queue_intake_rules(
+    required_label: String,
+    rules: Vec<IntakeRule>,
+    fallback_workflow: String,
+) {
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&name);
+        queue.update_intake_rules(required_label, rules, fallback_workflow);
+        s.work_queue_editing_intake = false;
+        s.status_message = Some(format!("Updated intake rules for '{name}'"));
+    });
+}
+
+pub(crate) fn has_queued_work_issues() -> bool {
+    state().with(|s| {
+        let name = s.selected_project_name();
+        s.queue_for_name(&name).waiting_count() > 0
+    })
+}
 
 pub(crate) fn dashboard_snapshot() -> DashboardSnapshot {
     state().with(|s| {

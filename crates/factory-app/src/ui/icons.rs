@@ -155,3 +155,114 @@ pub(crate) fn caret_down(color: impl IntoReactive<AdaptiveColor>) -> impl IntoEl
     )
     .text_color(color)
 }
+
+/// Sidebar toggle icon shown beside traffic lights in the toolbar.
+pub(crate) fn sidebar_toggle(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.8" width="12" height="10.4" rx="1.8"/><path d="M5.8 2.8v10.4"/></svg>"#,
+        15.0,
+    )
+    .text_color(color)
+}
+
+/// Folder icon for project groups in the sidebar.
+pub(crate) fn folder(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.4a1.2 1.2 0 0 1 1.2-1.2h3.1l1.3 1.4h5.2A1.2 1.2 0 0 1 14 5.8v6a1.2 1.2 0 0 1-1.2 1.2H3.2A1.2 1.2 0 0 1 2 11.8V4.4Z"/></svg>"#,
+        14.0,
+    )
+    .text_color(color)
+}
+
+/// Tray/queue icon for the Work queue sidebar item.
+pub(crate) fn work_queue(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2.2" y="2.8" width="11.6" height="10.4" rx="1.6"/><path d="M2.2 8.8h3.4l1.1 1.5h2.6l1.1-1.5h3.4"/></svg>"#,
+        14.5,
+    )
+    .text_color(color)
+}
+
+/// Small workflow branch icon used in sidebar workflow rows and issue cards.
+pub(crate) fn workflow_branch(
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="4.2" r="1.7"/><circle cx="11" cy="11.8" r="1.7"/><path d="M5 5.9v2.2a3.7 3.7 0 0 0 3.7 3.7h.6"/></svg>"#,
+        size_px,
+    )
+    .text_color(color)
+}
+
+/// Filter funnel icon for the intake rules banner.
+pub(crate) fn funnel(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.4 3.2h11.2L9.4 8.2v4.1l-2.8 1.2V8.2L2.4 3.2Z"/></svg>"#,
+        15.0,
+    )
+    .text_color(color)
+}
+
+/// Circular refresh icon for the Sync toolbar button.
+pub(crate) fn sync_arrows(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4.6A5.5 5.5 0 0 0 3.3 5.8"/><path d="M13 2.5v2.4h-2.4"/><path d="M3 11.4a5.5 5.5 0 0 0 9.7-1.2"/><path d="M3 13.5v-2.4h2.4"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Small filled play triangle for the Ad-hoc Run CTA button.
+pub(crate) fn play_filled(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor"><path d="M3.2 2.4 9.6 6 3.2 9.6V2.4Z"/></svg>"#,
+        11.0,
+    )
+    .text_color(color)
+}
+
+/// Open issue circle-dot indicator `⊙`.
+pub(crate) fn issue_open(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="5.5"/><circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Dashed circle indicator for queued issues waiting for an agent slot.
+pub(crate) fn status_queued(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-dasharray="2.4 2.2" stroke-linecap="round"><circle cx="8" cy="8" r="5.3"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Progress ring indicator for actively running agent tasks.
+pub(crate) fn status_running(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="5.3" stroke-opacity="0.28"/><path d="M8 2.7a5.3 5.3 0 0 1 5.3 5.3"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Solid amber ring indicator for items paused at a human review gate.
+pub(crate) fn status_review(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="8" cy="8" r="5.2"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Checkmark-in-circle indicator for completed and merged issues.
+pub(crate) fn status_merged(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.5"/><path d="M5.6 8.2 7.2 9.8 10.6 6.3"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}

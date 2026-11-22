@@ -115,6 +115,42 @@ pub(crate) fn switch_off_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xD1D5DB), rgb(0x3B4252))
 }
 
+pub(crate) fn intake_banner_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xECF3FC), rgb(0x162235))
+}
+
+pub(crate) fn intake_banner_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xDCE8F8), rgb(0x233856))
+}
+
+pub(crate) fn lane_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF2F3F6), rgb(0x171A20))
+}
+
+pub(crate) fn card_selected_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xEAF2FD), rgb(0x18273E))
+}
+
+pub(crate) fn card_selected_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x1668D6), rgb(0x3B82F6))
+}
+
+pub(crate) fn link_blue() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x0B66D6), rgb(0x58A6FF))
+}
+
+pub(crate) fn tag_pill_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF4F5F7), rgb(0x252A34))
+}
+
+pub(crate) fn review_amber() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x9A6700), rgb(0xE3B341))
+}
+
+pub(crate) fn queue_badge_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xE5E7EB), rgb(0x2A2F3A))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),

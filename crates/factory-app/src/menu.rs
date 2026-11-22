@@ -28,6 +28,9 @@ struct MenuSnapshot {
     is_full_screen: bool,
     recent_projects: Vec<(ProjectId, String)>,
     has_selected_project: bool,
+    on_work_queue: bool,
+    inspector_visible: bool,
+    has_queued_issues: bool,
     can_stop_run: bool,
     can_approve_step: bool,
     has_projects: bool,
@@ -41,6 +44,9 @@ fn current_menu_snapshot() -> MenuSnapshot {
     let recent_projects = store::recent_projects();
     let has_projects = !recent_projects.is_empty();
     let has_selected_project = store::selected_project().is_some();
+    let on_work_queue = store::active_view() == store::ActiveView::WorkQueue;
+    let inspector_visible = store::work_queue_inspector_visible();
+    let has_queued_issues = store::has_queued_work_issues();
     let selected_run = store::selected_run();
     let can_stop_run = selected_run
         .as_ref()
@@ -54,6 +60,9 @@ fn current_menu_snapshot() -> MenuSnapshot {
         is_full_screen,
         recent_projects,
         has_selected_project,
+        on_work_queue,
+        inspector_visible,
+        has_queued_issues,
         can_stop_run,
         can_approve_step,
         has_projects,
@@ -188,15 +197,22 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
     };
     let is_full_screen = snapshot.is_full_screen;
 
+    let inspector_label = if snapshot.on_work_queue && snapshot.inspector_visible {
+        "Hide Inspector"
+    } else {
+        "Show Inspector"
+    };
+
     MenuItem::submenu(
         "View",
         [
             MenuItem::new(sidebar_label)
                 .shortcut("ctrl+cmd+s")
                 .on_select(store::toggle_sidebar),
-            MenuItem::new("Show Inspector")
+            MenuItem::new(inspector_label)
                 .shortcut("alt+mod+i")
-                .disabled(true),
+                .disabled(!snapshot.on_work_queue)
+                .on_select(store::toggle_work_queue_inspector),
             MenuItem::new("Command Palette")
                 .shortcut("mod+k")
                 .disabled(true),
@@ -222,11 +238,17 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
     MenuItem::submenu(
         "Project",
         [
-            MenuItem::new("Work Queue").shortcut("mod+0").disabled(true),
+            MenuItem::new("Work Queue")
+                .shortcut("mod+0")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_work_queue_window),
             MenuItem::new("Sync Issues")
                 .shortcut("mod+shift+i")
-                .disabled(true),
-            MenuItem::new("Issue Source & Intake…").disabled(true),
+                .disabled(!snapshot.has_projects)
+                .on_select(sync_project_issues),
+            MenuItem::new("Issue Source & Intake…")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_intake_rules),
             MenuItem::separator(),
             MenuItem::new("Project Settings…").disabled(true),
             MenuItem::new("Environment Variables…").disabled(true),
@@ -267,13 +289,17 @@ fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
     MenuItem::submenu(
         "Run",
         [
-            MenuItem::new("Ad-hoc Run").shortcut("mod+r").disabled(true),
+            MenuItem::new("Ad-hoc Run")
+                .shortcut("mod+r")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_ad_hoc_run),
             MenuItem::new("Ad-hoc Run with Inputs…")
                 .shortcut("mod+shift+r")
                 .disabled(true),
             MenuItem::new("Start Next Queued Issue")
                 .shortcut("alt+mod+enter")
-                .disabled(true),
+                .disabled(!snapshot.has_queued_issues)
+                .on_select(store::start_next_queued_issue),
             MenuItem::separator(),
             MenuItem::new("Pause").shortcut("mod+.").disabled(true),
             MenuItem::new("Stop")
@@ -423,6 +449,27 @@ fn open_machines_window() {
     main_window().focus();
 }
 
+fn open_work_queue_window() {
+    store::open_work_queue();
+    main_window().focus();
+}
+
+fn sync_project_issues() {
+    store::open_work_queue();
+    store::sync_work_queue();
+    main_window().focus();
+}
+
+fn open_intake_rules() {
+    store::open_work_queue_intake_editor();
+    main_window().focus();
+}
+
+fn open_ad_hoc_run() {
+    store::open_work_queue_ad_hoc();
+    main_window().focus();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,6 +480,9 @@ mod tests {
             is_full_screen: false,
             recent_projects: vec![(1, "api-gateway".to_owned()), (2, "mobile-app".to_owned())],
             has_selected_project: true,
+            on_work_queue: true,
+            inspector_visible: true,
+            has_queued_issues: true,
             can_stop_run: false,
             can_approve_step: false,
             has_projects: true,
