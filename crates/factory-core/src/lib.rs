@@ -10,6 +10,7 @@ pub mod model;
 pub mod preferences;
 pub mod storage;
 pub mod work_queue;
+pub mod workflow_run;
 
 pub use dashboard::{
     DashboardDataset, DashboardGranularity, DashboardInsight, DashboardQuery, DashboardSnapshot,
@@ -32,4 +33,10 @@ pub use storage::{ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{
     IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue, WorkQueueError,
     WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+};
+pub use workflow_run::{
+    AttemptBanner, BudgetGuardState, CoverageFileRow, DeployWatchEntry, DiffFileChange, DiffLine,
+    DiffLineKind, RunDetailTab, RunExecutionState, RunStepDetail, RunStepStatus, StepAgentInfo,
+    StepGitInfo, StepIoBinding, StepOutputChip, StepProgressInfo, StepTranscriptEntry,
+    TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunError, WorkflowRunViewData,
 };

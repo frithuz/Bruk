@@ -266,3 +266,108 @@ pub(crate) fn status_merged(color: impl IntoReactive<AdaptiveColor>) -> impl Int
     )
     .text_color(color)
 }
+
+/// Magnifying glass icon for the command palette / search bar.
+pub(crate) fn search(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.2" cy="7.2" r="4.5"/><path d="m10.7 10.7 2.8 2.8"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Pause icon `||` for the run control group.
+pub(crate) fn pause(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M5.8 4.2v7.6M10.2 4.2v7.6"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Rounded stop square icon `□` for the run control group.
+pub(crate) fn stop_square(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linejoin="round"><rect x="4.2" y="4.2" width="7.6" height="7.6" rx="1.4"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Pencil icon for the Edit Workflow button.
+pub(crate) fn pencil(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M11.3 2.7a1.5 1.5 0 0 1 2.1 2.1L5.8 12.4 2.7 13.3l.9-3.1 7.7-7.5Z"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Loop / repeat arrows icon for loop attempt badges.
+pub(crate) fn loop_arrows(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A4.8 4.8 0 0 1 11.4 4.3L13 5.8"/><path d="M13 3.2v2.6h-2.6"/><path d="M13 8.5a4.8 4.8 0 0 1-8.4 3.2L3 10.2"/><path d="M3 12.8v-2.6h2.6"/></svg>"#,
+        12.0,
+    )
+    .text_color(color)
+}
+
+/// Shield icon for Needs approval step cards.
+pub(crate) fn shield_approval(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.2 13 4.2v3.6c0 3.1-2.1 5.1-5 6-2.9-.9-5-2.9-5-6V4.2L8 2.2Z"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Small terminal prompt `>_` inside a rounded frame for tool call cards.
+pub(crate) fn terminal_prompt(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2.8" width="12" height="10.4" rx="2"/><path d="m4.8 6.4 2 1.8-2 1.8"/><path d="M8.4 10h2.6"/></svg>"#,
+        14.0,
+    )
+    .text_color(color)
+}
+
+/// Person / agent outline icon for the Inspector Agent section header.
+pub(crate) fn user_agent(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5.4" r="2.4"/><path d="M3.4 13.2a4.6 4.6 0 0 1 9.2 0"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Git branch icon for the Inspector Git section header.
+pub(crate) fn git_branch(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="4.8" cy="3.8" r="1.6"/><circle cx="11.2" cy="5.2" r="1.6"/><circle cx="4.8" cy="12.2" r="1.6"/><path d="M4.8 5.4v5.2"/><path d="M11.2 6.8c0 2.2-1.8 3.2-6.4 3.2"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Clock / progress circle icon for Inspector Progress header and Run history sidebar row.
+pub(crate) fn clock_progress(
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><path d="M8 5v3.2l2.1 1.4"/></svg>"#,
+        size_px,
+    )
+    .text_color(color)
+}
+
+/// Compact puzzle piece icon for extension-contributed tabs, cards, and sidebar widgets.
+pub(crate) fn extension_puzzle(
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><path d="M6.2 3.3a1.3 1.3 0 0 1 2.6 0h2.4a1 1 0 0 1 1 1v2.4a1.3 1.3 0 0 1 0 2.6v2.4a1 1 0 0 1-1 1H4.8a1 1 0 0 1-1-1V4.3a1 1 0 0 1 1-1h1.4Z"/></svg>"#,
+        size_px,
+    )
+    .text_color(color)
+}

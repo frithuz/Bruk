@@ -8,9 +8,13 @@ mod palette;
 pub(crate) mod preferences;
 mod register_project;
 mod work_queue;
+mod workflow_run;
 mod workspace;
 
-use factory_core::{DashboardGranularity, ProjectColor, ProjectId, WorkQueueViewMode};
+use factory_core::{
+    DashboardGranularity, PreferencesTab, ProjectColor, ProjectId, RunExecutionState,
+    WorkQueueViewMode,
+};
 use nsh_base::{SelectItem, SelectValue, button, select};
 use nsh_core::prelude::*;
 
@@ -32,6 +36,10 @@ pub(crate) fn shell() -> impl IntoElement {
                 .child(when(store::sidebar_visible, sidebar))
                 .child(content_pane()),
         )
+        .child(when(
+            || store::active_view() == ActiveView::WorkflowRun,
+            workflow_run_footer_bar,
+        ))
 }
 
 fn top_header_bar() -> impl IntoElement {
@@ -87,6 +95,10 @@ fn top_header_bar() -> impl IntoElement {
                 .child(when(
                     || store::active_view() == ActiveView::WorkQueue,
                     work_queue_header_controls,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::WorkflowRun,
+                    workflow_run_header_controls,
                 )),
         )
 }
@@ -100,6 +112,7 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::Inbox => "Inbox".to_owned(),
                 ActiveView::Machines => "Machines".to_owned(),
                 ActiveView::WorkQueue => "Work queue".to_owned(),
+                ActiveView::WorkflowRun => store::active_workflow_run().workflow_name,
                 ActiveView::RegisterProject => "Register Project".to_owned(),
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| p.name)
@@ -142,6 +155,10 @@ fn header_title_block() -> impl IntoElement {
                         queue.project_name, queue.tracker_name, queue.repo_slug
                     )
                 }
+                ActiveView::WorkflowRun => {
+                    let run = store::active_workflow_run();
+                    format!("{} · Run #{}", run.project_name, run.run_number)
+                }
                 ActiveView::RegisterProject => "Track local repositories in SQLite".to_owned(),
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| format!("{} · {}", p.default_branch, p.root_path.display()))
@@ -149,6 +166,150 @@ fn header_title_block() -> impl IntoElement {
             })
             .text_size(px(11.5))
             .text_color(palette::text_muted()),
+        )
+}
+
+fn workflow_run_header_controls() -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .window_drag(false)
+        .child(
+            button()
+                .test_id("wf-header-search")
+                .accessibility_label("Search or run a command")
+                .on_press(store::toggle_workflow_run_command_palette)
+                .h(px(30.0))
+                .w(px(236.0))
+                .px(px(10.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .active(|s| s.opacity(0.85))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(7.0))
+                        .child(icons::search(palette::text_muted()))
+                        .child(
+                            text("Search or run a command")
+                                .text_size(px(12.0))
+                                .text_color(palette::text_muted()),
+                        ),
+                )
+                .child(
+                    view()
+                        .px(px(5.0))
+                        .py(px(1.0))
+                        .rounded(px(4.5))
+                        .bg(palette::subtle_surface_bg())
+                        .border_1()
+                        .border_color(palette::divider_color())
+                        .child(
+                            text("⌘K")
+                                .text_size(px(10.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .h(px(30.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .overflow_hidden()
+                .child(
+                    button()
+                        .test_id("wf-header-pause")
+                        .accessibility_label(move || {
+                            Some(SharedString::from(
+                                if store::active_workflow_run().execution_state
+                                    == RunExecutionState::Paused
+                                {
+                                    "Resume Run"
+                                } else {
+                                    "Pause Run"
+                                },
+                            ))
+                        })
+                        .disabled(|| {
+                            !matches!(
+                                store::active_workflow_run().execution_state,
+                                RunExecutionState::Running | RunExecutionState::Paused
+                            )
+                        })
+                        .on_press(store::toggle_pause_workflow_run)
+                        .w(px(32.0))
+                        .h_full()
+                        .items_center()
+                        .justify_center()
+                        .border_r_1()
+                        .border_color(palette::divider_color())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .active(|s| s.opacity(0.75))
+                        .disabled_style(|s| s.opacity(0.35))
+                        .child(dynamic(|| {
+                            if store::active_workflow_run().execution_state
+                                == RunExecutionState::Paused
+                            {
+                                icons::play_filled(palette::text_primary()).into_element()
+                            } else {
+                                icons::pause(palette::text_primary()).into_element()
+                            }
+                        })),
+                )
+                .child(
+                    button()
+                        .test_id("wf-header-stop")
+                        .accessibility_label("Stop Run")
+                        .disabled(|| store::active_workflow_run().execution_state.is_terminal())
+                        .on_press(store::stop_workflow_run)
+                        .w(px(32.0))
+                        .h_full()
+                        .items_center()
+                        .justify_center()
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .active(|s| s.opacity(0.75))
+                        .disabled_style(|s| s.opacity(0.35))
+                        .child(icons::stop_square(palette::text_primary())),
+                ),
+        )
+        .child(
+            button()
+                .test_id("wf-header-edit")
+                .accessibility_label("Edit Workflow")
+                .on_press(store::edit_active_workflow)
+                .h(px(30.0))
+                .px(px(11.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .flex_row()
+                .items_center()
+                .gap(px(6.5))
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(icons::pencil(palette::text_secondary()))
+                .child(
+                    text("Edit Workflow")
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                ),
         )
 }
 
@@ -500,6 +661,10 @@ fn sidebar() -> impl IntoElement {
                         store::project_ids,
                         |id: &ProjectId| *id,
                         |id, _| sidebar_project_row(id.get_untracked()),
+                    ))
+                    .child(when(
+                        || store::active_view() == ActiveView::WorkflowRun,
+                        sidebar_deploy_watch_section,
                     )),
             ),
         )
@@ -509,9 +674,137 @@ fn sidebar() -> impl IntoElement {
                 .gap(px(8.0))
                 .border_t_1()
                 .border_color(palette::divider_color())
-                .child(sidebar_agent_slots_summary())
+                .child(when(
+                    || store::active_view() == ActiveView::WorkQueue,
+                    sidebar_agent_slots_summary,
+                ))
+                .child(when(
+                    || store::active_view() != ActiveView::WorkQueue,
+                    sidebar_providers_section,
+                ))
                 .child(sidebar_preferences_item()),
         )
+}
+
+fn sidebar_deploy_watch_section() -> impl IntoElement {
+    view()
+        .mt(px(12.0))
+        .pt(px(10.0))
+        .px(px(6.0))
+        .gap(px(6.0))
+        .border_t_1()
+        .border_color(palette::divider_color())
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(icons::extension_puzzle(12.0, palette::text_muted()))
+                        .child(
+                            text("Deploy Watch")
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_muted()),
+                        ),
+                )
+                .child(
+                    view()
+                        .px(px(5.5))
+                        .py(px(1.0))
+                        .rounded(px(4.5))
+                        .bg(palette::subtle_surface_bg())
+                        .border_1()
+                        .border_color(palette::divider_color())
+                        .child(
+                            text("Extension")
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
+        .child(dynamic(|| {
+            let mut rows = view().gap(px(4.0));
+            for entry in store::deploy_watch_entries() {
+                rows = rows.child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .px(px(2.0))
+                        .child(
+                            text(entry.environment)
+                                .text_size(px(12.0))
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text(entry.version)
+                                .app_class("font-mono")
+                                .text_size(px(11.5))
+                                .tabular_nums()
+                                .text_color(palette::text_muted()),
+                        ),
+                );
+            }
+            rows
+        }))
+}
+
+fn sidebar_providers_section() -> impl IntoElement {
+    view()
+        .px(px(8.0))
+        .gap(px(5.0))
+        .child(
+            text("Providers")
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_muted()),
+        )
+        .child(dynamic(|| {
+            let mut rows = view().gap(px(4.5));
+            for (name, status, is_running) in store::sidebar_provider_statuses() {
+                rows = rows.child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex_row()
+                                .items_center()
+                                .gap(px(7.0))
+                                .child(view().w(px(6.5)).h(px(6.5)).rounded_full().bg(
+                                    if is_running {
+                                        palette::provider_dot_blue()
+                                    } else {
+                                        palette::provider_dot_green()
+                                    },
+                                ))
+                                .child(
+                                    text(name)
+                                        .flex_1()
+                                        .text_size(px(12.0))
+                                        .text_color(palette::text_primary()),
+                                ),
+                        )
+                        .child(
+                            text(status)
+                                .text_size(px(11.0))
+                                .text_color(palette::text_muted()),
+                        ),
+                );
+            }
+            rows
+        }))
 }
 
 fn sidebar_agent_slots_summary() -> impl IntoElement {
@@ -911,11 +1204,10 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                         )
                         .child(
                             text(move || {
-                                store::work_queue_for_project(id)
-                                    .active_queue_count()
-                                    .to_string()
+                                let q = store::work_queue_for_project(id);
+                                format!("{} · {}", q.tracker_short_label(), q.active_queue_count())
                             })
-                            .text_size(px(11.5))
+                            .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)
                             .tabular_nums()
                             .text_color(move || {
@@ -929,35 +1221,83 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                 ),
         )
         .child(
-            text("Workflows")
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
                 .px(px(9.0))
                 .pt(px(5.0))
                 .pb(px(1.0))
-                .text_size(px(11.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(palette::text_muted()),
+                .child(
+                    text("Workflows · See all")
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_muted()),
+                ),
         )
         .child(dynamic(move || {
             let queue = store::work_queue_for_project(id);
+            let active_view = store::active_view();
+            let active_key = store::active_workflow_run_key();
+            let active_run = store::active_workflow_run();
             let mut list = view().gap(px(1.5));
             for wf in &queue.workflows {
                 let wf_name = wf.name.clone();
                 let wf_click = wf_name.clone();
+                let slug = wf_name
+                    .to_ascii_lowercase()
+                    .replace(|c: char| !c.is_ascii_alphanumeric(), "-");
+                let wf_test_id = format!("sidebar-workflow-{id}-{slug}");
+                let is_active = active_view == ActiveView::WorkflowRun
+                    && active_key.0 == queue.project_name
+                    && active_key.1 == wf_name;
                 let running = queue.running_count_for_workflow(&wf.name);
-                let trailing = if running > 0 {
-                    Some(format!("{running} running"))
-                } else if wf.ad_hoc_only {
-                    Some("Ad-hoc".to_owned())
+                let show_running_ring = is_active
+                    && matches!(
+                        active_run.execution_state,
+                        RunExecutionState::Running | RunExecutionState::Paused
+                    );
+
+                let trailing: AnyElement = if show_running_ring {
+                    icons::status_running(palette::nav_active_fg()).into_element()
+                } else if wf.has_failed_run {
+                    text("Failed")
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(if is_active {
+                            palette::nav_active_fg()
+                        } else {
+                            palette::destructive_text()
+                        })
+                        .into_element()
+                } else if running > 0 {
+                    text(format!("{running} running"))
+                        .text_size(px(10.5))
+                        .tabular_nums()
+                        .text_color(if is_active {
+                            palette::nav_active_fg()
+                        } else {
+                            palette::text_muted()
+                        })
+                        .into_element()
                 } else {
-                    None
+                    view().into_element()
                 };
 
                 list = list.child(
                     button()
+                        .test_id(&wf_test_id)
+                        .accessibility_label(format!("Workflow {wf_name}"))
                         .on_press(move || store::open_project_workflow(id, &wf_click))
-                        .rounded(px(6.0))
-                        .hover(|s| s.bg(palette::sidebar_hover_bg()))
-                        .active(|s| s.opacity(0.8))
+                        .rounded(px(6.5))
+                        .hover(move |s| {
+                            if is_active {
+                                s
+                            } else {
+                                s.bg(palette::sidebar_hover_bg())
+                            }
+                        })
+                        .active(|s| s.opacity(0.85))
                         .child(
                             view()
                                 .flex_row()
@@ -965,7 +1305,13 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                                 .justify_between()
                                 .gap(px(6.0))
                                 .px(px(9.0))
-                                .py(px(4.5))
+                                .py(px(5.0))
+                                .rounded(px(6.5))
+                                .bg(if is_active {
+                                    palette::nav_active_bg()
+                                } else {
+                                    AdaptiveColor::TRANSPARENT
+                                })
                                 .child(
                                     view()
                                         .flex_1()
@@ -973,28 +1319,77 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                                         .flex_row()
                                         .items_center()
                                         .gap(px(7.0))
-                                        .child(icons::workflow_branch(12.5, palette::text_muted()))
+                                        .child(icons::workflow_branch(
+                                            12.5,
+                                            if is_active {
+                                                palette::nav_active_fg()
+                                            } else {
+                                                palette::text_muted()
+                                            },
+                                        ))
                                         .child(
                                             text(wf_name)
                                                 .flex_1()
                                                 .text_size(px(12.0))
-                                                .text_color(palette::text_primary()),
+                                                .font_weight(if is_active {
+                                                    FontWeight::MEDIUM
+                                                } else {
+                                                    FontWeight::NORMAL
+                                                })
+                                                .text_color(if is_active {
+                                                    palette::nav_active_fg()
+                                                } else {
+                                                    palette::text_primary()
+                                                }),
                                         ),
                                 )
-                                .child(if let Some(meta) = trailing {
-                                    text(meta)
-                                        .text_size(px(10.5))
-                                        .tabular_nums()
-                                        .text_color(palette::text_muted())
-                                        .into_element()
-                                } else {
-                                    view().into_element()
-                                }),
+                                .child(trailing),
                         ),
                 );
             }
             list
         }))
+        .child({
+            let run_history_test_id = format!("sidebar-run-history-{id}");
+            button()
+                .test_id(&run_history_test_id)
+                .accessibility_label("Run history")
+                .on_press(move || store::open_run_history_for_project(id))
+                .rounded(px(6.5))
+                .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.0))
+                        .px(px(9.0))
+                        .py(px(5.0))
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(7.0))
+                                .child(icons::clock_progress(12.5, palette::text_muted()))
+                                .child(
+                                    text("Run history")
+                                        .text_size(px(12.0))
+                                        .text_color(palette::text_primary()),
+                                ),
+                        )
+                        .child(
+                            text(move || {
+                                store::work_queue_for_project(id)
+                                    .total_run_count()
+                                    .to_string()
+                            })
+                            .text_size(px(11.0))
+                            .tabular_nums()
+                            .text_color(palette::text_muted()),
+                        ),
+                )
+        })
 }
 
 // --- Content Router ---------------------------------------------------------------------
@@ -1026,6 +1421,10 @@ fn content_pane() -> impl IntoElement {
                     work_queue::work_queue_view,
                 ))
                 .child(when(
+                    || store::active_view() == ActiveView::WorkflowRun,
+                    workflow_run::workflow_run_view,
+                ))
+                .child(when(
                     || store::active_view() == ActiveView::Workspace,
                     workspace::workflow_workspace,
                 ))
@@ -1035,6 +1434,75 @@ fn content_pane() -> impl IntoElement {
                 )),
         )
         .child(when(|| store::status_message().is_some(), status_banner))
+}
+
+fn workflow_run_footer_bar() -> impl IntoElement {
+    view()
+        .h(px(28.0))
+        .flex_shrink_0()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .px(px(14.0))
+        .bg(palette::header_bg())
+        .border_t_1()
+        .border_color(palette::border_color())
+        .child(dynamic(|| {
+            let run = store::active_workflow_run();
+            let dot_color = match run.execution_state {
+                RunExecutionState::Running | RunExecutionState::Succeeded => {
+                    palette::provider_dot_green()
+                }
+                RunExecutionState::Paused | RunExecutionState::NeedsApproval => {
+                    palette::review_amber()
+                }
+                RunExecutionState::Failed | RunExecutionState::Stopped => {
+                    palette::destructive_text()
+                }
+            };
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(14.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.5))
+                        .child(view().w(px(6.5)).h(px(6.5)).rounded_full().bg(dot_color))
+                        .child(
+                            text(run.footer_summary())
+                                .text_size(px(11.0))
+                                .text_color(palette::text_secondary()),
+                        ),
+                )
+                .child(
+                    text(format!("Elapsed {}", run.total_elapsed))
+                        .text_size(px(11.0))
+                        .tabular_nums()
+                        .text_color(palette::text_muted()),
+                )
+                .child(
+                    text(format!("Est. cost {}", run.budget_guard.formatted_spent()))
+                        .text_size(px(11.0))
+                        .tabular_nums()
+                        .text_color(palette::text_muted()),
+                )
+        }))
+        .child(
+            button()
+                .accessibility_label("Active extensions")
+                .on_press(|| store::open_preferences_tab(PreferencesTab::Extensions))
+                .hover(|s| s.opacity(0.8))
+                .child(
+                    text(move || {
+                        let count = store::active_workflow_run().active_extensions_count;
+                        format!("{count} extensions active")
+                    })
+                    .text_size(px(11.0))
+                    .text_color(palette::text_muted()),
+                ),
+        )
 }
 
 fn status_banner() -> impl IntoElement {

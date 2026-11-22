@@ -5,7 +5,7 @@
 //! actions; unimplemented commands remain visible as disabled entries matching
 //! the reference menu specification.
 
-use factory_core::{PreferencesTab, ProjectId, RunStatus};
+use factory_core::{PreferencesTab, ProjectId, RunDetailTab, RunExecutionState, RunStatus};
 use nsh_core::{
     desktop::{MenuRole, WindowMode},
     element::{
@@ -29,8 +29,11 @@ struct MenuSnapshot {
     recent_projects: Vec<(ProjectId, String)>,
     has_selected_project: bool,
     on_work_queue: bool,
+    on_workflow_run: bool,
     inspector_visible: bool,
     has_queued_issues: bool,
+    can_pause_run: bool,
+    workflow_run_paused: bool,
     can_stop_run: bool,
     can_approve_step: bool,
     has_projects: bool,
@@ -44,16 +47,35 @@ fn current_menu_snapshot() -> MenuSnapshot {
     let recent_projects = store::recent_projects();
     let has_projects = !recent_projects.is_empty();
     let has_selected_project = store::selected_project().is_some();
-    let on_work_queue = store::active_view() == store::ActiveView::WorkQueue;
-    let inspector_visible = store::work_queue_inspector_visible();
+    let active_view = store::active_view();
+    let on_work_queue = active_view == store::ActiveView::WorkQueue;
+    let on_workflow_run = active_view == store::ActiveView::WorkflowRun;
+    let inspector_visible = if on_workflow_run {
+        store::workflow_run_inspector_visible()
+    } else {
+        store::work_queue_inspector_visible()
+    };
     let has_queued_issues = store::has_queued_work_issues();
-    let selected_run = store::selected_run();
-    let can_stop_run = selected_run
-        .as_ref()
-        .is_some_and(|run| !run.status.is_terminal());
-    let can_approve_step = selected_run
-        .as_ref()
-        .is_some_and(|run| run.status == RunStatus::WaitingForApproval);
+    let (can_pause_run, workflow_run_paused, can_stop_run, can_approve_step) = if on_workflow_run {
+        let run = store::active_workflow_run();
+        let can_pause = matches!(
+            run.execution_state,
+            RunExecutionState::Running | RunExecutionState::Paused
+        );
+        let paused = run.execution_state == RunExecutionState::Paused;
+        let can_stop = !run.execution_state.is_terminal();
+        let can_approve = !run.execution_state.is_terminal();
+        (can_pause, paused, can_stop, can_approve)
+    } else {
+        let selected_run = store::selected_run();
+        let can_stop = selected_run
+            .as_ref()
+            .is_some_and(|run| !run.status.is_terminal());
+        let can_approve = selected_run
+            .as_ref()
+            .is_some_and(|run| run.status == RunStatus::WaitingForApproval);
+        (false, false, can_stop, can_approve)
+    };
 
     MenuSnapshot {
         sidebar_visible,
@@ -61,8 +83,11 @@ fn current_menu_snapshot() -> MenuSnapshot {
         recent_projects,
         has_selected_project,
         on_work_queue,
+        on_workflow_run,
         inspector_visible,
         has_queued_issues,
+        can_pause_run,
+        workflow_run_paused,
         can_stop_run,
         can_approve_step,
         has_projects,
@@ -85,7 +110,7 @@ fn build_application_menu(snapshot: &MenuSnapshot) -> Vec<MenuItem> {
         edit_menu(),
         view_menu(snapshot),
         project_menu(snapshot),
-        workflow_menu(),
+        workflow_menu(snapshot),
         run_menu(snapshot),
         window_menu(),
         help_menu(),
@@ -197,7 +222,8 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
     };
     let is_full_screen = snapshot.is_full_screen;
 
-    let inspector_label = if snapshot.on_work_queue && snapshot.inspector_visible {
+    let has_inspector = snapshot.on_work_queue || snapshot.on_workflow_run;
+    let inspector_label = if has_inspector && snapshot.inspector_visible {
         "Hide Inspector"
     } else {
         "Show Inspector"
@@ -211,14 +237,21 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(store::toggle_sidebar),
             MenuItem::new(inspector_label)
                 .shortcut("alt+mod+i")
-                .disabled(!snapshot.on_work_queue)
-                .on_select(store::toggle_work_queue_inspector),
+                .disabled(!has_inspector)
+                .on_select(toggle_active_inspector),
             MenuItem::new("Command Palette")
                 .shortcut("mod+k")
-                .disabled(true),
+                .disabled(!snapshot.on_workflow_run)
+                .on_select(store::toggle_workflow_run_command_palette),
             MenuItem::separator(),
-            MenuItem::new("Output").shortcut("mod+1").disabled(true),
-            MenuItem::new("Diff").shortcut("mod+2").disabled(true),
+            MenuItem::new("Output")
+                .shortcut("mod+1")
+                .disabled(!snapshot.on_workflow_run)
+                .on_select(|| store::set_workflow_run_tab(RunDetailTab::Output)),
+            MenuItem::new("Diff")
+                .shortcut("mod+2")
+                .disabled(!snapshot.on_workflow_run)
+                .on_select(|| store::set_workflow_run_tab(RunDetailTab::Diff)),
             MenuItem::new("Logs").shortcut("mod+3").disabled(true),
             MenuItem::separator(),
             MenuItem::new("Wrap Transcript Lines").disabled(true),
@@ -229,7 +262,10 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(move || toggle_full_screen(is_full_screen)),
             MenuItem::separator(),
             from_extensions_header(),
-            MenuItem::new("Coverage").shortcut("mod+4").disabled(true),
+            MenuItem::new("Coverage")
+                .shortcut("mod+4")
+                .disabled(!snapshot.on_workflow_run)
+                .on_select(|| store::set_workflow_run_tab(RunDetailTab::Coverage)),
         ],
     )
 }
@@ -262,13 +298,14 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
     )
 }
 
-fn workflow_menu() -> MenuItem {
+fn workflow_menu(snapshot: &MenuSnapshot) -> MenuItem {
     MenuItem::submenu(
         "Workflow",
         [
             MenuItem::new("Edit Workflow")
                 .shortcut("mod+e")
-                .disabled(true),
+                .disabled(!snapshot.on_workflow_run)
+                .on_select(store::edit_active_workflow),
             MenuItem::new("Add Step…")
                 .shortcut("alt+mod+n")
                 .disabled(true),
@@ -286,6 +323,11 @@ fn workflow_menu() -> MenuItem {
 }
 
 fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
+    let pause_label = if snapshot.workflow_run_paused {
+        "Resume"
+    } else {
+        "Pause"
+    };
     MenuItem::submenu(
         "Run",
         [
@@ -301,11 +343,14 @@ fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .disabled(!snapshot.has_queued_issues)
                 .on_select(store::start_next_queued_issue),
             MenuItem::separator(),
-            MenuItem::new("Pause").shortcut("mod+.").disabled(true),
+            MenuItem::new(pause_label)
+                .shortcut("mod+.")
+                .disabled(!snapshot.can_pause_run)
+                .on_select(store::toggle_pause_workflow_run),
             MenuItem::new("Stop")
                 .shortcut("mod+shift+.")
                 .disabled(!snapshot.can_stop_run)
-                .on_select(store::cancel_selected_run),
+                .on_select(stop_active_run),
             MenuItem::new("Retry Failed Step")
                 .shortcut("alt+mod+r")
                 .disabled(true),
@@ -313,7 +358,7 @@ fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
             MenuItem::new("Approve Step")
                 .shortcut("mod+enter")
                 .disabled(!snapshot.can_approve_step)
-                .on_select(store::approve_selected_run_step),
+                .on_select(approve_active_step),
             MenuItem::new("Request Changes…").disabled(true),
             MenuItem::separator(),
             MenuItem::new("Run History")
@@ -470,6 +515,30 @@ fn open_ad_hoc_run() {
     main_window().focus();
 }
 
+fn toggle_active_inspector() {
+    match store::active_view() {
+        store::ActiveView::WorkflowRun => store::toggle_workflow_run_inspector(),
+        store::ActiveView::WorkQueue => store::toggle_work_queue_inspector(),
+        _ => {}
+    }
+}
+
+fn stop_active_run() {
+    if store::active_view() == store::ActiveView::WorkflowRun {
+        store::stop_workflow_run();
+    } else {
+        store::cancel_selected_run();
+    }
+}
+
+fn approve_active_step() {
+    if store::active_view() == store::ActiveView::WorkflowRun {
+        store::approve_workflow_run_review_gate();
+    } else {
+        store::approve_selected_run_step();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,8 +550,11 @@ mod tests {
             recent_projects: vec![(1, "api-gateway".to_owned()), (2, "mobile-app".to_owned())],
             has_selected_project: true,
             on_work_queue: true,
+            on_workflow_run: false,
             inspector_visible: true,
             has_queued_issues: true,
+            can_pause_run: false,
+            workflow_run_paused: false,
             can_stop_run: false,
             can_approve_step: false,
             has_projects: true,

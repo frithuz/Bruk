@@ -61,6 +61,8 @@ pub struct IntakeRule {
 pub struct ProjectWorkflowSummary {
     pub name: String,
     pub ad_hoc_only: bool,
+    #[serde(default)]
+    pub has_failed_run: bool,
 }
 
 /// One issue card in a project's work queue.
@@ -158,24 +160,29 @@ impl ProjectWorkQueue {
             fallback_workflow: "Triage new issues".to_owned(),
             workflows: vec![
                 ProjectWorkflowSummary {
+                    name: "Release prep".to_owned(),
+                    ad_hoc_only: true,
+                    has_failed_run: false,
+                },
+                ProjectWorkflowSummary {
                     name: "Fix issue".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Triage new issues".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Dependency upgrade".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Docs refresh".to_owned(),
                     ad_hoc_only: false,
-                },
-                ProjectWorkflowSummary {
-                    name: "Release prep".to_owned(),
-                    ad_hoc_only: true,
+                    has_failed_run: true,
                 },
             ],
             items: vec![
@@ -398,18 +405,22 @@ impl ProjectWorkQueue {
                 ProjectWorkflowSummary {
                     name: "Fix issue".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Docs refresh".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Triage new issues".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Release prep".to_owned(),
                     ad_hoc_only: true,
+                    has_failed_run: false,
                 },
             ],
             items: vec![
@@ -498,18 +509,22 @@ impl ProjectWorkQueue {
                 ProjectWorkflowSummary {
                     name: "Fix issue".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Triage new issues".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Dependency upgrade".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Release prep".to_owned(),
                     ad_hoc_only: true,
+                    has_failed_run: false,
                 },
             ],
             items: vec![
@@ -590,18 +605,22 @@ impl ProjectWorkQueue {
                 ProjectWorkflowSummary {
                     name: "Fix issue".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Triage new issues".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Docs refresh".to_owned(),
                     ad_hoc_only: false,
+                    has_failed_run: false,
                 },
                 ProjectWorkflowSummary {
                     name: "Release prep".to_owned(),
                     ad_hoc_only: true,
+                    has_failed_run: false,
                 },
             ],
             items: vec![WorkQueueItem {
@@ -647,6 +666,25 @@ impl ProjectWorkQueue {
     pub fn active_queue_count(&self) -> usize {
         self.stage_count(WorkQueueStage::ReadyForAgents)
             + self.stage_count(WorkQueueStage::InProgress)
+    }
+
+    /// Short tracker label for sidebar badge (`GitHub` or `Linear`).
+    pub fn tracker_short_label(&self) -> &'static str {
+        if self.tracker_name.contains("Linear") {
+            "Linear"
+        } else {
+            "GitHub"
+        }
+    }
+
+    /// Total historical run count shown beside the sidebar `Run history` entry.
+    pub fn total_run_count(&self) -> u32 {
+        match self.project_name.as_str() {
+            "api-gateway" => 42,
+            "marketing-site" => 21,
+            "mobile-app" => 14,
+            _ => self.next_run_number.saturating_sub(1),
+        }
     }
 
     /// Number of currently executing agent runs.

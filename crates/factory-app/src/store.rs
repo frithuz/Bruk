@@ -8,9 +8,10 @@ use std::{
 
 use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
-    DashboardSnapshot, DefaultLandingView, DryRunExecutor, FactoryState, InboxItem, IntakeRule,
-    MachineNode, MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId,
-    ProjectWorkQueue, RunId, RunStatus, WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun,
+    DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, FactoryState,
+    InboxItem, IntakeRule, MachineNode, MachineStatus, PreferencesTab, Project, ProjectDatabase,
+    ProjectId, ProjectWorkQueue, RunDetailTab, RunExecutionState, RunId, RunStatus,
+    WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun, WorkflowRunViewData,
 };
 use nsh_core::{platform::Appearance, prelude::*};
 
@@ -21,6 +22,7 @@ pub(crate) enum ActiveView {
     Inbox,
     Machines,
     WorkQueue,
+    WorkflowRun,
     Workspace,
     RegisterProject,
 }
@@ -43,6 +45,13 @@ struct AppState {
     work_queue_editing_intake: bool,
     work_queue_ad_hoc_open: bool,
     work_queue_unmatched_expanded: bool,
+    workflow_runs_detail: BTreeMap<(String, String), WorkflowRunViewData>,
+    active_workflow_run_key: (String, String),
+    workflow_run_selected_step: usize,
+    workflow_run_tab: RunDetailTab,
+    workflow_run_inspector_visible: bool,
+    workflow_run_command_palette_open: bool,
+    deploy_watch_entries: Vec<DeployWatchEntry>,
     dashboard_dataset: DashboardDataset,
     dashboard_granularity: DashboardGranularity,
     dashboard_period_offset: i32,
@@ -120,6 +129,13 @@ impl AppState {
                     .and_then(|pid| factory.project(pid))
                     .and_then(|project| work_queues.get(&project.name))
                     .and_then(ProjectWorkQueue::default_selected_issue);
+                let mut workflow_runs_detail = BTreeMap::new();
+                let default_run = WorkflowRunViewData::sample_release_prep();
+                let default_step = default_run.active_step_index;
+                workflow_runs_detail.insert(
+                    ("api-gateway".to_owned(), "Release prep".to_owned()),
+                    default_run,
+                );
                 Self {
                     factory,
                     db: Some(Arc::new(Mutex::new(db))),
@@ -137,6 +153,13 @@ impl AppState {
                     work_queue_editing_intake: false,
                     work_queue_ad_hoc_open: false,
                     work_queue_unmatched_expanded: false,
+                    workflow_runs_detail,
+                    active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
+                    workflow_run_selected_step: default_step,
+                    workflow_run_tab: RunDetailTab::Output,
+                    workflow_run_inspector_visible: true,
+                    workflow_run_command_palette_open: false,
+                    deploy_watch_entries: WorkflowRunViewData::sample_deploy_watch(),
                     dashboard_dataset,
                     dashboard_granularity: DashboardGranularity::Week,
                     dashboard_period_offset: 0,
@@ -175,6 +198,13 @@ impl AppState {
                     .and_then(|pid| factory.project(pid))
                     .and_then(|project| work_queues.get(&project.name))
                     .and_then(ProjectWorkQueue::default_selected_issue);
+                let mut workflow_runs_detail = BTreeMap::new();
+                let default_run = WorkflowRunViewData::sample_release_prep();
+                let default_step = default_run.active_step_index;
+                workflow_runs_detail.insert(
+                    ("api-gateway".to_owned(), "Release prep".to_owned()),
+                    default_run,
+                );
                 let preferences = AppPreferences::sample();
                 let selected_provider_id = default_selected_provider_id(&preferences);
                 Self {
@@ -194,6 +224,13 @@ impl AppState {
                     work_queue_editing_intake: false,
                     work_queue_ad_hoc_open: false,
                     work_queue_unmatched_expanded: false,
+                    workflow_runs_detail,
+                    active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
+                    workflow_run_selected_step: default_step,
+                    workflow_run_tab: RunDetailTab::Output,
+                    workflow_run_inspector_visible: true,
+                    workflow_run_command_palette_open: false,
+                    deploy_watch_entries: WorkflowRunViewData::sample_deploy_watch(),
                     dashboard_dataset,
                     dashboard_granularity: DashboardGranularity::Week,
                     dashboard_period_offset: 0,
@@ -235,6 +272,25 @@ impl AppState {
             .get(project_name)
             .cloned()
             .unwrap_or_else(|| ProjectWorkQueue::for_project(project_name))
+    }
+
+    fn ensure_workflow_run_mut(
+        &mut self,
+        project_name: &str,
+        workflow_name: &str,
+    ) -> &mut WorkflowRunViewData {
+        let key = (project_name.to_owned(), workflow_name.to_owned());
+        self.workflow_runs_detail
+            .entry(key)
+            .or_insert_with(|| WorkflowRunViewData::for_workflow(project_name, workflow_name))
+    }
+
+    fn active_workflow_run_clone(&self) -> WorkflowRunViewData {
+        let (ref project, ref workflow) = self.active_workflow_run_key;
+        self.workflow_runs_detail
+            .get(&self.active_workflow_run_key)
+            .cloned()
+            .unwrap_or_else(|| WorkflowRunViewData::for_workflow(project, workflow))
     }
 
     fn sync_selected_issue_for_active_project(&mut self) {
@@ -461,22 +517,204 @@ pub(crate) fn open_project_workflow(project_id: ProjectId, workflow_name: &str) 
     state().update(|s| {
         s.selected_project = Some(project_id);
         s.expanded_projects.insert(project_id);
-        if let Some(wf) = s
+        let project_name = s
             .factory
-            .workflows()
-            .iter()
-            .find(|wf| wf.name.eq_ignore_ascii_case(&target))
-        {
-            s.selected_workflow = Some(wf.id);
-        }
+            .project(project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "api-gateway".to_owned());
+        let step_index = s
+            .ensure_workflow_run_mut(&project_name, &target)
+            .active_step_index;
+        s.active_workflow_run_key = (project_name, target);
+        s.workflow_run_selected_step = step_index;
+        s.workflow_run_tab = RunDetailTab::Output;
+        s.workflow_run_command_palette_open = false;
+        s.active_view = ActiveView::WorkflowRun;
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_run_history_for_project(project_id: ProjectId) {
+    state().update(|s| {
+        s.selected_project = Some(project_id);
+        s.expanded_projects.insert(project_id);
         s.active_view = ActiveView::Workspace;
         s.selected_run = s
             .factory
             .runs_for_project(project_id)
             .first()
             .map(|run| run.id);
-        s.status_message = Some(format!("Opened workflow '{target}'"));
+        s.status_message = None;
     });
+}
+
+// --- Workflow Run Detail state ----------------------------------------------------------
+
+pub(crate) fn active_workflow_run() -> WorkflowRunViewData {
+    state().with(AppState::active_workflow_run_clone)
+}
+
+pub(crate) fn active_workflow_run_key() -> (String, String) {
+    state().with(|s| s.active_workflow_run_key.clone())
+}
+
+pub(crate) fn workflow_run_selected_step() -> usize {
+    state().with(|s| s.workflow_run_selected_step)
+}
+
+pub(crate) fn select_workflow_run_step(index: usize) {
+    state().update(|s| {
+        let len = s.active_workflow_run_clone().steps.len();
+        if len > 0 {
+            s.workflow_run_selected_step = index.min(len - 1);
+        }
+    });
+}
+
+pub(crate) fn workflow_run_tab() -> RunDetailTab {
+    state().with(|s| s.workflow_run_tab)
+}
+
+pub(crate) fn set_workflow_run_tab(tab: RunDetailTab) {
+    state().update(|s| {
+        s.workflow_run_tab = tab;
+    });
+}
+
+pub(crate) fn workflow_run_inspector_visible() -> bool {
+    state().with(|s| s.workflow_run_inspector_visible)
+}
+
+pub(crate) fn toggle_workflow_run_inspector() {
+    state().update(|s| {
+        s.workflow_run_inspector_visible = !s.workflow_run_inspector_visible;
+    });
+}
+
+pub(crate) fn workflow_run_command_palette_open() -> bool {
+    state().with(|s| s.workflow_run_command_palette_open)
+}
+
+pub(crate) fn toggle_workflow_run_command_palette() {
+    state().update(|s| {
+        s.workflow_run_command_palette_open = !s.workflow_run_command_palette_open;
+    });
+}
+
+pub(crate) fn set_workflow_run_command_palette_open(open: bool) {
+    state().update(|s| {
+        s.workflow_run_command_palette_open = open;
+    });
+}
+
+pub(crate) fn toggle_pause_workflow_run() {
+    state().update(|s| {
+        let (project, workflow) = s.active_workflow_run_key.clone();
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        if run.toggle_pause() {
+            let state_label = if run.execution_state == RunExecutionState::Paused {
+                "Paused"
+            } else {
+                "Resumed"
+            };
+            let run_no = run.run_number;
+            s.status_message = Some(format!("{state_label} run #{run_no} ({workflow})"));
+        }
+    });
+}
+
+pub(crate) fn stop_workflow_run() {
+    state().update(|s| {
+        let (project, workflow) = s.active_workflow_run_key.clone();
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        if run.stop() {
+            let run_no = run.run_number;
+            s.status_message = Some(format!("Stopped run #{run_no} ({workflow})"));
+        }
+    });
+}
+
+pub(crate) fn steer_workflow_run_step(instruction: &str) -> bool {
+    let mut sent = false;
+    state().update(|s| {
+        let step_index = s.workflow_run_selected_step;
+        let (project, workflow) = s.active_workflow_run_key.clone();
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        match run.steer_step(step_index, instruction) {
+            Ok(()) => {
+                s.workflow_run_tab = RunDetailTab::Output;
+                s.status_message = Some(format!(
+                    "Sent steering instruction to step {}",
+                    step_index + 1
+                ));
+                sent = true;
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+    sent
+}
+
+pub(crate) fn toggle_workflow_run_budget_pause() {
+    state().update(|s| {
+        let (project, workflow) = s.active_workflow_run_key.clone();
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        run.toggle_budget_pause();
+    });
+}
+
+pub(crate) fn approve_workflow_run_review_gate() {
+    state().update(|s| {
+        let (project, workflow) = s.active_workflow_run_key.clone();
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        if run.approve_review_gate() {
+            let run_no = run.run_number;
+            s.workflow_run_selected_step = run.active_step_index;
+            s.status_message = Some(format!("Approved review gate for run #{run_no}"));
+        }
+    });
+}
+
+pub(crate) fn edit_active_workflow() {
+    state().update(|s| {
+        let (_, workflow) = s.active_workflow_run_key.clone();
+        s.status_message = Some(format!("Opened '{workflow}' workflow definition"));
+    });
+}
+
+pub(crate) fn deploy_watch_entries() -> Vec<DeployWatchEntry> {
+    state().with(|s| s.deploy_watch_entries.clone())
+}
+
+pub(crate) fn sidebar_provider_statuses() -> Vec<(&'static str, &'static str, bool)> {
+    state().with(|s| {
+        let run = s.active_workflow_run_clone();
+        let running = run.execution_state == RunExecutionState::Running;
+        let active_provider = run.active_provider_name.as_str();
+        vec![
+            (
+                "Claude",
+                if running && active_provider == "Claude" {
+                    "Running"
+                } else {
+                    "Ready"
+                },
+                running && active_provider == "Claude",
+            ),
+            (
+                "Codex",
+                if running && active_provider == "Codex" {
+                    "Running"
+                } else {
+                    "Ready"
+                },
+                running && active_provider == "Codex",
+            ),
+            ("OpenRouter · Acme team", "Ready", false),
+        ]
+    })
 }
 
 /// Persists a new project in SQLite and adds it to the reactive factory state.

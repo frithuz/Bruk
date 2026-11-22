@@ -447,3 +447,124 @@ fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
     app.wait_for("Software Factory will update the issue")
         .unwrap();
 }
+
+#[test]
+fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Open api-gateway's Release prep workflow run from the sidebar tree.
+    app.press("id:sidebar-workflow-1-release-prep").unwrap();
+    app.wait_for("api-gateway · Run #42").unwrap();
+
+    // Verify top header, sidebar extensions/providers, and footer status bar.
+    assert!(app.screen().shows("Release prep"));
+    assert!(app.screen().shows("Search or run a command"));
+    assert!(app.screen().shows("Edit Workflow"));
+    assert!(app.screen().shows("Deploy Watch"));
+    assert!(app.screen().shows("2.7.3"));
+    assert!(app.screen().shows("2.7.2"));
+    assert!(app.screen().shows("Run history"));
+    assert!(app.screen().shows("Providers"));
+    assert!(
+        app.screen()
+            .shows("Codex running in worktree run-42 on release/2.8 · attempt 2 of 5")
+    );
+    assert!(app.screen().shows("Elapsed 4:02"));
+    assert!(app.screen().shows("Est. cost $0.84"));
+    assert!(app.screen().shows("4 extensions active"));
+
+    // Verify run header and all 5 step pipeline cards.
+    assert!(app.screen().shows("Run #42"));
+    assert!(app.screen().shows("Running · step 3 of 5"));
+    assert!(app.screen().shows("1. Gather changes"));
+    assert!(app.screen().shows("2. Draft changelog"));
+    assert!(app.screen().shows("3. Fix until tests pass"));
+    assert!(app.screen().shows("Loop · attempt 2 of 5"));
+    assert!(app.screen().shows("4. Review gate"));
+    assert!(app.screen().shows("5. Open pull request"));
+
+    // Verify Step 3 Output transcript and tool call cards.
+    assert!(
+        app.screen()
+            .shows("Attempt 1 · 2 tests failed · output passed to attempt 2")
+    );
+    assert!(app.screen().shows("package.json"));
+    assert!(app.screen().shows("npm version 2.8.0 --no-git-tag-version"));
+    assert!(app.screen().shows("Exit 0"));
+    assert!(app.screen().shows("npm test"));
+    assert!(app.screen().shows("0:38"));
+    assert!(app.screen().shows("src/router.test.ts"));
+    assert!(app.screen().shows("src/ratelimit.test.ts"));
+
+    // Verify right-hand Step 3 inspector sections.
+    assert!(app.screen().shows("implementer · repository"));
+    assert!(app.screen().shows("Codex CLI"));
+    assert!(app.screen().shows("Pinned in agent"));
+    assert!(app.screen().shows("Workspace write"));
+    assert!(app.screen().shows("Isolated · Wald-managed"));
+    assert!(app.screen().shows("Worktree"));
+    assert!(app.screen().shows("release/2.8"));
+    assert!(app.screen().shows("Attempt 2 of 5"));
+    assert!(app.screen().shows("0 failing tests"));
+    assert!(app.screen().shows("48.2k in · 6.1k out"));
+    assert!(app.screen().shows("Step 2 output"));
+    assert!(app.screen().shows("test-report · pending"));
+    assert!(app.screen().shows("Budget Guard"));
+    assert!(app.screen().shows("$0.84 / $5.00"));
+    assert!(app.screen().shows("Next: approval gate"));
+
+    // Switch between Output, Diff, and Coverage tabs.
+    app.press("id:wf-tab-diff").unwrap();
+    app.wait_for("3 files changed in worktree run-42").unwrap();
+    assert!(app.screen().shows("CHANGELOG.md"));
+
+    app.press("id:wf-tab-coverage").unwrap();
+    app.wait_for("Test Coverage Report").unwrap();
+    assert!(app.screen().shows("Stmts 94.2%"));
+
+    // Jump back to Output via View › Output (⌘1).
+    app.press_key("mod+1").unwrap();
+    app.wait_for("npm test").unwrap();
+
+    // Select Step 1 and verify inspector updates, then return to Step 3.
+    app.press("id:wf-step-card-1").unwrap();
+    app.wait_for("release-collector · repository").unwrap();
+    app.press("id:wf-step-card-3").unwrap();
+    app.wait_for("implementer · repository").unwrap();
+
+    // Expand Attempt 1 details banner.
+    app.press("id:wf-attempt-banner").unwrap();
+    app.wait_for(
+        "FAIL src/version.test.ts — expected APP_VERSION to equal \"2.7.3\", received \"2.8.0\" (2 assertions).",
+    )
+    .unwrap();
+
+    // Send a steering instruction from the bottom composer.
+    app.type_text("id:wf-run-steer-input", "skip the e2e suite")
+        .unwrap();
+    app.press("id:wf-run-steer-send").unwrap();
+    app.wait_for("You steered this step").unwrap();
+    assert!(app.screen().shows("skip the e2e suite"));
+
+    // Open and close Command Palette from the header button.
+    app.press("id:wf-header-search").unwrap();
+    app.wait_for("Switch to Diff tab").unwrap();
+    app.press("role:button[Close Command Palette]").unwrap();
+
+    // Toggle inspector visibility with ⌥⌘I.
+    app.press_key("alt+mod+i").unwrap();
+    assert!(!app.screen().shows("Next: approval gate"));
+    app.press_key("alt+mod+i").unwrap();
+    app.wait_for("Next: approval gate").unwrap();
+
+    // Pause, resume, and stop the active run via header controls.
+    app.press("id:wf-header-pause").unwrap();
+    app.wait_for("Paused · step 3 of 5").unwrap();
+    app.press("id:wf-header-pause").unwrap();
+    app.wait_for("Running · step 3 of 5").unwrap();
+    app.press("id:wf-header-stop").unwrap();
+    app.wait_for("Stopped · step 3 of 5").unwrap();
+}

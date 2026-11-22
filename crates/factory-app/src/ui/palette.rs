@@ -151,6 +151,66 @@ pub(crate) fn queue_badge_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xE5E7EB), rgb(0x2A2F3A))
 }
 
+pub(crate) fn status_running_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xE7F1FD), rgb(0x182A45))
+}
+
+pub(crate) fn status_success_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xE6F6EF), rgb(0x132E24))
+}
+
+pub(crate) fn status_warning_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF3E2), rgb(0x312412))
+}
+
+pub(crate) fn status_error_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFDECEC), rgb(0x35191A))
+}
+
+pub(crate) fn attempt_banner_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFDF3E7), rgb(0x2E2215))
+}
+
+pub(crate) fn attempt_banner_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF4DEC0), rgb(0x4A351E))
+}
+
+pub(crate) fn attempt_banner_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x9A5B13), rgb(0xF0B05C))
+}
+
+pub(crate) fn callout_amber_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF7EB), rgb(0x2B2316))
+}
+
+pub(crate) fn callout_amber_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF3E0BE), rgb(0x46381F))
+}
+
+pub(crate) fn diff_add_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xECFDF3), rgb(0x122A1F))
+}
+
+pub(crate) fn diff_add_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x117A4B), rgb(0x4ADE80))
+}
+
+pub(crate) fn diff_del_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF2F2), rgb(0x331819))
+}
+
+pub(crate) fn diff_del_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xC82829), rgb(0xF87171))
+}
+
+pub(crate) fn provider_dot_green() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x16A34A), rgb(0x34D399))
+}
+
+pub(crate) fn provider_dot_blue() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x1668D6), rgb(0x58A6FF))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),
