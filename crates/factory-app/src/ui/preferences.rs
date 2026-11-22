@@ -1639,8 +1639,8 @@ fn machines_tab() -> impl IntoElement {
             .child(dynamic(move || {
                 let prefs = store::preferences().machines;
                 let machines = store::machines();
+                let connected = store::connected_machine_count();
                 let disconnected = store::disconnected_machine_count();
-                let connected = machines.len().saturating_sub(disconnected);
 
                 view()
                     .gap(px(16.0))

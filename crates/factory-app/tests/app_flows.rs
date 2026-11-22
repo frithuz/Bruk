@@ -99,11 +99,14 @@ fn inbox_and_machines_views_update_sidebar_badges() {
     app.press("role:button[Approve] >> nth=0").unwrap();
     app.wait_for("3 requests waiting for your input").unwrap();
 
-    // Navigate to Machines and reconnect the disconnected runner.
+    // Navigate to Machines and verify the fleet header and reconnect flow.
     app.press("Machines").unwrap();
-    app.wait_for("2 connected · 1 disconnected").unwrap();
-    app.press("role:button[Reconnect]").unwrap();
-    app.wait_for("3 connected").unwrap();
+    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+        .unwrap();
+    app.press("id:machine-card-win-ci-02").unwrap();
+    app.wait_for("Windows 11 24H2").unwrap();
+    app.press("id:machine-action-connection").unwrap();
+    app.wait_for("Caught up just now").unwrap();
 }
 
 #[test]
@@ -270,7 +273,8 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
     app.wait_for("4 requests waiting for your input").unwrap();
 
     app.press_key("alt+mod+m").unwrap();
-    app.wait_for("2 connected · 1 disconnected").unwrap();
+    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+        .unwrap();
 
     app.press_key("mod+shift+d").unwrap();
     app.wait_for("Issues resolved").unwrap();
@@ -1064,4 +1068,144 @@ fn workflow_editor_renders_reference_layout_and_interactive_flows() {
     app.press("id:wf-header-edit").unwrap();
     app.wait_for("Starts from").unwrap();
     assert!(app.screen().shows("Fix issue"));
+}
+
+#[test]
+fn machines_page_renders_reference_layout_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Navigate to Machines from the sidebar.
+    app.press("Machines").unwrap();
+    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+        .unwrap();
+
+    // Verify top header buttons.
+    assert!(app.screen().shows("Update Cores..."));
+    assert!(app.screen().shows("Add Machine..."));
+
+    // Verify all 5 machines and compatibility pills in the left list pane.
+    assert!(app.screen().shows("This Mac"));
+    assert!(app.screen().shows("macOS 26.1 · arm64"));
+    assert!(app.screen().shows("3 sessions"));
+    assert!(app.screen().shows("build-box-01"));
+    assert!(app.screen().shows("Ubuntu 24.04 · x86_64"));
+    assert!(app.screen().shows("Caught up 2 min ago"));
+    assert!(app.screen().shows("4 sessions"));
+    assert!(app.screen().shows("win-ci-02"));
+    assert!(app.screen().shows("Windows 11 24H2 · x86_64"));
+    assert!(app.screen().shows("Last seen 3 h ago"));
+    assert!(app.screen().shows("Core update suggested"));
+    assert!(app.screen().shows("gpu-01"));
+    assert!(app.screen().shows("Fedora 41 · x86_64"));
+    assert!(app.screen().shows("Not syncing"));
+    assert!(app.screen().shows("Needs a newer Wald"));
+    assert!(app.screen().shows("mini-lab"));
+    assert!(app.screen().shows("Unreachable"));
+    assert!(app.screen().shows("Since Sunday"));
+    assert!(
+        app.screen()
+            .shows("Machines connect over SSH with a key. Sessions keep running on a machine when Wald disconnects, and catch up when it reconnects. On every connection Wald and the core compare data schemas; version numbers only matter when the schema differs.")
+    );
+
+    // Verify default selected build-box-01 detail pane matches 21 Machines.png.
+    assert!(app.screen().shows("Open in Terminal"));
+    assert!(app.screen().shows("Disconnect"));
+    assert!(
+        app.screen()
+            .shows("Reconnected 2 minutes ago and caught up")
+    );
+    assert!(
+        app.screen()
+            .shows("While Wald was away, the 4 sessions here produced 318 events: 3 steps finished, one loop ran out of attempts, and 2 new requests are in the Inbox.")
+    );
+    assert!(app.screen().shows("Show What Changed"));
+    assert!(app.screen().shows("Ubuntu 24.04.1 LTS"));
+    assert!(app.screen().shows("x86_64 · 16 cores · 64 GB"));
+    assert!(app.screen().shows("10.0.4.21:22"));
+    assert!(app.screen().shows("fd00::4:21"));
+    assert!(app.screen().shows("wald@build-box-01"));
+    assert!(app.screen().shows("ED25519 · SHA256:q3Ff…8k…"));
+    assert!(app.screen().shows("0.8.5 · schema 7"));
+    assert!(app.screen().shows("Same schema · in sync"));
+    assert!(app.screen().shows("Live again after catching up"));
+    assert!(app.screen().shows("#44"));
+    assert!(app.screen().shows("api-gateway › Dependency upgrade"));
+    assert!(app.screen().shows("Needs you · permission"));
+    assert!(app.screen().shows("#12"));
+    assert!(app.screen().shows("marketing-site › Docs refresh"));
+    assert!(app.screen().shows("Needs you · question"));
+    assert!(app.screen().shows("#7"));
+    assert!(app.screen().shows("mobile-app › Dependency upgrade"));
+    assert!(app.screen().shows("Out of attempts"));
+    assert!(app.screen().shows("#45"));
+    assert!(app.screen().shows("api-gateway › Fix issue"));
+    assert!(app.screen().shows("Step 1 of 6"));
+    assert!(app.screen().shows("Machine settings..."));
+    assert!(
+        app.screen()
+            .shows("Projects that can run here: api-gateway, marketing-site, mobile-app")
+    );
+
+    // Expand and collapse "Show What Changed" in the catch-up banner.
+    app.press("id:machine-banner-show-changes").unwrap();
+    app.wait_for("Hide Changes").unwrap();
+    assert!(app.screen().shows(
+        "#44 api-gateway › Dependency upgrade — paused for permission in Inbox (214 events)"
+    ));
+    app.press("id:machine-banner-show-changes").unwrap();
+    app.wait_for("Show What Changed").unwrap();
+
+    // Open Machine settings and toggle project access on build-box-01.
+    app.press("id:machine-settings-toggle").unwrap();
+    app.wait_for("Allowed projects").unwrap();
+    app.press("id:machine-setting-project-mobile-app").unwrap();
+    app.wait_for("Projects that can run here: api-gateway, marketing-site")
+        .unwrap();
+    app.press("id:machine-setting-project-mobile-app").unwrap();
+    app.wait_for("Projects that can run here: api-gateway, marketing-site, mobile-app")
+        .unwrap();
+
+    // Switch to gpu-01 and mini-lab to verify contextual banners and empty session table.
+    app.press("id:machine-card-gpu-01").unwrap();
+    app.wait_for("Core 1.0.0 uses data schema 8, which needs a newer Wald")
+        .unwrap();
+    assert!(app.screen().shows("Fedora 41 Workstation"));
+
+    app.press("id:machine-card-mini-lab").unwrap();
+    app.wait_for("No active sessions on mini-lab.").unwrap();
+    assert!(app.screen().shows("Test Connection"));
+
+    // Open Update Cores drawer and update all suggested cores (clears win-ci-02 warning).
+    app.press("id:machines-header-update-cores").unwrap();
+    app.wait_for("Update Wald Cores").unwrap();
+    app.press("id:machines-update-all-cores").unwrap();
+    app.wait_for(
+        "5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 machine needs a newer Wald",
+    )
+    .unwrap();
+
+    // Open Add Machine drawer and connect a new remote SSH host.
+    app.press("id:machines-header-add").unwrap();
+    app.wait_for("Add SSH Machine").unwrap();
+    app.type_text("id:machines-add-name", "ci-arm-03").unwrap();
+    app.type_text("id:machines-add-ssh", "wald@ci-arm-03")
+        .unwrap();
+    app.type_text("id:machines-add-address", "10.0.4.60:22")
+        .unwrap();
+    app.press("id:machines-add-submit").unwrap();
+    app.wait_for("Added machine 'ci-arm-03' over SSH").unwrap();
+    assert!(app.screen().shows(
+        "6 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 machine needs a newer Wald"
+    ));
+    assert!(app.screen().shows("wald@ci-arm-03"));
+
+    // Select build-box-01 and click Open on session #45 to jump to the live WorkflowRun view.
+    app.press("id:machine-card-build-box-01").unwrap();
+    app.wait_for("id:machine-session-open-45").unwrap();
+    app.press("id:machine-session-open-45").unwrap();
+    app.wait_for("Edit Workflow").unwrap();
+    assert!(app.screen().shows("api-gateway · Run #45"));
 }

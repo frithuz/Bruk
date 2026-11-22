@@ -6,6 +6,7 @@
 
 pub mod dashboard;
 pub mod engine;
+pub mod machines;
 pub mod model;
 pub mod preferences;
 pub mod project_settings;
@@ -22,6 +23,11 @@ pub use dashboard::{
     format_currency, format_tenths_hours, format_tokens, format_wait_minutes,
 };
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
+pub use machines::{
+    MachineCatchUpSummary, MachineConnectionStatus, MachinePlatform, MachineRecord, MachineSession,
+    MachinesError, MachinesFleet, NewMachineDraft, SchemaCompatibility, SessionNowTone,
+    WALD_APP_VERSION, WALD_DATA_SCHEMA,
+};
 pub use model::{
     LogEntry, LogLevel, Project, ProjectId, RunId, RunStatus, StepKind, StepRun, StepRunStatus,
     Workflow, WorkflowId, WorkflowRun, WorkflowStep,

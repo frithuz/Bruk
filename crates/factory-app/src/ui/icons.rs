@@ -436,3 +436,48 @@ pub(crate) fn close_x(color: impl IntoReactive<AdaptiveColor>) -> impl IntoEleme
     )
     .text_color(color)
 }
+
+/// Downward arrow into a tray line for the `Update Cores...` button.
+pub(crate) fn download_tray(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.8v7.4"/><path d="M5.2 7.5 8 10.3l2.8-2.8"/><path d="M3.2 12.8h9.6"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Info `i` inside a circle for catch-up and informational banners.
+pub(crate) fn info_circle(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 7.3v3.5"/><circle cx="8" cy="5.1" r="0.65" fill="currentColor" stroke="none"/></svg>"#,
+        15.0,
+    )
+    .text_color(color)
+}
+
+/// Broken link / disconnected indicator for disconnected remote machines.
+pub(crate) fn status_disconnected(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 9.6 4.7 11.3a2.2 2.2 0 1 1-3.1-3.1l1.7-1.7"/><path d="M9.6 6.4 11.3 4.7a2.2 2.2 0 1 1 3.1 3.1l-1.7 1.7"/><path d="M6.2 4.3 5.7 2.8M11.7 6.2l1.5-.5M4.3 9.8l-1.5.5M9.8 11.7l.5 1.5"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Pause bars inside a circle for machines that are connected but not syncing.
+pub(crate) fn status_not_syncing(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><path d="M6.6 5.9v4.2M9.4 5.9v4.2"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Cross `×` inside a circle for unreachable machines.
+pub(crate) fn status_unreachable(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><path d="M5.9 5.9 10.1 10.1M10.1 5.9 5.9 10.1"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}

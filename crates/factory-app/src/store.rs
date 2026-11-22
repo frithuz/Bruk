@@ -10,12 +10,12 @@ use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
     DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, EditorSelection,
     ExitField, ExitOperator, FactoryState, InboxItem, IntakeRule, IssueSourceKind,
-    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineNode, MachineStatus,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
-    RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
-    Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
-    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
+    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineRecord, MachinesFleet,
+    NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
+    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
+    RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
+    WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
+    WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
 };
 use nsh_core::{platform::Appearance, prelude::*};
 
@@ -83,7 +83,12 @@ struct AppState {
     dashboard_project_filter: Option<String>,
     tokens_show_table: bool,
     inbox_items: Vec<InboxItem>,
-    machines: Vec<MachineNode>,
+    machines_fleet: MachinesFleet,
+    selected_machine_id: Option<u64>,
+    machines_changes_expanded: bool,
+    machines_update_cores_open: bool,
+    machines_add_drawer_open: bool,
+    machines_settings_open: bool,
     preferences: AppPreferences,
     preferences_open: bool,
     preferences_focused: bool,
@@ -112,7 +117,8 @@ impl AppState {
     fn from_database_result(result: Result<ProjectDatabase, factory_core::StorageError>) -> Self {
         let dashboard_dataset = DashboardDataset::sample();
         let inbox_items = DashboardDataset::sample_inbox();
-        let machines = DashboardDataset::sample_machines();
+        let machines_fleet = MachinesFleet::sample();
+        let selected_machine_id = machines_fleet.default_selected_id();
 
         match result {
             Ok(db) => {
@@ -237,7 +243,12 @@ impl AppState {
                     dashboard_project_filter: None,
                     tokens_show_table: false,
                     inbox_items,
-                    machines,
+                    machines_fleet,
+                    selected_machine_id,
+                    machines_changes_expanded: false,
+                    machines_update_cores_open: false,
+                    machines_add_drawer_open: false,
+                    machines_settings_open: false,
                     preferences,
                     preferences_open: false,
                     preferences_focused: false,
@@ -354,7 +365,12 @@ impl AppState {
                     dashboard_project_filter: None,
                     tokens_show_table: false,
                     inbox_items,
-                    machines,
+                    machines_fleet,
+                    selected_machine_id,
+                    machines_changes_expanded: false,
+                    machines_update_cores_open: false,
+                    machines_add_drawer_open: false,
+                    machines_settings_open: false,
                     preferences,
                     preferences_open: false,
                     preferences_focused: false,
@@ -1514,26 +1530,264 @@ pub(crate) fn resolve_inbox_item(id: u64) {
     });
 }
 
-pub(crate) fn machines() -> Vec<MachineNode> {
-    state().with(|s| s.machines.clone())
+pub(crate) fn machines_fleet() -> MachinesFleet {
+    state().with(|s| s.machines_fleet.clone())
 }
 
-pub(crate) fn disconnected_machine_count() -> usize {
+pub(crate) fn machines() -> Vec<MachineRecord> {
+    state().with(|s| s.machines_fleet.machines.clone())
+}
+
+pub(crate) fn selected_machine_id() -> Option<u64> {
     state().with(|s| {
-        s.machines
-            .iter()
-            .filter(|m| m.status == MachineStatus::Disconnected)
-            .count()
+        s.selected_machine_id
+            .filter(|id| s.machines_fleet.machine(*id).is_some())
+            .or_else(|| s.machines_fleet.default_selected_id())
     })
 }
 
-pub(crate) fn reconnect_machine(id: u64) {
+pub(crate) fn selected_machine() -> Option<MachineRecord> {
+    state().with(|s| {
+        let id = s
+            .selected_machine_id
+            .filter(|id| s.machines_fleet.machine(*id).is_some())
+            .or_else(|| s.machines_fleet.default_selected_id())?;
+        s.machines_fleet.machine(id).cloned()
+    })
+}
+
+pub(crate) fn select_machine(id: u64) {
     state().update(|s| {
-        if let Some(machine) = s.machines.iter_mut().find(|m| m.id == id) {
-            machine.status = MachineStatus::Connected;
-            machine.last_seen = "Reconnected just now".to_owned();
+        if s.machines_fleet.machine(id).is_some() {
+            s.selected_machine_id = Some(id);
+            s.machines_changes_expanded = false;
+            s.machines_settings_open = false;
+            s.status_message = None;
+        }
+    });
+}
+
+pub(crate) fn connected_machine_count() -> usize {
+    state().with(|s| s.machines_fleet.connected_count())
+}
+
+pub(crate) fn disconnected_machine_count() -> usize {
+    state().with(|s| s.machines_fleet.offline_count())
+}
+
+pub(crate) fn disconnect_machine(id: u64) {
+    state().update(|s| match s.machines_fleet.disconnect_machine(id) {
+        Ok(machine) => {
+            s.machines_changes_expanded = false;
+            s.status_message = Some(format!(
+                "Disconnected '{}'. Running sessions continue on the host.",
+                machine.name
+            ));
+        }
+        Err(err) => {
+            s.status_message = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn reconnect_machine(id: u64) {
+    state().update(|s| match s.machines_fleet.reconnect_machine(id) {
+        Ok(machine) => {
             s.status_message = Some(format!("Reconnected machine '{}'", machine.name));
         }
+        Err(err) => {
+            s.status_message = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn open_machine_in_terminal(id: u64) {
+    state().update(|s| {
+        if let Some(machine) = s.machines_fleet.machine(id) {
+            if machine.is_local {
+                s.status_message = Some("Opened local terminal session on This Mac".to_owned());
+            } else {
+                s.status_message = Some(format!(
+                    "Opened SSH terminal for {} ({})",
+                    machine.ssh_target, machine.address_primary
+                ));
+            }
+        }
+    });
+}
+
+pub(crate) fn update_machine_core(id: u64) {
+    state().update(|s| match s.machines_fleet.update_core(id) {
+        Ok(machine) => {
+            s.status_message = Some(format!(
+                "Updated Wald core on '{}' to {} (schema {})",
+                machine.name, machine.core_version, machine.core_schema
+            ));
+        }
+        Err(err) => {
+            s.status_message = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn update_all_suggested_cores() {
+    state().update(|s| {
+        let updated = s.machines_fleet.update_all_suggested_cores();
+        s.machines_update_cores_open = false;
+        if updated == 0 {
+            s.status_message = Some("All compatible cores are already up to date.".to_owned());
+        } else if updated == 1 {
+            s.status_message = Some(format!(
+                "Updated 1 machine core to Wald {} (schema {})",
+                s.machines_fleet.wald_version, s.machines_fleet.wald_schema
+            ));
+        } else {
+            s.status_message = Some(format!(
+                "Updated {updated} machine cores to Wald {} (schema {})",
+                s.machines_fleet.wald_version, s.machines_fleet.wald_schema
+            ));
+        }
+    });
+}
+
+pub(crate) fn check_wald_update() {
+    state().update(|s| {
+        s.status_message = Some(
+            "Wald 1.0.0 (data schema 8) is available in Software Update — install to resume syncing gpu-01."
+                .to_owned(),
+        );
+    });
+}
+
+pub(crate) fn add_machine(draft: NewMachineDraft) -> Result<(), String> {
+    let mut outcome = Ok(());
+    state().update(|s| match s.machines_fleet.add_machine(draft) {
+        Ok(added) => {
+            let id = added.id;
+            let name = added.name.clone();
+            s.selected_machine_id = Some(id);
+            s.machines_add_drawer_open = false;
+            s.machines_changes_expanded = false;
+            s.machines_settings_open = false;
+            s.status_message = Some(format!("Added machine '{name}' over SSH"));
+        }
+        Err(err) => {
+            let msg = err.to_string();
+            s.status_message = Some(msg.clone());
+            outcome = Err(msg);
+        }
+    });
+    outcome
+}
+
+pub(crate) fn toggle_machine_project_access(id: u64, project_name: &str) {
+    let project = project_name.to_owned();
+    state().update(
+        |s| match s.machines_fleet.toggle_project_access(id, &project) {
+            Ok(enabled) => {
+                let machine_name = s
+                    .machines_fleet
+                    .machine(id)
+                    .map(|m| m.name.clone())
+                    .unwrap_or_default();
+                s.status_message = Some(if enabled {
+                    format!("Allowed '{project}' to run on '{machine_name}'")
+                } else {
+                    format!("Removed '{project}' from '{machine_name}'")
+                });
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        },
+    );
+}
+
+pub(crate) fn remove_machine(id: u64) {
+    state().update(|s| match s.machines_fleet.remove_machine(id) {
+        Ok(removed) => {
+            if s.selected_machine_id == Some(id) {
+                s.selected_machine_id = s.machines_fleet.default_selected_id();
+            }
+            s.machines_settings_open = false;
+            s.machines_changes_expanded = false;
+            s.status_message = Some(format!("Removed machine '{}'", removed.name));
+        }
+        Err(err) => {
+            s.status_message = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn machines_changes_expanded() -> bool {
+    state().with(|s| s.machines_changes_expanded)
+}
+
+pub(crate) fn toggle_machines_changes_expanded() {
+    state().update(|s| {
+        s.machines_changes_expanded = !s.machines_changes_expanded;
+    });
+}
+
+pub(crate) fn machines_update_cores_open() -> bool {
+    state().with(|s| s.machines_update_cores_open)
+}
+
+pub(crate) fn set_machines_update_cores_open(open: bool) {
+    state().update(|s| {
+        s.machines_update_cores_open = open;
+        if open {
+            s.machines_add_drawer_open = false;
+        }
+    });
+}
+
+pub(crate) fn machines_add_drawer_open() -> bool {
+    state().with(|s| s.machines_add_drawer_open)
+}
+
+pub(crate) fn set_machines_add_drawer_open(open: bool) {
+    state().update(|s| {
+        s.machines_add_drawer_open = open;
+        if open {
+            s.machines_update_cores_open = false;
+        }
+    });
+}
+
+pub(crate) fn machines_settings_open() -> bool {
+    state().with(|s| s.machines_settings_open)
+}
+
+pub(crate) fn toggle_machines_settings_open() {
+    state().update(|s| {
+        s.machines_settings_open = !s.machines_settings_open;
+    });
+}
+
+pub(crate) fn open_machine_session(project_name: &str, workflow_name: &str, run_number: u32) {
+    let project = project_name.to_owned();
+    let workflow = workflow_name.to_owned();
+    state().update(|s| {
+        if let Some(pid) = s
+            .factory
+            .projects()
+            .iter()
+            .find(|p| p.name == project)
+            .map(|p| p.id)
+        {
+            s.selected_project = Some(pid);
+            s.expanded_projects.insert(pid);
+        }
+        let run = s.ensure_workflow_run_mut(&project, &workflow);
+        run.run_number = run_number;
+        let step_index = run.active_step_index;
+        s.active_workflow_run_key = (project, workflow);
+        s.workflow_run_selected_step = step_index;
+        s.workflow_run_tab = RunDetailTab::Output;
+        s.workflow_run_command_palette_open = false;
+        s.active_view = ActiveView::WorkflowRun;
+        s.status_message = None;
     });
 }
 

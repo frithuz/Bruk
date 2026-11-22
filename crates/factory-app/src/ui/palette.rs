@@ -271,6 +271,46 @@ pub(crate) fn editor_palette_badge_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xECEDF1), rgb(0x272C35))
 }
 
+pub(crate) fn machine_badge_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xEFF1F5), rgb(0x272C35))
+}
+
+pub(crate) fn machine_badge_selected_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF6FAFF), rgb(0x213452))
+}
+
+pub(crate) fn banner_info_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x7AB2EE), rgb(0x2E5C93))
+}
+
+pub(crate) fn pill_warning_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF8EE), rgb(0x312412))
+}
+
+pub(crate) fn pill_warning_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xB88948), rgb(0x8C6429))
+}
+
+pub(crate) fn pill_warning_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x8F5B12), rgb(0xF0B05C))
+}
+
+pub(crate) fn pill_error_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFDF2F2), rgb(0x35191A))
+}
+
+pub(crate) fn pill_error_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xC95B55), rgb(0x9E3D39))
+}
+
+pub(crate) fn pill_error_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xB82E26), rgb(0xF87171))
+}
+
+pub(crate) fn table_header_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xF8F9FB), rgb(0x1E222A))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),

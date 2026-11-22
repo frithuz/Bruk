@@ -109,6 +109,10 @@ fn top_header_bar() -> impl IntoElement {
                     dashboard_header_controls,
                 ))
                 .child(when(
+                    || store::active_view() == ActiveView::Machines,
+                    machines::machines_header_controls,
+                ))
+                .child(when(
                     || store::active_view() == ActiveView::WorkQueue,
                     work_queue_header_controls,
                 ))
@@ -160,16 +164,7 @@ fn header_title_block() -> impl IntoElement {
                         format!("{pending} requests waiting for your input")
                     }
                 }
-                ActiveView::Machines => {
-                    let total = store::machines().len();
-                    let disconnected = store::disconnected_machine_count();
-                    let connected = total.saturating_sub(disconnected);
-                    if disconnected == 0 {
-                        format!("{connected} connected")
-                    } else {
-                        format!("{connected} connected · {disconnected} disconnected")
-                    }
-                }
+                ActiveView::Machines => store::machines_fleet().header_subtitle(),
                 ActiveView::WorkQueue => {
                     let queue = store::active_work_queue();
                     format!(
@@ -1056,22 +1051,19 @@ fn sidebar_machines_item() -> impl IntoElement {
                                 }),
                         ),
                 )
-                .child(when(
-                    || store::disconnected_machine_count() > 0,
-                    move || {
-                        text(move || {
-                            format!("{}\ndisconnected", store::disconnected_machine_count())
-                        })
-                        .text_size(px(10.5))
+                .child(
+                    text(move || store::machines().len().to_string())
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .tabular_nums()
                         .text_color(move || {
                             if is_active() {
                                 palette::nav_active_fg()
                             } else {
-                                palette::warning_text()
+                                palette::text_muted()
                             }
-                        })
-                    },
-                )),
+                        }),
+                ),
         )
 }
 
