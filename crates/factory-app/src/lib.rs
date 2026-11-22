@@ -45,6 +45,13 @@ fn AppWithDb(props: AppWithDbProps) -> impl IntoElement {
 }
 
 fn app_surface() -> impl IntoElement {
+    let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
+    title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
+    title_bar.height = Some(px(54.0));
+    let mut attrs = nsh_core::desktop::WindowAttributes::default();
+    attrs.title_bar = Some(title_bar);
+    nsh_core::element::desktop::current_window().set(attrs);
+
     view()
         .flex_1()
         .bg(move || theme().background)

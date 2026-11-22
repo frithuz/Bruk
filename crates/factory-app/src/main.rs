@@ -9,7 +9,7 @@ fn main() -> impl std::process::Termination {
         platform::AppSource::Rust(platform::Root::of::<factory_app::App>()),
         platform::AppOptions {
             title: "Software Factory".to_owned(),
-            size: (1120, 720),
+            size: (1360, 920),
             ..Default::default()
         },
     )

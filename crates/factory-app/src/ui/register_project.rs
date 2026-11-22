@@ -4,7 +4,7 @@ use factory_core::ProjectId;
 use nsh_base::{button, input, theme};
 use nsh_core::{file_dialog::OpenDialog, prelude::*};
 
-use crate::store;
+use crate::{store, ui::palette};
 
 /// Full-canvas view for registering repositories and managing tracked projects.
 pub(crate) fn register_project_view() -> impl IntoElement {
@@ -40,10 +40,11 @@ pub(crate) fn register_project_view() -> impl IntoElement {
         });
     };
 
-    scroll().flex_1().child(
+    scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
             .flex_1()
-            .gap_6()
+            .p(px(18.0))
+            .gap(px(16.0))
             .child(
                 view()
                     .flex_row()
@@ -51,55 +52,57 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                     .justify_between()
                     .child(
                         view()
-                            .gap_1()
+                            .gap(px(2.0))
                             .child(
-                                text("Register Project")
-                                    .text_xl()
+                                text("Register a local repository")
+                                    .text_size(px(16.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .text_color(move || theme().foreground),
+                                    .text_color(palette::text_primary()),
                             )
                             .child(
                                 text("Track local repositories in SQLite so AI workflows can run against them.")
-                                    .text_sm()
-                                    .text_color(move || theme().muted_foreground),
+                                    .text_size(px(12.5))
+                                    .text_color(palette::text_muted()),
                             ),
                     )
                     .child(when(
-                        || !store::project_ids().is_empty(),
+                        || !store::tracked_project_ids().is_empty(),
                         || {
                             button()
                                 .on_press(store::open_workspace)
-                                .px_3()
-                                .py_2()
-                                .rounded(move || theme().radius)
+                                .px(px(12.0))
+                                .py(px(6.5))
+                                .rounded(px(8.0))
                                 .border_1()
-                                .border_color(move || theme().border)
+                                .border_color(palette::border_color())
+                                .bg(palette::control_bg())
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
                                 .active(|s| s.opacity(0.75))
                                 .child(
                                     text("Open Workspace")
-                                        .text_sm()
+                                        .text_size(px(12.5))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(move || theme().foreground),
+                                        .text_color(palette::text_primary()),
                                 )
                         },
                     )),
             )
             .child(
                 view()
-                    .p_5()
-                    .rounded(move || theme().radius)
+                    .p(px(18.0))
+                    .rounded(px(12.0))
                     .border_1()
-                    .border_color(move || theme().border)
-                    .bg(move || theme().card)
-                    .gap_4()
+                    .border_color(palette::border_color())
+                    .bg(palette::card_bg())
+                    .gap(px(14.0))
                     .child(
                         view()
-                            .gap_2()
+                            .gap(px(6.0))
                             .child(
                                 text("Project Name")
-                                    .text_sm()
+                                    .text_size(px(12.5))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(move || theme().card_foreground),
+                                    .text_color(palette::text_primary()),
                             )
                             .child(
                                 input()
@@ -108,28 +111,29 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                                         project_name.set(value.to_owned())
                                     })
                                     .placeholder("Project name")
-                                    .px_3()
-                                    .py_2()
+                                    .px(px(11.0))
+                                    .py(px(8.0))
                                     .border_1()
-                                    .border_color(move || theme().input)
-                                    .rounded(move || theme().radius)
-                                    .text_color(move || theme().foreground),
+                                    .border_color(palette::border_color())
+                                    .bg(palette::card_inset_bg())
+                                    .rounded(px(8.0))
+                                    .text_color(palette::text_primary()),
                             ),
                     )
                     .child(
                         view()
-                            .gap_2()
+                            .gap(px(6.0))
                             .child(
                                 text("Repository Path")
-                                    .text_sm()
+                                    .text_size(px(12.5))
                                     .font_weight(FontWeight::MEDIUM)
-                                    .text_color(move || theme().card_foreground),
+                                    .text_color(palette::text_primary()),
                             )
                             .child(
                                 view()
                                     .flex_row()
                                     .items_center()
-                                    .gap_2()
+                                    .gap(px(8.0))
                                     .child(
                                         input()
                                             .value(move || repo_path.get())
@@ -139,26 +143,30 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                                             .on_submit(move |_: &str| submit())
                                             .placeholder("Repository path")
                                             .flex_1()
-                                            .px_3()
-                                            .py_2()
+                                            .px(px(11.0))
+                                            .py(px(8.0))
                                             .border_1()
-                                            .border_color(move || theme().input)
-                                            .rounded(move || theme().radius)
-                                            .text_color(move || theme().foreground),
+                                            .border_color(palette::border_color())
+                                            .bg(palette::card_inset_bg())
+                                            .rounded(px(8.0))
+                                            .text_color(palette::text_primary()),
                                     )
                                     .child(
                                         button()
                                             .on_press(browse_folder)
-                                            .px_3()
-                                            .py_2()
-                                            .rounded(move || theme().radius)
-                                            .bg(move || theme().secondary)
+                                            .px(px(12.0))
+                                            .py(px(8.0))
+                                            .rounded(px(8.0))
+                                            .border_1()
+                                            .border_color(palette::border_color())
+                                            .bg(palette::control_bg())
+                                            .hover(|s| s.bg(palette::subtle_surface_bg()))
                                             .active(|s| s.opacity(0.75))
                                             .child(
                                                 text("Browse...")
-                                                    .text_sm()
+                                                    .text_size(px(12.5))
                                                     .font_weight(FontWeight::MEDIUM)
-                                                    .text_color(move || theme().secondary_foreground),
+                                                    .text_color(palette::text_primary()),
                                             ),
                                     ),
                             ),
@@ -167,7 +175,7 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                         || store::registration_error().is_some(),
                         || {
                             text(move || store::registration_error().unwrap_or_default())
-                                .text_xs()
+                                .text_size(px(12.0))
                                 .text_color(move || theme().destructive)
                         },
                     ))
@@ -176,11 +184,11 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                             .flex_row()
                             .items_center()
                             .justify_between()
-                            .gap_3()
+                            .gap(px(12.0))
                             .child(
                                 text(move || format!("SQLite DB: {}", store::db_path_display()))
-                                    .text_xs()
-                                    .text_color(move || theme().muted_foreground),
+                                    .text_size(px(11.5))
+                                    .text_color(palette::text_muted()),
                             )
                             .child(
                                 button()
@@ -189,45 +197,45 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                                             || repo_path.with(|p| p.trim().is_empty())
                                     })
                                     .on_press(submit)
-                                    .px_4()
-                                    .py_2()
-                                    .rounded(move || theme().radius)
-                                    .bg(move || theme().primary)
+                                    .px(px(14.0))
+                                    .py(px(8.0))
+                                    .rounded(px(8.0))
+                                    .bg(palette::nav_active_bg())
                                     .active(|s| s.opacity(0.8))
                                     .disabled_style(|s| s.opacity(0.4))
                                     .child(
                                         text("Save Project")
-                                            .text_sm()
+                                            .text_size(px(12.5))
                                             .font_weight(FontWeight::SEMIBOLD)
-                                            .text_color(move || theme().primary_foreground),
+                                            .text_color(palette::nav_active_fg()),
                                     ),
                             ),
                     ),
             )
             .child(
                 view()
-                    .p_4()
-                    .rounded(move || theme().radius)
+                    .p(px(16.0))
+                    .rounded(px(12.0))
                     .border_1()
-                    .border_color(move || theme().border)
-                    .bg(move || theme().card)
-                    .gap_3()
+                    .border_color(palette::border_color())
+                    .bg(palette::card_bg())
+                    .gap(px(10.0))
                     .child(
-                        text("TRACKED PROJECTS")
-                            .text_xs()
+                        text("Tracked projects")
+                            .text_size(px(13.5))
                             .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(move || theme().muted_foreground),
+                            .text_color(palette::text_primary()),
                     )
                     .child(when(
-                        || store::project_ids().is_empty(),
+                        || store::tracked_project_ids().is_empty(),
                         || {
-                            text("No projects registered yet. Add a repository name and path above to save it locally.")
-                                .text_sm()
-                                .text_color(move || theme().muted_foreground)
+                            text("No projects registered in SQLite yet. Add a repository name and path above to save it locally.")
+                                .text_size(px(12.5))
+                                .text_color(palette::text_muted())
                         },
                     ))
                     .child(each(
-                        store::project_ids,
+                        store::tracked_project_ids,
                         |id: &ProjectId| *id,
                         |id, _| tracked_project_row(id.get_untracked()),
                     )),
@@ -240,21 +248,21 @@ fn tracked_project_row(id: ProjectId) -> impl IntoElement {
         .flex_row()
         .items_center()
         .justify_between()
-        .p_3()
-        .rounded(move || theme().radius)
+        .p(px(12.0))
+        .rounded(px(9.0))
         .border_1()
-        .border_color(move || theme().border)
-        .bg(move || theme().background)
-        .gap_3()
+        .border_color(palette::border_color())
+        .bg(palette::card_inset_bg())
+        .gap(px(12.0))
         .child(
             view()
                 .flex_1()
-                .gap_1()
+                .gap(px(2.0))
                 .child(
                     text(move || store::project_by_id(id).map(|p| p.name).unwrap_or_default())
-                        .text_sm()
+                        .text_size(px(13.0))
                         .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(move || theme().foreground),
+                        .text_color(palette::text_primary()),
                 )
                 .child(
                     text(move || {
@@ -262,42 +270,44 @@ fn tracked_project_row(id: ProjectId) -> impl IntoElement {
                             .map(|p| p.root_path.display().to_string())
                             .unwrap_or_default()
                     })
-                    .text_xs()
-                    .text_color(move || theme().muted_foreground),
+                    .text_size(px(11.5))
+                    .text_color(palette::text_muted()),
                 ),
         )
         .child(
             view()
                 .flex_row()
                 .items_center()
-                .gap_2()
+                .gap(px(8.0))
                 .child(
                     button()
                         .on_press(move || store::select_project(id))
-                        .px_3()
-                        .py_1()
-                        .rounded(move || theme().radius)
-                        .bg(move || theme().secondary)
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
                         .active(|s| s.opacity(0.75))
                         .child(
                             text("Open")
-                                .text_xs()
+                                .text_size(px(12.0))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(move || theme().secondary_foreground),
+                                .text_color(palette::text_primary()),
                         ),
                 )
                 .child(
                     button()
                         .on_press(move || store::remove_project(id))
-                        .px_3()
-                        .py_1()
-                        .rounded(move || theme().radius)
+                        .px(px(10.0))
+                        .py(px(5.0))
+                        .rounded(px(7.0))
                         .border_1()
                         .border_color(move || theme().destructive)
                         .active(|s| s.opacity(0.75))
                         .child(
                             text("Remove")
-                                .text_xs()
+                                .text_size(px(12.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(move || theme().destructive),
                         ),
