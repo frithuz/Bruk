@@ -2,8 +2,9 @@
 
 mod dashboard;
 mod icons;
-mod inbox;
+pub(crate) mod inbox;
 mod machines;
+pub(crate) mod menubar;
 mod palette;
 pub(crate) mod preferences;
 pub(crate) mod project_settings;
@@ -109,6 +110,10 @@ fn top_header_bar() -> impl IntoElement {
                     dashboard_header_controls,
                 ))
                 .child(when(
+                    || store::active_view() == ActiveView::Inbox,
+                    inbox::inbox_header_controls,
+                ))
+                .child(when(
                     || store::active_view() == ActiveView::Machines,
                     machines::machines_header_controls,
                 ))
@@ -154,16 +159,7 @@ fn header_title_block() -> impl IntoElement {
                     let snap = store::dashboard_snapshot();
                     format!("{} · {}", snap.filter_label, snap.date_range_label)
                 }
-                ActiveView::Inbox => {
-                    let pending = store::pending_inbox_count();
-                    if pending == 0 {
-                        "No pending agent requests".to_owned()
-                    } else if pending == 1 {
-                        "1 request waiting for your input".to_owned()
-                    } else {
-                        format!("{pending} requests waiting for your input")
-                    }
-                }
+                ActiveView::Inbox => store::inbox_state().header_subtitle(),
                 ActiveView::Machines => store::machines_fleet().header_subtitle(),
                 ActiveView::WorkQueue => {
                     let queue = store::active_work_queue();
@@ -930,6 +926,7 @@ fn sidebar_dashboard_item() -> impl IntoElement {
 fn sidebar_inbox_item() -> impl IntoElement {
     let is_active = || store::active_view() == ActiveView::Inbox;
     button()
+        .test_id("sidebar-inbox-btn")
         .on_press(store::open_inbox)
         .rounded(px(7.0))
         .hover(|s| s.bg(palette::sidebar_hover_bg()))

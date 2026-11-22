@@ -7,18 +7,24 @@ use std::{
 };
 
 use factory_core::{
-    AppPreferences, AppearanceMode, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
-    DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor,
-    EditorSelection, ExitField, ExitOperator, FactoryState, InboxItem, IntakeRule, IssueSourceKind,
-    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform,
-    MachineRecord, MachinesFleet, NewMachineDraft, PreferencesTab, Project, ProjectDatabase,
-    ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
-    ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
-    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowEditorDocument,
-    WorkflowId, WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter,
-    WorkflowsSort,
+    AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AttentionRequest,
+    AttentionRequestBody, AttentionRequestKind, CoreUpdatePolicy, DashboardDataset,
+    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry,
+    DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, InboxFilter,
+    InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
+    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
+    RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
+    Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
+    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
 };
-use nsh_core::{platform::Appearance, prelude::*};
+use nsh_core::{
+    element::desktop::main_window,
+    geometry::{Bounds, Points},
+    platform::Appearance,
+    prelude::*,
+};
 
 /// Primary screen shown in the main content area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,7 +89,20 @@ struct AppState {
     dashboard_period_offset: i32,
     dashboard_project_filter: Option<String>,
     tokens_show_table: bool,
-    inbox_items: Vec<InboxItem>,
+    inbox: InboxState,
+    inbox_filter: InboxFilter,
+    inbox_selected_id: Option<String>,
+    inbox_answered_expanded: bool,
+    inbox_waiting_rules_open: bool,
+    inbox_editing_command: bool,
+    inbox_edited_command: String,
+    inbox_always_allow_open: bool,
+    inbox_always_allow_pattern: String,
+    inbox_note_draft: String,
+    inbox_question_choice: Option<String>,
+    inbox_feedback: Option<String>,
+    menubar_popover_open: bool,
+    menubar_anchor_bounds: Option<Bounds<Points>>,
     machines_fleet: MachinesFleet,
     selected_machine_id: Option<u64>,
     machines_changes_expanded: bool,
@@ -118,7 +137,10 @@ impl Default for AppState {
 impl AppState {
     fn from_database_result(result: Result<ProjectDatabase, factory_core::StorageError>) -> Self {
         let dashboard_dataset = DashboardDataset::sample();
-        let inbox_items = DashboardDataset::sample_inbox();
+        let inbox = InboxState::sample();
+        let inbox_selected_id = inbox.default_selected_id();
+        let (inbox_edited_command, inbox_always_allow_pattern, inbox_question_choice) =
+            draft_defaults_for_selection(&inbox, inbox_selected_id.as_deref());
         let machines_fleet = MachinesFleet::sample();
         let selected_machine_id = machines_fleet.default_selected_id();
 
@@ -244,7 +266,20 @@ impl AppState {
                     dashboard_period_offset: 0,
                     dashboard_project_filter: None,
                     tokens_show_table: false,
-                    inbox_items,
+                    inbox,
+                    inbox_filter: InboxFilter::All,
+                    inbox_selected_id,
+                    inbox_answered_expanded: false,
+                    inbox_waiting_rules_open: false,
+                    inbox_editing_command: false,
+                    inbox_edited_command,
+                    inbox_always_allow_open: false,
+                    inbox_always_allow_pattern,
+                    inbox_note_draft: String::new(),
+                    inbox_question_choice,
+                    inbox_feedback: None,
+                    menubar_popover_open: false,
+                    menubar_anchor_bounds: None,
                     machines_fleet,
                     selected_machine_id,
                     machines_changes_expanded: false,
@@ -367,7 +402,20 @@ impl AppState {
                     dashboard_period_offset: 0,
                     dashboard_project_filter: None,
                     tokens_show_table: false,
-                    inbox_items,
+                    inbox,
+                    inbox_filter: InboxFilter::All,
+                    inbox_selected_id,
+                    inbox_answered_expanded: false,
+                    inbox_waiting_rules_open: false,
+                    inbox_editing_command: false,
+                    inbox_edited_command,
+                    inbox_always_allow_open: false,
+                    inbox_always_allow_pattern,
+                    inbox_note_draft: String::new(),
+                    inbox_question_choice,
+                    inbox_feedback: None,
+                    menubar_popover_open: false,
+                    menubar_anchor_bounds: None,
                     machines_fleet,
                     selected_machine_id,
                     machines_changes_expanded: false,
@@ -553,6 +601,30 @@ impl AppState {
         }
     }
 
+    fn sync_inbox_selection_and_drafts(&mut self) {
+        let valid_pending = self
+            .inbox_selected_id
+            .as_deref()
+            .and_then(|id| self.inbox.pending_by_id(id))
+            .is_some_and(|req| self.inbox_filter.matches(req.kind));
+        if !valid_pending {
+            let next = self
+                .inbox
+                .pending_oldest_first(self.inbox_filter)
+                .last()
+                .map(|r| r.id.clone());
+            self.inbox_selected_id = next;
+        }
+        let (cmd, pattern, choice) =
+            draft_defaults_for_selection(&self.inbox, self.inbox_selected_id.as_deref());
+        self.inbox_editing_command = false;
+        self.inbox_edited_command = cmd;
+        self.inbox_always_allow_open = false;
+        self.inbox_always_allow_pattern = pattern;
+        self.inbox_note_draft.clear();
+        self.inbox_question_choice = choice;
+    }
+
     fn persist_preferences(&mut self) {
         if let Some(db_arc) = self.db.as_ref()
             && let Ok(db) = db_arc.lock()
@@ -560,6 +632,32 @@ impl AppState {
         {
             self.preferences_error = Some(format!("Could not save preferences: {err}"));
         }
+    }
+}
+
+fn draft_defaults_for_selection(
+    inbox: &InboxState,
+    selected_id: Option<&str>,
+) -> (String, String, Option<String>) {
+    let Some(req) = selected_id.and_then(|id| inbox.pending_by_id(id)) else {
+        return (String::new(), String::new(), None);
+    };
+    match &req.body {
+        AttentionRequestBody::Permission(detail) => (
+            detail.command.clone(),
+            detail.always_allow_pattern.clone(),
+            None,
+        ),
+        AttentionRequestBody::Question(detail) => {
+            let recommended = detail
+                .options
+                .iter()
+                .find(|opt| opt.recommended)
+                .or_else(|| detail.options.first())
+                .map(|opt| opt.label.clone());
+            (String::new(), String::new(), recommended)
+        }
+        _ => (String::new(), String::new(), None),
     }
 }
 
@@ -632,8 +730,71 @@ pub(crate) fn open_dashboard() {
 
 pub(crate) fn open_inbox() {
     state().update(|s| {
+        s.menubar_popover_open = false;
         s.active_view = ActiveView::Inbox;
+        s.inbox_waiting_rules_open = false;
+        s.inbox_feedback = None;
         s.status_message = None;
+        s.sync_inbox_selection_and_drafts();
+    });
+    main_window().focus();
+}
+
+pub(crate) fn open_inbox_for_request(id: &str) {
+    let target = id.to_owned();
+    state().update(|s| {
+        s.menubar_popover_open = false;
+        let mut selected_answered = false;
+        if let Some(req) = s.inbox.pending_by_id(&target) {
+            if !s.inbox_filter.matches(req.kind) {
+                s.inbox_filter = InboxFilter::All;
+            }
+            s.inbox_selected_id = Some(target);
+        } else if s.inbox.answered_by_id(&target).is_some() {
+            s.inbox_answered_expanded = true;
+            s.inbox_selected_id = Some(target);
+            selected_answered = true;
+        }
+        s.active_view = ActiveView::Inbox;
+        s.inbox_waiting_rules_open = false;
+        s.inbox_feedback = None;
+        s.status_message = None;
+        if !selected_answered {
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    main_window().focus();
+}
+
+pub(crate) fn menubar_popover_open() -> bool {
+    state().with(|s| s.menubar_popover_open)
+}
+
+pub(crate) fn menubar_anchor_bounds() -> Option<Bounds<Points>> {
+    state().with(|s| s.menubar_anchor_bounds)
+}
+
+pub(crate) fn open_menubar_popover(bounds: Option<Bounds<Points>>) {
+    state().update(|s| {
+        s.menubar_anchor_bounds = bounds;
+        s.menubar_popover_open = true;
+    });
+}
+
+pub(crate) fn toggle_menubar_popover(bounds: Option<Bounds<Points>>) {
+    state().update(|s| {
+        if s.menubar_popover_open {
+            s.menubar_popover_open = false;
+        } else {
+            s.menubar_anchor_bounds = bounds;
+            s.menubar_popover_open = true;
+        }
+    });
+}
+
+pub(crate) fn close_menubar_popover() {
+    state().update(|s| {
+        s.menubar_popover_open = false;
     });
 }
 
@@ -1517,20 +1678,508 @@ pub(crate) fn toggle_tokens_show_table() {
 
 // --- Inbox & Machines -------------------------------------------------------------------
 
-pub(crate) fn inbox_items() -> Vec<InboxItem> {
-    state().with(|s| s.inbox_items.clone())
+pub(crate) fn inbox_state() -> InboxState {
+    state().with(|s| s.inbox.clone())
 }
 
 pub(crate) fn pending_inbox_count() -> usize {
-    state().with(|s| s.inbox_items.iter().filter(|item| !item.resolved).count())
+    state().with(|s| s.inbox.pending_count())
 }
 
-pub(crate) fn resolve_inbox_item(id: u64) {
+pub(crate) fn inbox_filter() -> InboxFilter {
+    state().with(|s| s.inbox_filter)
+}
+
+pub(crate) fn set_inbox_filter(filter: InboxFilter) {
     state().update(|s| {
-        if let Some(item) = s.inbox_items.iter_mut().find(|item| item.id == id) {
-            item.resolved = true;
-            s.status_message = Some(format!("Answered '{}'", item.title));
+        s.inbox_filter = filter;
+        s.inbox_waiting_rules_open = false;
+        s.sync_inbox_selection_and_drafts();
+    });
+}
+
+pub(crate) fn inbox_selected_id() -> Option<String> {
+    state().with(|s| s.inbox_selected_id.clone())
+}
+
+pub(crate) fn inbox_selected_pending() -> Option<AttentionRequest> {
+    state().with(|s| {
+        s.inbox_selected_id
+            .as_deref()
+            .and_then(|id| s.inbox.pending_by_id(id))
+            .cloned()
+    })
+}
+
+pub(crate) fn inbox_selected_answered() -> Option<AnsweredInboxItem> {
+    state().with(|s| {
+        s.inbox_selected_id
+            .as_deref()
+            .and_then(|id| s.inbox.answered_by_id(id))
+            .cloned()
+    })
+}
+
+pub(crate) fn inbox_select_request(id: &str) {
+    let target = id.to_owned();
+    state().update(|s| {
+        s.inbox_selected_id = Some(target);
+        s.inbox_waiting_rules_open = false;
+        s.inbox_feedback = None;
+        let (cmd, pattern, choice) =
+            draft_defaults_for_selection(&s.inbox, s.inbox_selected_id.as_deref());
+        s.inbox_editing_command = false;
+        s.inbox_edited_command = cmd;
+        s.inbox_always_allow_open = false;
+        s.inbox_always_allow_pattern = pattern;
+        s.inbox_note_draft.clear();
+        s.inbox_question_choice = choice;
+    });
+}
+
+pub(crate) fn inbox_select_relative(delta: isize) {
+    state().update(|s| {
+        let items = s.inbox.pending_oldest_first(s.inbox_filter);
+        if items.is_empty() {
+            return;
         }
+        let current_idx = s
+            .inbox_selected_id
+            .as_deref()
+            .and_then(|id| items.iter().position(|r| r.id == id))
+            .unwrap_or(0);
+        let next_idx = if delta < 0 {
+            current_idx.saturating_sub(delta.unsigned_abs())
+        } else {
+            (current_idx + delta as usize).min(items.len() - 1)
+        };
+        let next_id = items[next_idx].id.clone();
+        s.inbox_selected_id = Some(next_id);
+        let (cmd, pattern, choice) =
+            draft_defaults_for_selection(&s.inbox, s.inbox_selected_id.as_deref());
+        s.inbox_editing_command = false;
+        s.inbox_edited_command = cmd;
+        s.inbox_always_allow_open = false;
+        s.inbox_always_allow_pattern = pattern;
+        s.inbox_note_draft.clear();
+        s.inbox_question_choice = choice;
+    });
+}
+
+pub(crate) fn inbox_answered_expanded() -> bool {
+    state().with(|s| s.inbox_answered_expanded)
+}
+
+pub(crate) fn toggle_inbox_answered_expanded() {
+    state().update(|s| {
+        s.inbox_answered_expanded = !s.inbox_answered_expanded;
+    });
+}
+
+pub(crate) fn inbox_waiting_rules_open() -> bool {
+    state().with(|s| s.inbox_waiting_rules_open)
+}
+
+pub(crate) fn toggle_inbox_waiting_rules() {
+    state().update(|s| {
+        s.inbox_waiting_rules_open = !s.inbox_waiting_rules_open;
+    });
+}
+
+pub(crate) fn inbox_editing_command() -> bool {
+    state().with(|s| s.inbox_editing_command)
+}
+
+pub(crate) fn toggle_inbox_editing_command() {
+    state().update(|s| {
+        if let Some(req) = s
+            .inbox_selected_id
+            .as_deref()
+            .and_then(|id| s.inbox.pending_by_id(id))
+            && let AttentionRequestBody::Permission(detail) = &req.body
+        {
+            s.inbox_editing_command = !s.inbox_editing_command;
+            if s.inbox_editing_command && s.inbox_edited_command.trim().is_empty() {
+                s.inbox_edited_command = detail.command.clone();
+            }
+        }
+    });
+}
+
+pub(crate) fn inbox_edited_command() -> String {
+    state().with(|s| s.inbox_edited_command.clone())
+}
+
+pub(crate) fn set_inbox_edited_command(cmd: String) {
+    state().update(|s| {
+        s.inbox_edited_command = cmd;
+    });
+}
+
+pub(crate) fn inbox_always_allow_open() -> bool {
+    state().with(|s| s.inbox_always_allow_open)
+}
+
+pub(crate) fn toggle_inbox_always_allow_open() {
+    state().update(|s| {
+        s.inbox_always_allow_open = !s.inbox_always_allow_open;
+    });
+}
+
+pub(crate) fn inbox_always_allow_pattern() -> String {
+    state().with(|s| s.inbox_always_allow_pattern.clone())
+}
+
+pub(crate) fn set_inbox_always_allow_pattern(pattern: String) {
+    state().update(|s| {
+        s.inbox_always_allow_pattern = pattern;
+    });
+}
+
+pub(crate) fn inbox_note_draft() -> String {
+    state().with(|s| s.inbox_note_draft.clone())
+}
+
+pub(crate) fn set_inbox_note_draft(note: String) {
+    state().update(|s| {
+        s.inbox_note_draft = note;
+    });
+}
+
+pub(crate) fn inbox_question_choice() -> Option<String> {
+    state().with(|s| s.inbox_question_choice.clone())
+}
+
+pub(crate) fn set_inbox_question_choice(choice: String) {
+    state().update(|s| {
+        s.inbox_question_choice = Some(choice);
+    });
+}
+
+pub(crate) fn inbox_feedback() -> Option<String> {
+    state().with(|s| s.inbox_feedback.clone())
+}
+
+pub(crate) fn inbox_quick_allow(id: &str) {
+    let target = id.to_owned();
+    let mut closed_id = None;
+    state().update(|s| {
+        if let Some(answered) = s.inbox.allow_once(&target, None, None) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Allowed: {}", answered.subtitle));
+            s.status_message = Some(format!("Allowed '{}'", answered.subtitle));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_quick_deny(id: &str) {
+    let target = id.to_owned();
+    let mut closed_id = None;
+    state().update(|s| {
+        if let Some(answered) = s.inbox.deny(&target, None) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Denied: {}", answered.subtitle));
+            s.status_message = Some(format!("Denied '{}'", answered.subtitle));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_allow_once() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let edited = if s.inbox_editing_command {
+            Some(s.inbox_edited_command.clone())
+        } else {
+            None
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.allow_once(&id, edited.as_deref(), Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("{} — {}", answered.outcome, answered.subtitle));
+            s.status_message = Some(format!("{} '{}'", answered.outcome, answered.subtitle));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_allow_for_run() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let edited = if s.inbox_editing_command {
+            Some(s.inbox_edited_command.clone())
+        } else {
+            None
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.allow_for_run(&id, edited.as_deref(), Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("{} — {}", answered.outcome, answered.subtitle));
+            s.status_message = Some(format!("{} '{}'", answered.outcome, answered.subtitle));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_always_allow(scope: AlwaysAllowScope) {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let pattern = s.inbox_always_allow_pattern.clone();
+        if let Some(answered) = s.inbox.always_allow(&id, &pattern, scope) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(answered.outcome.clone());
+            s.status_message = Some(answered.outcome.clone());
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_deny_selected() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.deny(&id, Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Denied: {}", answered.subtitle));
+            s.status_message = Some(format!("Denied '{}'", answered.subtitle));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_answer_question() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let answer = if !s.inbox_note_draft.trim().is_empty() {
+            s.inbox_note_draft.trim().to_owned()
+        } else {
+            s.inbox_question_choice.clone().unwrap_or_default()
+        };
+        if let Some(answered) = s.inbox.answer_question(&id, &answer) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(answered.outcome.clone());
+            s.status_message = Some(answered.outcome.clone());
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_let_agent_decide() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        if let Some(answered) = s.inbox.let_agent_decide(&id) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Let {} decide", answered.agent.display_name()));
+            s.status_message = Some(format!("Let {} decide", answered.agent.display_name()));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_approve_review() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.approve_review(&id, Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Approved review — {}", answered.context_label));
+            s.status_message = Some(format!("Approved review for {}", answered.context_label));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_request_changes() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.request_changes(&id, Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Requested changes — {}", answered.context_label));
+            s.status_message = Some(format!("Requested changes for {}", answered.context_label));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_grant_more_attempts() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.grant_more_attempts(&id, 3, Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!(
+                "Granted +3 attempts for {}",
+                answered.context_label
+            ));
+            s.status_message = Some(format!(
+                "Granted +3 attempts for {}",
+                answered.context_label
+            ));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_stop_exhausted_run() {
+    let mut closed_id = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        let note = s.inbox_note_draft.clone();
+        if let Some(answered) = s.inbox.stop_exhausted_run(&id, Some(&note)) {
+            closed_id = Some(answered.id.clone());
+            s.inbox_feedback = Some(format!("Stopped {}", answered.context_label));
+            s.status_message = Some(format!("Stopped {}", answered.context_label));
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed_id {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+pub(crate) fn inbox_primary_answer() {
+    let Some(req) = inbox_selected_pending() else {
+        return;
+    };
+    match req.kind {
+        AttentionRequestKind::Permission => inbox_allow_once(),
+        AttentionRequestKind::Question => inbox_answer_question(),
+        AttentionRequestKind::Review => inbox_approve_review(),
+        AttentionRequestKind::LoopExhausted => inbox_grant_more_attempts(),
+    }
+}
+
+pub(crate) fn inbox_secondary_deny_shortcut() {
+    let Some(req) = inbox_selected_pending() else {
+        return;
+    };
+    match req.kind {
+        AttentionRequestKind::Permission => inbox_deny_selected(),
+        AttentionRequestKind::Question => inbox_let_agent_decide(),
+        AttentionRequestKind::Review => inbox_request_changes(),
+        AttentionRequestKind::LoopExhausted => inbox_stop_exhausted_run(),
+    }
+}
+
+pub(crate) fn inbox_open_selected_run() {
+    let target = state().with(|s| {
+        let id = s.inbox_selected_id.as_deref()?;
+        if let Some(req) = s.inbox.pending_by_id(id) {
+            Some((req.project_name.clone(), req.workflow_name.clone()))
+        } else {
+            s.inbox
+                .answered_by_id(id)
+                .map(|ans| (ans.project_name.clone(), ans.workflow_name.clone()))
+        }
+    });
+    let Some((project_name, workflow_name)) = target else {
+        return;
+    };
+    state().update(|s| {
+        if let Some(project) = s.factory.projects().iter().find(|p| p.name == project_name) {
+            s.selected_project = Some(project.id);
+            s.expanded_projects.insert(project.id);
+        }
+        let step_index = s
+            .ensure_workflow_run_mut(&project_name, &workflow_name)
+            .active_step_index;
+        s.active_workflow_run_key = (project_name, workflow_name);
+        s.workflow_run_selected_step = step_index;
+        s.workflow_run_tab = RunDetailTab::Output;
+        s.workflow_run_command_palette_open = false;
+        s.active_view = ActiveView::WorkflowRun;
+        s.status_message = None;
+    });
+    main_window().focus();
+}
+
+pub(crate) fn toggle_pause_all_agents() {
+    state().update(|s| {
+        let paused = s.inbox.toggle_pause_all_agents();
+        let msg = if paused {
+            "Paused all active agents".to_owned()
+        } else {
+            "Resumed all active agents".to_owned()
+        };
+        s.inbox_feedback = Some(msg.clone());
+        s.status_message = Some(msg);
+    });
+}
+
+pub(crate) fn toggle_snooze_notifications() {
+    state().update(|s| {
+        let snoozed = s.inbox.toggle_snooze_notifications();
+        let msg = if let Some(mins) = snoozed {
+            format!("Snoozed notifications for {mins} minutes")
+        } else {
+            "Notifications resumed".to_owned()
+        };
+        s.inbox_feedback = Some(msg.clone());
+        s.status_message = Some(msg);
     });
 }
 
@@ -2336,19 +2985,21 @@ pub(crate) fn update_prefs_machine_ssh_key(
     fingerprint: &str,
 ) -> bool {
     let mut ok = false;
-    state().update(
-        |s| match s.machines_fleet.set_ssh_key(id, key_name, key_type, fingerprint) {
+    state().update(|s| {
+        match s
+            .machines_fleet
+            .set_ssh_key(id, key_name, key_type, fingerprint)
+        {
             Ok(()) => {
                 s.preferences_error = None;
-                s.preferences_feedback =
-                    Some(format!("SSH key set to '{}'.", key_name.trim()));
+                s.preferences_feedback = Some(format!("SSH key set to '{}'.", key_name.trim()));
                 ok = true;
             }
             Err(err) => {
                 s.preferences_error = Some(err.to_string());
             }
-        },
-    );
+        }
+    });
     ok
 }
 
@@ -2369,8 +3020,10 @@ pub(crate) fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePo
         |s| match s.machines_fleet.set_core_update_policy(id, policy) {
             Ok(()) => {
                 s.preferences_error = None;
-                s.preferences_feedback =
-                    Some(format!("Core update policy set to '{}'.", policy.short_label()));
+                s.preferences_feedback = Some(format!(
+                    "Core update policy set to '{}'.",
+                    policy.short_label()
+                ));
             }
             Err(err) => {
                 s.preferences_error = Some(err.to_string());
@@ -2379,11 +3032,7 @@ pub(crate) fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePo
     );
 }
 
-pub(crate) fn set_prefs_machine_agent_signed_in(
-    id: u64,
-    agent: MachineAgentKind,
-    signed_in: bool,
-) {
+pub(crate) fn set_prefs_machine_agent_signed_in(id: u64, agent: MachineAgentKind, signed_in: bool) {
     state().update(
         |s| match s.machines_fleet.set_agent_signed_in(id, agent, signed_in) {
             Ok(()) => {
@@ -2416,7 +3065,8 @@ pub(crate) fn update_prefs_machine_max_sessions(id: u64, value_str: &str) -> boo
             }
         },
         Err(_) => {
-            s.preferences_error = Some("Sessions at once must be a number between 1 and 32.".to_owned());
+            s.preferences_error =
+                Some("Sessions at once must be a number between 1 and 32.".to_owned());
         }
     });
     ok

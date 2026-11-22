@@ -31,17 +31,32 @@ pub fn root_with_db_path(db_path: PathBuf) -> Root {
     let db_path = db_path.to_string_lossy().into_owned();
     Root::new::<AppWithDb>(move || AppWithDbProps {
         db_path: db_path.clone(),
+        open_menubar_popover: false,
+    })
+}
+
+/// Builds a Native Shell [`Root`] backed by a specific SQLite database file
+/// with the menu bar popover opened on launch (for headless UI tests).
+pub fn root_with_db_path_and_menubar_popover(db_path: PathBuf) -> Root {
+    let db_path = db_path.to_string_lossy().into_owned();
+    Root::new::<AppWithDb>(move || AppWithDbProps {
+        db_path: db_path.clone(),
+        open_menubar_popover: true,
     })
 }
 
 #[derive(Clone, PartialEq, Props)]
 struct AppWithDbProps {
     db_path: String,
+    open_menubar_popover: bool,
 }
 
 #[component]
 fn AppWithDb(props: AppWithDbProps) -> impl IntoElement {
     store::init_with_database_path(std::path::Path::new(&props.db_path));
+    if props.open_menubar_popover {
+        store::open_menubar_popover(None);
+    }
     app_surface()
 }
 
@@ -54,12 +69,14 @@ fn app_surface() -> impl IntoElement {
     nsh_core::element::desktop::current_window().set(attrs);
 
     menu::install_application_menu();
+    ui::menubar::install_menubar_and_attention_surfaces();
 
     view()
         .flex_1()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
         .child(ui::shell())
+        .child(ui::menubar::menubar_popover_window())
         .child(ui::preferences::preferences_window())
         .child(ui::project_settings::project_settings_window())
 }

@@ -311,6 +311,50 @@ pub(crate) fn table_header_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xF8F9FB), rgb(0x1E222A))
 }
 
+pub(crate) fn popover_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFFFFFF), rgb(0x1E222A))
+}
+
+pub(crate) fn popover_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD8DCE3), rgb(0x343A46))
+}
+
+pub(crate) fn menubar_overdue_dot() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xA6520B), rgb(0xE8843C))
+}
+
+pub(crate) fn menubar_fresh_dot() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x1668D6), rgb(0x4C9AFF))
+}
+
+pub(crate) fn inbox_selected_muted_fg() -> AdaptiveColor {
+    AdaptiveColor::new(rgba(0xFFFFFFD9), rgba(0xFFFFFFD9))
+}
+
+pub(crate) fn inbox_selected_pill_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgba(0xFFFFFF1A), rgba(0xFFFFFF1A))
+}
+
+pub(crate) fn inbox_selected_pill_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgba(0xFFFFFF5C), rgba(0xFFFFFF5C))
+}
+
+pub(crate) fn inbox_rule_box_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFAFAFC), rgb(0x171A21))
+}
+
+pub(crate) fn inbox_rule_box_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD4D8DF), rgb(0x343A47))
+}
+
+pub(crate) fn inbox_keycap_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xEFEFF2), rgb(0x262B35))
+}
+
+pub(crate) fn inbox_keycap_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xDCDFE5), rgb(0x383E4C))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),

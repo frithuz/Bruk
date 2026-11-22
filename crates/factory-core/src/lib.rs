@@ -6,6 +6,7 @@
 
 pub mod dashboard;
 pub mod engine;
+pub mod inbox;
 pub mod machines;
 pub mod model;
 pub mod preferences;
@@ -23,6 +24,12 @@ pub use dashboard::{
     format_currency, format_tenths_hours, format_tokens, format_wait_minutes,
 };
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
+pub use inbox::{
+    AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AttentionRequest, AttentionRequestBody,
+    AttentionRequestKind, InboxFilter, InboxState, LoopAttemptSummary, LoopExhaustedDetail,
+    PermissionDetail, PermissionRiskTag, QuestionDetail, QuestionOption, ReviewDetail,
+    ReviewFileStat, WaitingRulesConfig,
+};
 pub use machines::{
     CoreUpdatePolicy, MachineAgentKind, MachineCatchUpSummary, MachineConnectionStatus,
     MachinePlatform, MachineRecord, MachineSession, MachinesError, MachinesFleet, NewMachineDraft,

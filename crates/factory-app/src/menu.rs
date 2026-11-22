@@ -82,9 +82,10 @@ fn current_menu_snapshot() -> MenuSnapshot {
         let can_stop = selected_run
             .as_ref()
             .is_some_and(|run| !run.status.is_terminal());
-        let can_approve = selected_run
-            .as_ref()
-            .is_some_and(|run| run.status == RunStatus::WaitingForApproval);
+        let can_approve = active_view != store::ActiveView::Inbox
+            && selected_run
+                .as_ref()
+                .is_some_and(|run| run.status == RunStatus::WaitingForApproval);
         (false, false, can_stop, can_approve)
     };
 
@@ -518,7 +519,6 @@ fn open_dashboard_window() {
 
 fn open_inbox_window() {
     store::open_inbox();
-    main_window().focus();
 }
 
 fn open_machines_window() {

@@ -481,3 +481,30 @@ pub(crate) fn status_unreachable(color: impl IntoReactive<AdaptiveColor>) -> imp
     )
     .text_color(color)
 }
+
+/// Padlock icon for permission requests in the Inbox list.
+pub(crate) fn lock_permission(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><rect x="3.4" y="7.2" width="9.2" height="6.4" rx="1.5"/><path d="M5.4 7.2V5.3a2.6 2.6 0 0 1 5.2 0v1.9"/><circle cx="8" cy="10.4" r="0.85" fill="currentColor" stroke="none"/></svg>"#,
+        14.0,
+    )
+    .text_color(color)
+}
+
+/// Speech bubble with question mark for agent question requests in the Inbox list.
+pub(crate) fn question_bubble(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 3.6h10.8a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6.4l-2.8 2.2v-2.2h-1a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1Z"/><path d="M6.8 6.4a1.25 1.25 0 0 1 2.4.4c0 .8-.9 1.1-1.2 1.6"/><circle cx="8" cy="10" r="0.55" fill="currentColor" stroke="none"/></svg>"#,
+        14.0,
+    )
+    .text_color(color)
+}
+
+/// Globe icon for network-access permission risk pills.
+pub(crate) fn globe(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="5.6"/><ellipse cx="8" cy="8" rx="2.6" ry="5.6"/><path d="M2.6 8h10.8"/></svg>"#,
+        12.5,
+    )
+    .text_color(color)
+}

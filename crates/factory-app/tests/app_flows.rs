@@ -93,11 +93,14 @@ fn inbox_and_machines_views_update_sidebar_badges() {
 
     let mut app = start_with_db(db_path);
 
-    // Navigate to Inbox and approve a waiting request.
-    app.press("Inbox").unwrap();
-    app.wait_for("4 requests waiting for your input").unwrap();
-    app.press("role:button[Approve] >> nth=0").unwrap();
-    app.wait_for("3 requests waiting for your input").unwrap();
+    // Navigate to Inbox inside the primary window and answer a waiting request.
+    app.press("id:sidebar-inbox-btn").unwrap();
+    app.wait_for("5 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+    assert!(app.window_state("inbox").unwrap().is_none());
+    app.press("id:inbox-allow-once").unwrap();
+    app.wait_for("4 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
 
     // Navigate to Machines and verify the fleet header and reconnect flow.
     app.press("Machines").unwrap();
@@ -269,9 +272,11 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
 
     let mut app = start_with_db(db_path);
 
-    // Window menu shortcuts switch top-level views.
+    // Window menu shortcuts switch top-level views inside the primary window.
     app.press_key("mod+i").unwrap();
-    app.wait_for("4 requests waiting for your input").unwrap();
+    app.wait_for("5 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+    assert!(app.window_state("inbox").unwrap().is_none());
 
     app.press_key("alt+mod+m").unwrap();
     app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
@@ -1308,7 +1313,10 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     assert!(app.screen().shows("/home/wald/work"));
     assert!(app.screen().shows("Sessions at once"));
     assert!(app.screen().shows("4"));
-    assert!(app.screen().shows("api-gateway, marketing-site, mobile-app"));
+    assert!(
+        app.screen()
+            .shows("api-gateway, marketing-site, mobile-app")
+    );
     assert!(app.screen().shows("Remove Machine..."));
 
     // Interactive flows on build-box-01:
@@ -1346,7 +1354,8 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     app.press("id:prefs-machine-change-ssh-key").unwrap();
     app.wait_for("id:prefs-machine-ssh-preset-wald-deploy")
         .unwrap();
-    app.press("id:prefs-machine-ssh-preset-wald-deploy").unwrap();
+    app.press("id:prefs-machine-ssh-preset-wald-deploy")
+        .unwrap();
     app.wait_for("wald-deploy · ED25519").unwrap();
 
     // 6. Change Core updates policy
@@ -1382,7 +1391,10 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     // 9. Switch to another machine (gpu-01 & This Mac)
     app.press("id:prefs-machine-item-gpu-01").unwrap();
     app.wait_for("Fedora 41 Workstation").unwrap();
-    assert!(app.screen().shows("8 · ahead of this app (7) · not syncing"));
+    assert!(
+        app.screen()
+            .shows("8 · ahead of this app (7) · not syncing")
+    );
 
     app.press("id:prefs-machine-item-this-mac").unwrap();
     app.wait_for("Darwin 25.1.0").unwrap();
@@ -1406,4 +1418,170 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     app.wait_for("id:prefs-machine-remove-confirm").unwrap();
     app.press("id:prefs-machine-remove-confirm").unwrap();
     app.wait_for("Removed machine 'staging-arm-01'.").unwrap();
+}
+
+#[test]
+fn menubar_popover_handles_quick_answers_and_opens_inbox_in_primary_window() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut config = EngineConfig::new(factory_app::root_with_db_path_and_menubar_popover(db_path));
+    config.environment.os = Os::MacOs;
+    config.viewport = Size::new(px(1360.0), px(920.0));
+    let mut app = Headless::start(config).unwrap();
+    app.wait_for("Waiting on you · 5").unwrap();
+
+    // Popover is open as a floating popup window; Inbox lives in the primary window.
+    assert!(app.window_state("menubar-popover").unwrap().is_some());
+    assert!(app.window_state("inbox").unwrap().is_none());
+
+    // Verify all 5 reference menu bar rows and footer actions from 10 AttentionSurfaces.png.
+    assert!(app.screen().shows("3 agents working"));
+    assert!(app.screen().shows("Run npm run lint -- --fix"));
+    assert!(app.screen().shows("Install @vitest/coverage-v8"));
+    assert!(app.screen().shows("Which pricing page to link?"));
+    assert!(app.screen().shows("Review before pull request"));
+    assert!(app.screen().shows("Loop ran out of attempts"));
+    assert!(app.screen().shows("Open Inbox"));
+    assert!(app.screen().shows("Pause All Agents"));
+    assert!(app.screen().shows("Snooze Notifications for 1 Hour"));
+
+    // Quick-answer the low-risk lint command directly from the menu bar popover.
+    app.press("id:menubar-allow-req-8f2c").unwrap();
+    app.wait_for("Waiting on you · 4").unwrap();
+    assert!(!app.screen().shows("Run npm run lint -- --fix"));
+
+    // Toggle Pause All Agents and Snooze Notifications from the popover footer.
+    app.press("id:menubar-pause-agents").unwrap();
+    app.wait_for("Agents paused").unwrap();
+    assert!(app.screen().shows("Resume All Agents"));
+    app.press("id:menubar-pause-agents").unwrap();
+    app.wait_for("3 agents working").unwrap();
+
+    app.press("id:menubar-snooze-notifications").unwrap();
+    app.wait_for("Snoozed (60 min) — Resume").unwrap();
+
+    // Clicking "Answer..." on the Claude question closes the popover and switches
+    // the primary window to Inbox focused directly on that request.
+    app.press("id:menubar-action-req-5a19").unwrap();
+    app.wait_for("4 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+    assert!(app.window_state("menubar-popover").unwrap().is_none());
+    assert!(app.window_state("inbox").unwrap().is_none());
+    assert!(
+        app.screen()
+            .shows("Which pricing page should the comparison table link to?")
+    );
+    assert!(app.screen().shows("Send Answer"));
+}
+
+#[test]
+fn inbox_view_renders_reference_layout_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Open Inbox inside the primary window via ⌘I.
+    app.press_key("mod+i").unwrap();
+    app.wait_for("Blocking a run · oldest first").unwrap();
+    assert!(app.window_state("inbox").unwrap().is_none());
+
+    // Verify 08 Inbox.png reference header, list items, and default selected permission detail.
+    assert!(app.screen().shows("All 5"));
+    assert!(app.screen().shows("Permissions"));
+    assert!(app.screen().shows("Questions"));
+    assert!(app.screen().shows("Reviews"));
+    assert!(app.screen().shows("Pause All Agents"));
+    assert!(app.screen().shows("Loop ran out of attempts"));
+    assert!(app.screen().shows("Review before the pull request"));
+    assert!(app.screen().shows("Claude has a question"));
+    assert!(app.screen().shows("Codex wants to run a command"));
+    assert!(app.screen().shows("Answered today · 6"));
+
+    assert!(
+        app.screen()
+            .shows("api-gateway › Dependency upgrade › run #44 · build-box-01")
+    );
+    assert!(app.screen().shows("Step 2 paused · attempt 1 of 3"));
+    assert!(app.screen().shows("Other runs keep going"));
+    assert!(app.screen().shows("Open run"));
+    assert!(app.screen().shows(
+        "Coverage reporting needs the v8 provider, and it isn't installed in this project yet."
+    ));
+    assert!(
+        app.screen()
+            .shows("npm install --save-dev @vitest/coverage-v8")
+    );
+    assert!(app.screen().shows("Network access"));
+    assert!(
+        app.screen()
+            .shows("Changes package.json, package-lock.json")
+    );
+    assert!(app.screen().shows("Not in this step's allowed commands"));
+    assert!(app.screen().shows("Allow Once"));
+    assert!(app.screen().shows("Allow for This Run"));
+    assert!(app.screen().shows("Always Allow..."));
+    assert!(app.screen().shows("Deny"));
+    assert!(
+        app.screen()
+            .shows("Always Allow adds this rule to the Fix issue workflow")
+    );
+    assert!(app.screen().shows("npm install --save-dev @vitest/*"));
+    assert!(app.screen().shows("Note to the agent"));
+    assert!(
+        app.screen()
+            .shows("If unanswered by 8:05 PM, this is denied and Codex is told no one answered.")
+    );
+    assert!(app.screen().shows("Waiting rules"));
+    assert!(app.screen().shows("Move between requests"));
+    assert!(app.screen().shows("Primary answer"));
+
+    // Toggle Waiting rules panel.
+    app.press("id:inbox-waiting-rules-btn").unwrap();
+    app.wait_for("• Menu bar badge turns orange and sends a silent reminder after 15 min.")
+        .unwrap();
+    app.press("id:inbox-waiting-rules-close").unwrap();
+
+    // Edit command before allowing, then save an Always Allow rule for the workflow.
+    app.press("id:inbox-edit-command-btn").unwrap();
+    app.wait_for("id:inbox-command-input").unwrap();
+    app.press("id:inbox-edit-command-btn").unwrap();
+
+    app.press("id:inbox-always-allow-btn").unwrap();
+    app.wait_for("id:inbox-save-rule-workflow").unwrap();
+    app.press("id:inbox-save-rule-workflow").unwrap();
+    app.wait_for("4 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+    assert!(app.screen().shows("Answered today · 7"));
+
+    // Filter to Questions and answer Claude's question.
+    app.press("id:inbox-filter-questions").unwrap();
+    app.wait_for("Which pricing page should the comparison table link to?")
+        .unwrap();
+    app.press("id:inbox-question-opt-enterprise").unwrap();
+    app.press("id:inbox-send-answer").unwrap();
+    app.wait_for("3 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+
+    // Switch back to All, approve the Review gate, and inspect Answered today.
+    app.press("id:inbox-filter-all").unwrap();
+    app.press("id:inbox-row-req-71d0").unwrap();
+    app.wait_for("Approve & Open PR").unwrap();
+    assert!(app.screen().shows("src/auth/retry.ts"));
+    app.press("id:inbox-approve-review").unwrap();
+    app.wait_for("2 agents waiting · oldest 25 min · 3 still working")
+        .unwrap();
+
+    // Expand Answered today and inspect a completed item.
+    app.press("id:inbox-answered-toggle").unwrap();
+    app.wait_for("id:inbox-answered-row-req-71d0").unwrap();
+    app.press("id:inbox-answered-row-req-71d0").unwrap();
+    app.wait_for("Approved & opened PR").unwrap();
+
+    // Open the underlying run in the primary window, then return to Inbox via ⌘I.
+    app.press("id:inbox-open-run").unwrap();
+    app.wait_for("Edit Workflow").unwrap();
+    app.press_key("mod+i").unwrap();
+    app.wait_for("Blocking a run · oldest first").unwrap();
 }
