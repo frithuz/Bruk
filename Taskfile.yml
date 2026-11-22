@@ -4,6 +4,9 @@ version: '3'
 
 vars:
   MACOS_DB_DEFAULT: '{{.HOME}}/Library/Application Support/software-factory/factory.db'
+  NSH_VERSION: 'v0.6.1'
+  NSH_BIN:
+    sh: command -v nsh 2>/dev/null || echo "{{.HOME}}/.local/bin/nsh"
 
 tasks:
   default:
@@ -11,6 +14,11 @@ tasks:
     silent: true
     cmds:
       - task --list
+
+  nsh:install:
+    desc: Install or update the Native Shell (nsh) CLI
+    cmds:
+      - NSH_VERSION={{.NSH_VERSION}} curl -fsSL https://nsh.dev/install.sh | sh
 
   run:
     desc: Run the native macOS app via Cargo
@@ -21,10 +29,10 @@ tasks:
   run:nsh:
     desc: Run the macOS app with Native Shell CLI (auto-rebuilds on Rust changes)
     preconditions:
-      - sh: command -v nsh >/dev/null 2>&1
-        msg: "nsh CLI not found. Install it with: curl -fsSL https://nsh.dev/install.sh | sh"
+      - sh: '[ -x "{{.NSH_BIN}}" ]'
+        msg: "nsh CLI not found. Run `task nsh:install` first."
     cmds:
-      - nsh run --target macos {{.CLI_ARGS}}
+      - '"{{.NSH_BIN}}" run --target macos {{.CLI_ARGS}}'
 
   build:
     desc: Build all workspace crates (debug)
@@ -37,12 +45,29 @@ tasks:
       - cargo build --workspace --release {{.CLI_ARGS}}
 
   package:
-    desc: Package a standalone macOS .app bundle with Native Shell
+    desc: Package a standalone macOS .app bundle (.nsh/out/Software Factory.app)
+    aliases: [package:macos]
     preconditions:
-      - sh: command -v nsh >/dev/null 2>&1
-        msg: "nsh CLI not found. Install it with: curl -fsSL https://nsh.dev/install.sh | sh"
+      - sh: '[ -x "{{.NSH_BIN}}" ]'
+        msg: "nsh CLI not found. Run `task nsh:install` first."
     cmds:
-      - nsh package --target macos {{.CLI_ARGS}}
+      - '"{{.NSH_BIN}}" package --target macos {{.CLI_ARGS}}'
+
+  package:run:
+    desc: Package and launch the standalone macOS .app bundle
+    preconditions:
+      - sh: '[ -x "{{.NSH_BIN}}" ]'
+        msg: "nsh CLI not found. Run `task nsh:install` first."
+    cmds:
+      - '"{{.NSH_BIN}}" package --target macos --run {{.CLI_ARGS}}'
+
+  package:universal:
+    desc: Package a universal (arm64 + x86_64) macOS .app bundle
+    preconditions:
+      - sh: '[ -x "{{.NSH_BIN}}" ]'
+        msg: "nsh CLI not found. Run `task nsh:install` first."
+    cmds:
+      - '"{{.NSH_BIN}}" package --target macos --arch universal {{.CLI_ARGS}}'
 
   test:
     desc: Run all unit tests and headless Native Shell UI tests

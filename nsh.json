@@ -3,7 +3,25 @@
   "id": "com.softwarefactory.app",
   "version": "0.1.0",
   "build": 1,
+  "icon": "assets/icon.png",
   "appearance": "system",
   "rust": "crates/factory-app",
-  "root": "App"
+  "root": "App",
+  "window": {
+    "defaultSize": {
+      "width": 1120,
+      "height": 720
+    },
+    "minSize": {
+      "width": 860,
+      "height": 560
+    },
+    "restoreBounds": true
+  },
+  "macos": {
+    "infoPlist": {
+      "LSApplicationCategoryType": "public.app-category.developer-tools",
+      "LSMinimumSystemVersion": "14.0"
+    }
+  }
 }
