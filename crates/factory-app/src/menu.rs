@@ -5,7 +5,9 @@
 //! actions; unimplemented commands remain visible as disabled entries matching
 //! the reference menu specification.
 
-use factory_core::{PreferencesTab, ProjectId, RunDetailTab, RunExecutionState, RunStatus};
+use factory_core::{
+    PreferencesTab, ProjectId, ProjectSettingsTab, RunDetailTab, RunExecutionState, RunStatus,
+};
 use nsh_core::{
     desktop::{MenuRole, WindowMode},
     element::{
@@ -286,8 +288,12 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .disabled(!snapshot.has_projects)
                 .on_select(open_intake_rules),
             MenuItem::separator(),
-            MenuItem::new("Project Settings…").disabled(true),
-            MenuItem::new("Environment Variables…").disabled(true),
+            MenuItem::new("Project Settings…")
+                .disabled(!snapshot.has_projects)
+                .on_select(store::open_project_settings),
+            MenuItem::new("Environment Variables…")
+                .disabled(!snapshot.has_projects)
+                .on_select(|| store::open_project_settings_tab(ProjectSettingsTab::Environment)),
             MenuItem::new("Show in Finder")
                 .shortcut("alt+mod+o")
                 .disabled(!snapshot.has_selected_project)
@@ -442,7 +448,9 @@ fn open_project_dialog() {
 }
 
 fn close_active_window() {
-    if store::preferences_open() && store::preferences_focused() {
+    if store::project_settings_open() && store::project_settings_focused() {
+        store::close_project_settings();
+    } else if store::preferences_open() && store::preferences_focused() {
         store::close_preferences();
     } else {
         main_window().close();

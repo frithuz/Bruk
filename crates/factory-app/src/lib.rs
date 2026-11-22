@@ -61,4 +61,5 @@ fn app_surface() -> impl IntoElement {
         .text_color(move || theme().foreground)
         .child(ui::shell())
         .child(ui::preferences::preferences_window())
+        .child(ui::project_settings::project_settings_window())
 }

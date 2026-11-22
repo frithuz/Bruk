@@ -568,3 +568,161 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
     app.press("id:wf-header-stop").unwrap();
     app.wait_for("Stopped · step 3 of 5").unwrap();
 }
+
+#[test]
+fn project_settings_window_renders_issues_intake_and_interactive_tabs() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+    assert!(app.window_state("project-settings").unwrap().is_none());
+
+    // Open api-gateway Project Settings from the expanded sidebar tree.
+    app.press("id:sidebar-project-settings-1").unwrap();
+    app.wait_for("api-gateway — Project Settings").unwrap();
+    assert!(app.window_state("project-settings").unwrap().is_some());
+
+    // Verify all 6 left sidebar tabs.
+    assert!(app.screen().shows("General"));
+    assert!(app.screen().shows("Issues & intake"));
+    assert!(app.screen().shows("Providers"));
+    assert!(app.screen().shows("Workflows"));
+    assert!(app.screen().shows("Environment"));
+    assert!(app.screen().shows("Agents & limits"));
+
+    // Verify Issues & intake content matches 05 ProjectSettings.png.
+    assert!(app.screen().shows("Issue source"));
+    assert!(
+        app.screen()
+            .shows("Where this project's work comes from. Each project uses one source.")
+    );
+    assert!(app.screen().shows("GitHub Issues"));
+    assert!(app.screen().shows("Issues and labels from one repository"));
+    assert!(app.screen().shows("itsaplan"));
+    assert!(
+        app.screen()
+            .shows("Work items delegated to an agent member")
+    );
+    assert!(app.screen().shows("From an extension"));
+    assert!(app.screen().shows("No issue source extensions installed"));
+    assert_eq!(
+        app.screen().input_text("id:ps-github-repo").unwrap(),
+        Some("acme/api-gateway")
+    );
+    assert_eq!(
+        app.screen().input_text("id:ps-concurrency-input").unwrap(),
+        Some("2")
+    );
+    assert!(app.screen().shows("Your GitHub CLI (gh) sign-in"));
+    assert!(app.screen().shows("Use a Token Instead..."));
+    assert!(
+        app.screen()
+            .shows("Connected · 14 open issues · synced 1 min ago")
+    );
+
+    assert!(app.screen().shows("Intake rules"));
+    assert!(app.screen().shows(
+        "Open issues labeled agent-ready become work. The first matching rule picks the workflow."
+    ));
+    assert!(app.screen().shows("Order"));
+    assert!(app.screen().shows("When the issue"));
+    assert!(app.screen().shows("Run workflow"));
+    assert!(app.screen().shows("has label bug"));
+    assert!(app.screen().shows("Fix issue"));
+    assert!(app.screen().shows("has label docs"));
+    assert!(app.screen().shows("Docs refresh"));
+    assert!(app.screen().shows("matches anything else"));
+    assert!(app.screen().shows("Triage new issues"));
+    assert!(app.screen().shows("Add Rule"));
+    assert!(app.screen().shows("Runs at once for this project"));
+
+    assert!(app.screen().shows("Start matching work automatically"));
+    assert!(
+        app.screen()
+            .shows("Off: issues wait in Ready for agents until you press Start.")
+    );
+    assert!(app.screen().shows("Update the issue as work moves"));
+    assert!(
+        app.screen()
+            .shows("Add the label agent-working while a run is active")
+    );
+    assert!(
+        app.screen()
+            .shows("Comment with the run link and the final summary")
+    );
+    assert!(
+        app.screen()
+            .shows("Link the pull request so merging closes the issue")
+    );
+
+    // Switch GitHub sign-in to a personal access token and back to GitHub CLI.
+    app.press("id:ps-use-token-btn").unwrap();
+    app.wait_for("id:ps-token-input").unwrap();
+    app.type_text("id:ps-token-input", "ghp_placeholder_secret_9a2c")
+        .unwrap();
+    app.press("id:ps-token-save").unwrap();
+    app.wait_for("Personal access token (ghp_••••••••••••9a2c)")
+        .unwrap();
+    app.press("id:ps-use-gh-cli-btn").unwrap();
+    app.wait_for("Your GitHub CLI (gh) sign-in").unwrap();
+
+    // Add a new intake rule and verify it appears before the fallback row.
+    app.press("id:ps-add-rule-btn").unwrap();
+    app.wait_for("id:ps-new-rule-label").unwrap();
+    app.type_text("id:ps-new-rule-label", "security").unwrap();
+    app.press("id:ps-rule-save").unwrap();
+    app.wait_for("has label security").unwrap();
+
+    // Switch issue source to itsaplan and back to GitHub Issues.
+    app.press("id:ps-source-itsaplan").unwrap();
+    app.wait_for("Signed in as @factory-bot via workspace token")
+        .unwrap();
+    app.press("id:ps-source-github").unwrap();
+    app.wait_for("Connected · 14 open issues · synced 1 min ago")
+        .unwrap();
+
+    // Toggle auto-start and issue-update checkboxes.
+    app.press("id:ps-auto-start-checkbox").unwrap();
+    app.press("id:ps-update-working-label").unwrap();
+    app.press("id:ps-update-comment-summary").unwrap();
+    app.press("id:ps-update-link-pr").unwrap();
+
+    // Navigate through all remaining sidebar tabs and verify placeholder content.
+    app.press("id:ps-tab-general").unwrap();
+    app.wait_for("Branches & worktrees").unwrap();
+    assert!(
+        app.screen()
+            .shows("origin · git@github.com:acme/api-gateway.git")
+    );
+
+    app.press("id:ps-tab-providers").unwrap();
+    app.wait_for("Routing & credentials").unwrap();
+    assert!(app.screen().shows("Open Provider Preferences..."));
+
+    app.press("id:ps-tab-workflows").unwrap();
+    app.wait_for("Discovered workflows").unwrap();
+    assert!(
+        app.screen()
+            .shows(".factory/workflows/fix-issue.yaml · Intake · 4 steps · Claude / Codex")
+    );
+
+    app.press("id:ps-tab-environment").unwrap();
+    app.wait_for("STAGING_API_TOKEN").unwrap();
+    assert!(app.screen().shows("••••••••••••9b4e"));
+    app.press("id:ps-env-add-btn").unwrap();
+    app.wait_for("id:ps-env-key-input").unwrap();
+    app.type_text("id:ps-env-key-input", "API_TIMEOUT_MS")
+        .unwrap();
+    app.type_text("id:ps-env-value-input", "30000").unwrap();
+    app.press("id:ps-env-save").unwrap();
+    app.wait_for("API_TIMEOUT_MS").unwrap();
+
+    app.press("id:ps-tab-agents-limits").unwrap();
+    app.wait_for("Budget & guardrails").unwrap();
+    assert!(app.screen().shows("$5.00"));
+    assert!(app.screen().shows("$120.00"));
+
+    // Close the Project Settings window cleanly.
+    app.press_window_close("project-settings").unwrap();
+    assert!(app.window_state("project-settings").unwrap().is_none());
+}

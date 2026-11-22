@@ -6,6 +6,7 @@ mod inbox;
 mod machines;
 mod palette;
 pub(crate) mod preferences;
+pub(crate) mod project_settings;
 mod register_project;
 mod work_queue;
 mod workflow_run;
@@ -1387,6 +1388,33 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                             .text_size(px(11.0))
                             .tabular_nums()
                             .text_color(palette::text_muted()),
+                        ),
+                )
+        })
+        .child({
+            let settings_test_id = format!("sidebar-project-settings-{id}");
+            button()
+                .test_id(&settings_test_id)
+                .accessibility_label(move || {
+                    let name = store::project_by_id(id).map(|p| p.name).unwrap_or_default();
+                    Some(SharedString::from(format!("Project settings for {name}")))
+                })
+                .on_press(move || store::open_project_settings_for_project(id))
+                .rounded(px(6.5))
+                .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(7.0))
+                        .px(px(9.0))
+                        .py(px(5.0))
+                        .child(icons::settings_gear(12.5, palette::text_muted()))
+                        .child(
+                            text("Project settings")
+                                .text_size(px(12.0))
+                                .text_color(palette::text_primary()),
                         ),
                 )
         })

@@ -8,6 +8,7 @@ pub mod dashboard;
 pub mod engine;
 pub mod model;
 pub mod preferences;
+pub mod project_settings;
 pub mod storage;
 pub mod work_queue;
 pub mod workflow_run;
@@ -28,6 +29,10 @@ pub use preferences::{
     ConnectionTestState, DefaultLandingView, ExtensionEntry, ExtensionsSettings, GeneralSettings,
     MachinesSettings, OpenRouterKey, PreferencesError, PreferencesTab, ProviderKind,
     format_dollars_cents, format_whole_or_cents,
+};
+pub use project_settings::{
+    IssueSourceAuthMode, IssueSourceKind, ProjectEnvVar, ProjectIntakeRule, ProjectSandboxMode,
+    ProjectSettings, ProjectSettingsError, ProjectSettingsTab, ProjectWorkflowSetting,
 };
 pub use storage::{ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{

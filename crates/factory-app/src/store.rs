@@ -9,8 +9,9 @@ use std::{
 use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
     DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, FactoryState,
-    InboxItem, IntakeRule, MachineNode, MachineStatus, PreferencesTab, Project, ProjectDatabase,
-    ProjectId, ProjectWorkQueue, RunDetailTab, RunExecutionState, RunId, RunStatus,
+    InboxItem, IntakeRule, IssueSourceKind, MachineNode, MachineStatus, PreferencesTab, Project,
+    ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab,
+    ProjectWorkQueue, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
     WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun, WorkflowRunViewData,
 };
 use nsh_core::{platform::Appearance, prelude::*};
@@ -66,6 +67,12 @@ struct AppState {
     selected_provider_id: String,
     preferences_feedback: Option<String>,
     preferences_error: Option<String>,
+    project_settings: BTreeMap<String, ProjectSettings>,
+    project_settings_open: bool,
+    project_settings_focused: bool,
+    project_settings_tab: ProjectSettingsTab,
+    project_settings_feedback: Option<String>,
+    project_settings_error: Option<String>,
     sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
@@ -119,10 +126,19 @@ impl AppState {
                     expanded_projects.insert(pid);
                 }
                 let mut work_queues = BTreeMap::new();
+                let mut project_settings = BTreeMap::new();
                 for project in factory.projects() {
                     work_queues.insert(
                         project.name.clone(),
                         ProjectWorkQueue::for_project(&project.name),
+                    );
+                    project_settings.insert(
+                        project.name.clone(),
+                        ProjectSettings::for_project(
+                            &project.name,
+                            &project.root_path.display().to_string(),
+                            &project.default_branch,
+                        ),
                     );
                 }
                 let work_queue_selected_issue = selected_project
@@ -174,6 +190,12 @@ impl AppState {
                     selected_provider_id,
                     preferences_feedback: None,
                     preferences_error: None,
+                    project_settings,
+                    project_settings_open: false,
+                    project_settings_focused: false,
+                    project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
+                    project_settings_feedback: None,
+                    project_settings_error: None,
                     sidebar_visible: true,
                     status_message,
                     registration_error: None,
@@ -188,10 +210,19 @@ impl AppState {
                     expanded_projects.insert(pid);
                 }
                 let mut work_queues = BTreeMap::new();
+                let mut project_settings = BTreeMap::new();
                 for project in factory.projects() {
                     work_queues.insert(
                         project.name.clone(),
                         ProjectWorkQueue::for_project(&project.name),
+                    );
+                    project_settings.insert(
+                        project.name.clone(),
+                        ProjectSettings::for_project(
+                            &project.name,
+                            &project.root_path.display().to_string(),
+                            &project.default_branch,
+                        ),
                     );
                 }
                 let work_queue_selected_issue = selected_project
@@ -245,6 +276,12 @@ impl AppState {
                     selected_provider_id,
                     preferences_feedback: None,
                     preferences_error: None,
+                    project_settings,
+                    project_settings_open: false,
+                    project_settings_focused: false,
+                    project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
+                    project_settings_feedback: None,
+                    project_settings_error: None,
                     sidebar_visible: true,
                     status_message: Some(format!("Could not open SQLite database: {err}")),
                     registration_error: Some(format!("Database unavailable: {err}")),
@@ -272,6 +309,68 @@ impl AppState {
             .get(project_name)
             .cloned()
             .unwrap_or_else(|| ProjectWorkQueue::for_project(project_name))
+    }
+
+    fn selected_project_meta(&self) -> (String, String, String) {
+        self.selected_project
+            .and_then(|id| self.factory.project(id))
+            .or_else(|| self.factory.projects().first())
+            .map(|p| {
+                (
+                    p.name.clone(),
+                    p.root_path.display().to_string(),
+                    p.default_branch.clone(),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    "api-gateway".to_owned(),
+                    "/Users/jonathan/src/api-gateway".to_owned(),
+                    "main".to_owned(),
+                )
+            })
+    }
+
+    fn ensure_project_settings_mut(&mut self) -> &mut ProjectSettings {
+        let (name, path, branch) = self.selected_project_meta();
+        self.project_settings
+            .entry(name.clone())
+            .or_insert_with(|| ProjectSettings::for_project(&name, &path, &branch))
+    }
+
+    fn active_project_settings_clone(&self) -> ProjectSettings {
+        let (name, path, branch) = self.selected_project_meta();
+        self.project_settings
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(|| ProjectSettings::for_project(&name, &path, &branch))
+    }
+
+    fn sync_queue_from_project_settings(&mut self) {
+        let settings = self.active_project_settings_clone();
+        let queue = self.ensure_queue_mut(&settings.project_name);
+        queue.max_agent_slots = settings.max_concurrent_runs;
+        if !settings.github_repo.trim().is_empty() {
+            queue.repo_slug = settings.github_repo.trim().to_owned();
+        }
+        queue.tracker_name = settings.issue_source.title().to_owned();
+        let rules: Vec<IntakeRule> = settings
+            .intake_rules
+            .iter()
+            .filter_map(|rule| {
+                rule.label.as_ref().map(|label| IntakeRule {
+                    label: label.clone(),
+                    workflow_name: rule.workflow_name.clone(),
+                })
+            })
+            .collect();
+        let fallback = settings
+            .intake_rules
+            .iter()
+            .find(|rule| rule.is_fallback())
+            .map(|rule| rule.workflow_name.clone())
+            .unwrap_or_else(|| queue.fallback_workflow.clone());
+        queue.update_intake_rules(settings.required_label.clone(), rules, fallback);
     }
 
     fn ensure_workflow_run_mut(
@@ -1822,4 +1921,446 @@ pub(crate) fn reset_preferences_to_defaults() {
         s.persist_preferences();
     });
     apply_appearance_mode(AppearanceMode::System);
+}
+
+// --- Project Settings Window ------------------------------------------------------------
+
+pub(crate) fn project_settings_open() -> bool {
+    state().with(|s| s.project_settings_open)
+}
+
+pub(crate) fn project_settings_focused() -> bool {
+    state().with(|s| s.project_settings_focused)
+}
+
+pub(crate) fn set_project_settings_focused(focused: bool) {
+    state().update(|s| {
+        s.project_settings_focused = focused;
+    });
+}
+
+pub(crate) fn open_project_settings() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        s.project_settings_open = true;
+        s.project_settings_focused = true;
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn open_project_settings_for_project(id: ProjectId) {
+    state().update(|s| {
+        s.selected_project = Some(id);
+        s.expanded_projects.insert(id);
+        s.project_settings_tab = ProjectSettingsTab::IssuesAndIntake;
+        s.project_settings_open = true;
+        s.project_settings_focused = true;
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn open_project_settings_tab(tab: ProjectSettingsTab) {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        s.project_settings_tab = tab;
+        s.project_settings_open = true;
+        s.project_settings_focused = true;
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn close_project_settings() {
+    state().update(|s| {
+        s.project_settings_open = false;
+        s.project_settings_focused = false;
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn project_settings_tab() -> ProjectSettingsTab {
+    state().with(|s| s.project_settings_tab)
+}
+
+pub(crate) fn set_project_settings_tab(tab: ProjectSettingsTab) {
+    state().update(|s| {
+        s.project_settings_tab = tab;
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn active_project_settings() -> ProjectSettings {
+    state().with(AppState::active_project_settings_clone)
+}
+
+pub(crate) fn project_settings_error() -> Option<String> {
+    state().with(|s| s.project_settings_error.clone())
+}
+
+pub(crate) fn project_settings_feedback() -> Option<String> {
+    state().with(|s| s.project_settings_feedback.clone())
+}
+
+pub(crate) fn clear_project_settings_messages() {
+    state().update(|s| {
+        s.project_settings_error = None;
+        s.project_settings_feedback = None;
+    });
+}
+
+pub(crate) fn set_project_issue_source(source: IssueSourceKind) {
+    state().update(|s| {
+        let result = s.ensure_project_settings_mut().set_issue_source(source);
+        match result {
+            Ok(()) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback = None;
+                s.sync_queue_from_project_settings();
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn set_project_github_repo(repo: &str) {
+    let repo = repo.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().github_repo = repo;
+        s.project_settings_error = None;
+        s.sync_queue_from_project_settings();
+    });
+}
+
+pub(crate) fn set_project_itsaplan_workspace(workspace: &str) {
+    let workspace = workspace.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().itsaplan_workspace = workspace;
+        s.project_settings_error = None;
+    });
+}
+
+pub(crate) fn set_project_itsaplan_agent_member(member: &str) {
+    let member = member.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().itsaplan_agent_member = member;
+        s.project_settings_error = None;
+    });
+}
+
+pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
+    let mut ok = false;
+    state().update(
+        |s| match s.ensure_project_settings_mut().set_github_token(raw_token) {
+            Ok(()) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback =
+                    Some("Saved personal access token in macOS Keychain.".to_owned());
+                ok = true;
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        },
+    );
+    ok
+}
+
+pub(crate) fn use_project_github_cli() {
+    state().update(|s| {
+        s.ensure_project_settings_mut().use_github_cli();
+        s.project_settings_error = None;
+        s.project_settings_feedback = Some("Using GitHub CLI (gh) sign-in.".to_owned());
+    });
+}
+
+pub(crate) fn add_project_intake_rule(label: &str, workflow_name: &str) -> bool {
+    let mut added = false;
+    state().update(|s| {
+        match s
+            .ensure_project_settings_mut()
+            .add_intake_rule(label, workflow_name)
+        {
+            Ok(_) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback = Some(format!(
+                    "Added rule: has label {} → {}",
+                    label.trim(),
+                    workflow_name.trim()
+                ));
+                s.sync_queue_from_project_settings();
+                added = true;
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+    added
+}
+
+pub(crate) fn remove_project_intake_rule(rule_id: u64) {
+    state().update(|s| {
+        if s.ensure_project_settings_mut().remove_intake_rule(rule_id) {
+            s.project_settings_error = None;
+            s.project_settings_feedback = Some("Removed intake rule.".to_owned());
+            s.sync_queue_from_project_settings();
+        }
+    });
+}
+
+pub(crate) fn set_project_max_concurrent_runs_str(value: &str) {
+    state().update(|s| {
+        match s
+            .ensure_project_settings_mut()
+            .set_max_concurrent_runs_str(value)
+        {
+            Ok(()) => {
+                s.project_settings_error = None;
+                s.sync_queue_from_project_settings();
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn step_project_max_concurrent_runs(delta: i32) {
+    state().update(|s| {
+        s.ensure_project_settings_mut()
+            .step_max_concurrent_runs(delta);
+        s.project_settings_error = None;
+        s.sync_queue_from_project_settings();
+    });
+}
+
+pub(crate) fn toggle_project_auto_start() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.auto_start_matching_work = !settings.auto_start_matching_work;
+    });
+}
+
+pub(crate) fn toggle_project_add_working_label() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.add_working_label = !settings.add_working_label;
+    });
+}
+
+pub(crate) fn toggle_project_comment_summary() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.comment_with_run_summary = !settings.comment_with_run_summary;
+    });
+}
+
+pub(crate) fn toggle_project_link_pr_closes_issue() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.link_pr_closes_issue = !settings.link_pr_closes_issue;
+    });
+}
+
+pub(crate) fn set_project_default_branch(branch: &str) {
+    let branch = branch.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().default_branch = branch;
+    });
+}
+
+pub(crate) fn set_project_branch_prefix(prefix: &str) {
+    let prefix = prefix.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().branch_prefix = prefix;
+    });
+}
+
+pub(crate) fn toggle_project_isolated_worktrees() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.use_isolated_worktrees = !settings.use_isolated_worktrees;
+    });
+}
+
+pub(crate) fn toggle_project_draft_prs() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.open_prs_as_draft = !settings.open_prs_as_draft;
+    });
+}
+
+pub(crate) fn toggle_project_auto_cleanup_worktrees() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.auto_cleanup_worktrees = !settings.auto_cleanup_worktrees;
+    });
+}
+
+pub(crate) fn toggle_project_archived() {
+    state().update(|s| {
+        let archived = {
+            let settings = s.ensure_project_settings_mut();
+            settings.archived = !settings.archived;
+            settings.archived
+        };
+        s.project_settings_feedback = Some(if archived {
+            "Project archived. Automatic intake is paused.".to_owned()
+        } else {
+            "Project restored from archive.".to_owned()
+        });
+    });
+}
+
+pub(crate) fn set_project_default_provider(provider: ProviderKind) {
+    state().update(|s| {
+        s.ensure_project_settings_mut().default_provider = provider;
+    });
+}
+
+pub(crate) fn set_project_openrouter_key(key_id: Option<String>) {
+    state().update(|s| {
+        s.ensure_project_settings_mut().openrouter_key_id = key_id;
+    });
+}
+
+pub(crate) fn set_project_model_override(model: &str) {
+    let model = model.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().model_override = model;
+    });
+}
+
+pub(crate) fn toggle_project_workflow(name: &str) {
+    let name = name.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().toggle_workflow(&name);
+    });
+}
+
+pub(crate) fn toggle_project_require_review_before_pr() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.require_review_before_pr = !settings.require_review_before_pr;
+    });
+}
+
+pub(crate) fn toggle_project_auto_reload_workflows() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.auto_reload_workflows = !settings.auto_reload_workflows;
+    });
+}
+
+pub(crate) fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bool {
+    let mut added = false;
+    state().update(|s| {
+        match s
+            .ensure_project_settings_mut()
+            .add_env_var(key, value, is_secret)
+        {
+            Ok(_) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback =
+                    Some(format!("Added environment variable {}.", key.trim()));
+                added = true;
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+    added
+}
+
+pub(crate) fn remove_project_env_var(id: u64) {
+    state().update(|s| {
+        if s.ensure_project_settings_mut().remove_env_var(id) {
+            s.project_settings_error = None;
+            s.project_settings_feedback = Some("Removed environment variable.".to_owned());
+        }
+    });
+}
+
+pub(crate) fn toggle_project_load_dotenv() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.load_dotenv_local = !settings.load_dotenv_local;
+    });
+}
+
+pub(crate) fn toggle_project_inherit_host_path() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.inherit_host_path = !settings.inherit_host_path;
+    });
+}
+
+pub(crate) fn step_project_max_loop_attempts(delta: i32) {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.max_loop_attempts =
+            (settings.max_loop_attempts as i32 + delta).clamp(1, 20) as u32;
+    });
+}
+
+pub(crate) fn step_project_step_timeout(delta: i32) {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.step_timeout_minutes =
+            (settings.step_timeout_minutes as i32 + delta).clamp(5, 120) as u32;
+    });
+}
+
+pub(crate) fn step_project_per_run_budget(delta_cents: i64) {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        let next = (settings.per_run_budget_cents as i64 + delta_cents).clamp(100, 10_000);
+        settings.per_run_budget_cents = next as u64;
+    });
+}
+
+pub(crate) fn step_project_monthly_budget(delta_cents: i64) {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        let next = (settings.monthly_budget_cents as i64 + delta_cents).clamp(1_000, 500_000);
+        settings.monthly_budget_cents = next as u64;
+    });
+}
+
+pub(crate) fn toggle_project_pause_on_budget() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.pause_on_budget_limit = !settings.pause_on_budget_limit;
+    });
+}
+
+pub(crate) fn toggle_project_require_approval_for_ci() {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        settings.require_approval_for_ci = !settings.require_approval_for_ci;
+    });
+}
+
+pub(crate) fn set_project_sandbox_mode(mode: ProjectSandboxMode) {
+    state().update(|s| {
+        s.ensure_project_settings_mut().sandbox_mode = mode;
+    });
+}
+
+pub(crate) fn set_project_preferred_runner(runner: &str) {
+    let runner = runner.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut().preferred_runner = runner;
+    });
 }

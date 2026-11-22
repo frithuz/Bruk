@@ -57,13 +57,39 @@ fn workflow_selector_card() -> impl IntoElement {
                     .text_color(palette::text_primary()),
                 )
                 .child(
-                    text(move || {
-                        store::selected_project()
-                            .map(|p| p.root_path.display().to_string())
-                            .unwrap_or_default()
-                    })
-                    .text_size(px(12.0))
-                    .text_color(palette::text_muted()),
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            text(move || {
+                                store::selected_project()
+                                    .map(|p| p.root_path.display().to_string())
+                                    .unwrap_or_default()
+                            })
+                            .text_size(px(12.0))
+                            .text_color(palette::text_muted()),
+                        )
+                        .child(
+                            button()
+                                .test_id("workspace-project-settings")
+                                .accessibility_label("Project Settings")
+                                .on_press(store::open_project_settings)
+                                .px(px(10.0))
+                                .py(px(5.0))
+                                .rounded(px(7.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::control_bg())
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .active(|s| s.opacity(0.8))
+                                .child(
+                                    text("Project Settings…")
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::text_primary()),
+                                ),
+                        ),
                 ),
         )
         .child(view().flex_row().items_center().gap(px(8.0)).child(each(
