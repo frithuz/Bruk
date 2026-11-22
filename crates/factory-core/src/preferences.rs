@@ -478,10 +478,13 @@ pub enum PreferencesError {
 
 /// Current persisted preferences schema version.
 ///
-/// Version 2 separates real user preferences from Demo Mode fixtures; older
-/// pre-Demo-Mode rows (`schema_version < 2`) were pre-seeded with mock provider
-/// accounts and extensions and are automatically cleaned on load.
-pub const PREFERENCES_SCHEMA_VERSION: u32 = 2;
+/// - Version 2 separates real user preferences from Demo Mode fixtures; older
+///   pre-Demo-Mode rows (`schema_version < 2`) were pre-seeded with mock provider
+///   accounts and extensions and are automatically cleaned on load.
+/// - Version 3 makes the Codex CLI provider opt-in (`Option<CliAccount>`); v2
+///   rows that only carried the default unconnected Codex placeholder are cleared
+///   automatically while preserving Claude, OpenRouter, and all other settings.
+pub const PREFERENCES_SCHEMA_VERSION: u32 = 3;
 
 /// Complete persisted application preferences aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -493,7 +496,8 @@ pub struct AppPreferences {
     pub general: GeneralSettings,
     pub appearance: AppearanceSettings,
     pub claude: CliAccount,
-    pub codex: CliAccount,
+    #[serde(default)]
+    pub codex: Option<CliAccount>,
     pub openrouter_keys: Vec<OpenRouterKey>,
     pub machines: MachinesSettings,
     pub extensions: ExtensionsSettings,
@@ -540,27 +544,7 @@ impl AppPreferences {
                 test_state: ConnectionTestState::Untested,
                 used_by_projects: Vec::new(),
             },
-            codex: CliAccount {
-                id: "codex".to_owned(),
-                provider: ProviderKind::Codex,
-                display_name: "Codex".to_owned(),
-                email: String::new(),
-                plan: String::new(),
-                connected: false,
-                cli_binary: "codex".to_owned(),
-                custom_cli_path: None,
-                binary_found: true,
-                uses_system_login: false,
-                config_dir: "~/Library/Application Support/software-factory/providers/codex"
-                    .to_owned(),
-                default_model: "gpt-5.3-codex".to_owned(),
-                hidden_model_families: Vec::new(),
-                available_models: Vec::new(),
-                usage: None,
-                usage_warning: None,
-                test_state: ConnectionTestState::Untested,
-                used_by_projects: Vec::new(),
-            },
+            codex: None,
             openrouter_keys: Vec::new(),
             machines: MachinesSettings::default(),
             extensions: ExtensionsSettings::empty(),
@@ -644,7 +628,7 @@ impl AppPreferences {
                     "mobile-app".to_owned(),
                 ],
             },
-            codex: CliAccount {
+            codex: Some(CliAccount {
                 id: "codex".to_owned(),
                 provider: ProviderKind::Codex,
                 display_name: "Codex".to_owned(),
@@ -664,7 +648,7 @@ impl AppPreferences {
                 usage_warning: None,
                 test_state: ConnectionTestState::Works,
                 used_by_projects: vec!["api-gateway".to_owned(), "mobile-app".to_owned()],
-            },
+            }),
             openrouter_keys: vec![
                 OpenRouterKey {
                     id: "openrouter-personal".to_owned(),
@@ -700,19 +684,33 @@ impl AppPreferences {
         }
     }
 
-    /// Migrates pre-Demo-Mode persisted preferences by clearing legacy pre-seeded
-    /// sample providers and extensions while preserving general/appearance settings.
+    /// Migrates older persisted preferences schemas to [`PREFERENCES_SCHEMA_VERSION`].
+    ///
+    /// - `< 2`: clears legacy pre-Demo-Mode sample providers and extensions while
+    ///   preserving general/appearance settings.
+    /// - `2`: clears the previously always-seeded unconnected Codex CLI placeholder
+    ///   now that Codex is an opt-in registered provider.
+    ///
     /// Returns `true` if a migration was applied.
     pub fn migrate_legacy_sample_defaults(&mut self) -> bool {
         if self.schema_version >= PREFERENCES_SCHEMA_VERSION {
             return false;
         }
-        let clean = Self::empty();
-        self.claude = clean.claude;
-        self.codex = clean.codex;
-        self.openrouter_keys = clean.openrouter_keys;
-        self.extensions = clean.extensions;
-        self.next_key_seq = clean.next_key_seq;
+        if self.schema_version < 2 {
+            let clean = Self::empty();
+            self.claude = clean.claude;
+            self.codex = clean.codex;
+            self.openrouter_keys = clean.openrouter_keys;
+            self.extensions = clean.extensions;
+            self.next_key_seq = clean.next_key_seq;
+        } else if self.schema_version < 3
+            && self
+                .codex
+                .as_ref()
+                .is_some_and(|codex| !codex.connected && codex.used_by_projects.is_empty())
+        {
+            self.codex = None;
+        }
         self.schema_version = PREFERENCES_SCHEMA_VERSION;
         true
     }
@@ -722,15 +720,67 @@ impl AppPreferences {
         self.openrouter_keys.iter().find(|key| key.id == id)
     }
 
-    /// Looks up a CLI account by id (`"claude"` or `"codex"`).
+    /// Looks up a registered CLI account by id (`"claude"` or `"codex"`).
     pub fn cli_account(&self, id: &str) -> Option<&CliAccount> {
         if self.claude.id == id {
             Some(&self.claude)
-        } else if self.codex.id == id {
-            Some(&self.codex)
+        } else if let Some(codex) = &self.codex
+            && codex.id == id
+        {
+            Some(codex)
         } else {
             None
         }
+    }
+
+    /// Registers the Codex CLI provider account with the requested binary and default model.
+    pub fn add_codex_account(
+        &mut self,
+        cli_binary: &str,
+        default_model: &str,
+    ) -> Result<String, PreferencesError> {
+        let binary = cli_binary.trim();
+        let cli_binary = if binary.is_empty() {
+            "codex".to_owned()
+        } else {
+            binary.to_owned()
+        };
+        let model = default_model.trim();
+        let default_model = if model.is_empty() {
+            "gpt-5.3-codex".to_owned()
+        } else {
+            model.to_owned()
+        };
+
+        self.codex = Some(CliAccount {
+            id: "codex".to_owned(),
+            provider: ProviderKind::Codex,
+            display_name: "Codex".to_owned(),
+            email: String::new(),
+            plan: String::new(),
+            connected: false,
+            cli_binary,
+            custom_cli_path: None,
+            binary_found: true,
+            uses_system_login: false,
+            config_dir: "~/Library/Application Support/software-factory/providers/codex".to_owned(),
+            default_model,
+            hidden_model_families: Vec::new(),
+            available_models: Vec::new(),
+            usage: None,
+            usage_warning: None,
+            test_state: ConnectionTestState::Untested,
+            used_by_projects: Vec::new(),
+        });
+        Ok("codex".to_owned())
+    }
+
+    /// Unregisters the Codex CLI provider account. Returns the next provider id to select.
+    pub fn remove_codex_account(&mut self) -> Result<String, PreferencesError> {
+        if self.codex.take().is_none() {
+            return Err(PreferencesError::ProviderNotFound("codex".to_owned()));
+        }
+        Ok(self.claude.id.clone())
     }
 
     /// Adds a new OpenRouter key after validating its label, key format, spending cap, and model.
@@ -827,8 +877,10 @@ impl AppPreferences {
             self.claude.default_model = model.to_owned();
             return Ok(());
         }
-        if self.codex.id == id {
-            self.codex.default_model = model.to_owned();
+        if let Some(codex) = &mut self.codex
+            && codex.id == id
+        {
+            codex.default_model = model.to_owned();
             return Ok(());
         }
         let key = self
@@ -909,13 +961,15 @@ impl AppPreferences {
             };
             return Ok(self.claude.test_state.clone());
         }
-        if self.codex.id == id {
-            self.codex.test_state = if self.codex.connected {
+        if let Some(codex) = &mut self.codex
+            && codex.id == id
+        {
+            codex.test_state = if codex.connected {
                 ConnectionTestState::Works
             } else {
                 ConnectionTestState::Failed("Sign in to the Codex CLI first".to_owned())
             };
-            return Ok(self.codex.test_state.clone());
+            return Ok(codex.test_state.clone());
         }
         let key = self
             .openrouter_keys
@@ -930,12 +984,14 @@ impl AppPreferences {
         Ok(key.test_state.clone())
     }
 
-    /// Connects or disconnects a CLI provider account (`"claude"` or `"codex"`).
+    /// Connects or disconnects a registered CLI provider account (`"claude"` or `"codex"`).
     pub fn set_cli_connected(&mut self, id: &str, connected: bool) -> Result<(), PreferencesError> {
         let account = if self.claude.id == id {
             &mut self.claude
-        } else if self.codex.id == id {
-            &mut self.codex
+        } else if let Some(codex) = &mut self.codex
+            && codex.id == id
+        {
+            codex
         } else {
             return Err(PreferencesError::ProviderNotFound(id.to_owned()));
         };
@@ -1151,7 +1207,10 @@ mod tests {
     fn sample_preferences_match_reference_providers() {
         let prefs = AppPreferences::sample();
         assert_eq!(prefs.claude.list_subtitle(), "jonathan@garbee.me · Max");
-        assert_eq!(prefs.codex.list_subtitle(), "jonathan@garbee.me · Pro");
+        assert_eq!(
+            prefs.codex.as_ref().unwrap().list_subtitle(),
+            "jonathan@garbee.me · Pro"
+        );
         assert_eq!(prefs.openrouter_keys.len(), 2);
 
         let personal = prefs.openrouter_key("openrouter-personal").unwrap();
@@ -1351,5 +1410,28 @@ mod tests {
         assert!(prefs.toggle_claude_model_family("fable"));
         assert!(prefs.claude.is_model_family_visible("Fable"));
         assert_eq!(prefs.claude.visible_available_models().len(), 4);
+    }
+
+    #[test]
+    fn codex_account_is_unregistered_by_default_and_supports_add_and_remove() {
+        let mut prefs = AppPreferences::empty();
+        assert!(prefs.codex.is_none());
+        assert!(prefs.cli_account("codex").is_none());
+        assert_eq!(
+            prefs.test_provider("codex"),
+            Err(PreferencesError::ProviderNotFound("codex".to_owned()))
+        );
+
+        let id = prefs.add_codex_account("", "").unwrap();
+        assert_eq!(id, "codex");
+        let codex = prefs.cli_account("codex").unwrap();
+        assert_eq!(codex.cli_binary, "codex");
+        assert_eq!(codex.default_model, "gpt-5.3-codex");
+        assert!(!codex.connected);
+
+        let next = prefs.remove_codex_account().unwrap();
+        assert_eq!(next, "claude");
+        assert!(prefs.codex.is_none());
+        assert!(prefs.cli_account("codex").is_none());
     }
 }

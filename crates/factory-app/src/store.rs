@@ -1394,7 +1394,7 @@ pub(crate) fn sidebar_provider_statuses() -> Vec<(String, &'static str, bool)> {
                 is_running,
             ));
         }
-        if s.preferences.codex.connected {
+        if s.preferences.codex.as_ref().is_some_and(|c| c.connected) {
             let is_running = running && active_provider == "Codex";
             rows.push((
                 "Codex".to_owned(),
@@ -3086,6 +3086,39 @@ pub(crate) fn remove_selected_openrouter_key() {
             Err(err) => {
                 s.preferences_error = Some(err.to_string());
             }
+        }
+    });
+}
+
+pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
+    let mut added = false;
+    state().update(
+        |s| match s.preferences.add_codex_account(cli_binary, default_model) {
+            Ok(id) => {
+                s.selected_provider_id = id;
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Added Codex CLI account.".to_owned());
+                s.persist_preferences();
+                added = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+    added
+}
+
+pub(crate) fn remove_codex_account() {
+    state().update(|s| match s.preferences.remove_codex_account() {
+        Ok(next_selected) => {
+            s.selected_provider_id = next_selected;
+            s.preferences_error = None;
+            s.preferences_feedback = Some("Removed Codex CLI account.".to_owned());
+            s.persist_preferences();
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
         }
     });
 }
@@ -5045,6 +5078,7 @@ mod tests {
         assert!(clean.deploy_watch_entries.is_empty());
         assert!(clean.preferences.openrouter_keys.is_empty());
         assert!(!clean.preferences.claude.connected);
+        assert!(clean.preferences.codex.is_none());
 
         // Enabling Demo Mode populates sample data for visual testing.
         let mut demo_prefs = AppPreferences::empty();
@@ -5071,7 +5105,7 @@ mod tests {
         assert!(saved_in_db.demo_mode);
         assert_eq!(saved_in_db.appearance.mode, AppearanceMode::Dark);
         assert!(!saved_in_db.claude.connected);
-        assert!(!saved_in_db.codex.connected);
+        assert!(saved_in_db.codex.is_none());
         assert!(saved_in_db.openrouter_keys.is_empty());
         assert!(saved_in_db.extensions.entries.is_empty());
 

@@ -1714,8 +1714,9 @@ fn fresh_launch_without_demo_mode_shows_proper_empty_states_across_views() {
 
     // Preferences shows unconfigured providers, no machines, and no fake extensions.
     app.press_key("mod+,").unwrap();
-    app.wait_for("Not signed in").unwrap();
+    app.wait_for("No Codex account configured").unwrap();
     assert!(app.screen().shows("No OpenRouter keys configured"));
+    assert!(!app.screen().matches("role:button[Codex]").unwrap());
     assert!(!app.screen().shows("jonathan@garbee.me"));
     assert!(!app.screen().shows("Acme team"));
 
@@ -1803,6 +1804,8 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     app.press("id:ps-tab-providers").unwrap();
     app.wait_for("No OpenRouter keys configured").unwrap();
+    assert!(!app.screen().shows("Codex CLI"));
+    assert!(!app.screen().matches("role:button[Codex]").unwrap());
 }
 
 #[cfg(unix)]
@@ -2056,4 +2059,73 @@ echo '{{"type":"control_response","response":{{"subtype":"success","request_id":
     assert!(!reopened.screen().shows("Fable 5.2"));
     assert!(reopened.screen().shows("Opus 5.5"));
     assert!(reopened.screen().shows("Sonnet 5.5"));
+}
+
+#[test]
+fn codex_provider_is_unregistered_by_default_and_can_be_added_and_removed() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    {
+        let mut app = start_with_db(db_path.clone());
+
+        // Register a project so we can also check Project Settings › Providers.
+        app.press("id:dashboard-empty-register-project").unwrap();
+        app.wait_for("Register a local repository").unwrap();
+        app.type_text("text:Project name", "my-service").unwrap();
+        app.type_text("text:Repository path", "/workspace/my-service")
+            .unwrap();
+        app.press("role:button[Save Project]").unwrap();
+        app.wait_for("Registered project 'my-service'").unwrap();
+
+        // Project Settings › Providers must not show Codex as if it were registered.
+        app.press("id:sidebar-project-settings-1").unwrap();
+        app.press("id:ps-tab-providers").unwrap();
+        app.wait_for("Available accounts").unwrap();
+        assert!(!app.screen().shows("Codex CLI"));
+        assert!(!app.screen().matches("role:button[Codex]").unwrap());
+
+        // Preferences › Providers shows Codex as unconfigured, not as a registered account.
+        app.press_key("mod+,").unwrap();
+        app.wait_for("No Codex account configured").unwrap();
+        assert!(!app.screen().matches("role:button[Codex]").unwrap());
+
+        // Register Codex explicitly through Add Account.
+        app.press("role:button[Add Account]").unwrap();
+        app.wait_for("Add Codex CLI account...").unwrap();
+        app.press("role:button[Add Codex CLI account...]").unwrap();
+        app.wait_for("Add Codex CLI account").unwrap();
+        app.press("id:prefs-new-codex-submit").unwrap();
+        app.wait_for("Added Codex CLI account.").unwrap();
+        assert!(app.screen().matches("role:button[Codex]").unwrap());
+        assert!(app.screen().shows("gpt-5.3-codex"));
+        app.press_window_close("preferences").unwrap();
+
+        // Once registered, Codex appears in Project Settings › Providers.
+        app.wait_for("Codex CLI").unwrap();
+        assert!(app.screen().matches("role:button[Codex]").unwrap());
+    }
+
+    // Reopen and verify the registered Codex account persisted, then remove it.
+    {
+        let mut reopened = start_with_db(db_path.clone());
+        reopened.press_key("mod+,").unwrap();
+        reopened.wait_for("role:button[Codex]").unwrap();
+        reopened.press("role:button[Codex]").unwrap();
+        reopened.wait_for("id:prefs-codex-remove").unwrap();
+        reopened.press("id:prefs-codex-remove").unwrap();
+        reopened.wait_for("id:prefs-codex-confirm-remove").unwrap();
+        reopened.press("id:prefs-codex-confirm-remove").unwrap();
+        reopened.wait_for("No Codex account configured").unwrap();
+        assert!(!reopened.screen().matches("role:button[Codex]").unwrap());
+        reopened.press_window_close("preferences").unwrap();
+    }
+
+    // Reopen again and confirm Codex remains unregistered.
+    let mut after_remove = start_with_db(db_path);
+    after_remove.press_key("mod+,").unwrap();
+    after_remove
+        .wait_for("No Codex account configured")
+        .unwrap();
+    assert!(!after_remove.screen().matches("role:button[Codex]").unwrap());
 }

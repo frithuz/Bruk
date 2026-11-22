@@ -389,10 +389,36 @@ mod tests {
         );
         assert!(!migrated.demo_mode);
         assert!(!migrated.claude.connected);
-        assert!(!migrated.codex.connected);
+        assert!(migrated.codex.is_none());
         assert!(migrated.openrouter_keys.is_empty());
         assert!(migrated.extensions.entries.is_empty());
         assert_eq!(migrated.appearance.mode, crate::AppearanceMode::Dark);
         assert_eq!(migrated.general.default_projects_dir, "~/code");
+    }
+
+    #[test]
+    fn migrates_v2_unconnected_codex_placeholder_while_preserving_other_settings() {
+        let db = ProjectDatabase::open_in_memory().unwrap();
+        let mut v2 = AppPreferences::empty();
+        v2.schema_version = 2;
+        v2.claude.custom_cli_path = Some("/opt/bin/claude".to_owned());
+        v2.claude.default_model = "sonnet".to_owned();
+        v2.add_codex_account("codex", "gpt-5.3-codex").unwrap();
+        v2.add_openrouter_key("Personal", "sk-or-v1-abcd1234ef56", "25", "openrouter/auto")
+            .unwrap();
+        db.save_preferences(&v2).unwrap();
+
+        let migrated = db.load_preferences().unwrap().unwrap();
+        assert_eq!(
+            migrated.schema_version,
+            crate::preferences::PREFERENCES_SCHEMA_VERSION
+        );
+        assert!(migrated.codex.is_none());
+        assert_eq!(
+            migrated.claude.custom_cli_path.as_deref(),
+            Some("/opt/bin/claude")
+        );
+        assert_eq!(migrated.claude.default_model, "sonnet");
+        assert_eq!(migrated.openrouter_keys.len(), 1);
     }
 }

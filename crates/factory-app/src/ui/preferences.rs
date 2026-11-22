@@ -24,6 +24,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ProviderEditor {
     AddOpenRouterKey,
+    AddCodexAccount,
     ReplaceKey(String),
     EditCap(String),
     EditCliPath(String),
@@ -278,6 +279,10 @@ fn providers_left_rail(
         .child(dynamic(move || {
             let prefs = store::preferences();
             let selected_id = store::selected_provider_id();
+            let is_adding_account = matches!(
+                active_editor.get(),
+                Some(ProviderEditor::AddOpenRouterKey | ProviderEditor::AddCodexAccount)
+            );
 
             let mut card = view()
                 .rounded(px(10.0))
@@ -296,26 +301,33 @@ fn providers_left_rail(
                     prefs.claude.display_name.clone(),
                     prefs.claude.list_subtitle(),
                     false,
-                    selected_id == prefs.claude.id
-                        && active_editor.get() != Some(ProviderEditor::AddOpenRouterKey),
+                    selected_id == prefs.claude.id && !is_adding_account,
                     active_editor,
                     add_menu_open,
                 ));
 
             // Codex group
-            card = card
-                .child(provider_group_header(ProviderKind::Codex))
-                .child(provider_list_row(
-                    prefs.codex.id.clone(),
+            card = card.child(provider_group_header(ProviderKind::Codex));
+            if let Some(codex) = &prefs.codex {
+                card = card.child(provider_list_row(
+                    codex.id.clone(),
                     ProviderKind::Codex.badge(),
-                    prefs.codex.display_name.clone(),
-                    prefs.codex.list_subtitle(),
+                    codex.display_name.clone(),
+                    codex.list_subtitle(),
                     false,
-                    selected_id == prefs.codex.id
-                        && active_editor.get() != Some(ProviderEditor::AddOpenRouterKey),
+                    selected_id == codex.id && !is_adding_account,
                     active_editor,
                     add_menu_open,
                 ));
+            } else {
+                card = card.child(
+                    text("No Codex account configured")
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                );
+            }
 
             // OpenRouter group
             card = card.child(provider_group_header(ProviderKind::OpenRouter));
@@ -336,8 +348,7 @@ fn providers_left_rail(
                         key.name.clone(),
                         key.list_subtitle(),
                         key.is_default,
-                        selected_id == key.id
-                            && active_editor.get() != Some(ProviderEditor::AddOpenRouterKey),
+                        selected_id == key.id && !is_adding_account,
                         active_editor,
                         add_menu_open,
                     ));
@@ -380,33 +391,50 @@ fn providers_left_rail(
                 .child(when(
                     move || add_menu_open.get(),
                     move || {
-                        view()
-                            .w_full()
-                            .rounded(px(9.0))
-                            .border_1()
-                            .border_color(palette::border_color())
-                            .bg(palette::card_bg())
-                            .p(px(4.0))
-                            .gap(px(2.0))
-                            .child(menu_option_button("Add OpenRouter key...", move || {
-                                add_menu_open.set(false);
-                                store::clear_preferences_messages();
-                                draft_primary.set(String::new());
-                                draft_secondary.set(String::new());
-                                draft_cap.set("50".to_owned());
-                                draft_model.set("openrouter/auto".to_owned());
-                                active_editor.set(Some(ProviderEditor::AddOpenRouterKey));
-                            }))
-                            .child(menu_option_button("Manage Claude CLI account", move || {
-                                add_menu_open.set(false);
-                                active_editor.set(None);
-                                store::select_provider("claude".to_owned());
-                            }))
-                            .child(menu_option_button("Manage Codex CLI account", move || {
-                                add_menu_open.set(false);
-                                active_editor.set(None);
-                                store::select_provider("codex".to_owned());
-                            }))
+                        dynamic(move || {
+                            let has_codex = store::preferences().codex.is_some();
+                            let codex_option = if has_codex {
+                                menu_option_button("Manage Codex CLI account", move || {
+                                    add_menu_open.set(false);
+                                    active_editor.set(None);
+                                    store::select_provider("codex".to_owned());
+                                })
+                                .into_element()
+                            } else {
+                                menu_option_button("Add Codex CLI account...", move || {
+                                    add_menu_open.set(false);
+                                    store::clear_preferences_messages();
+                                    draft_primary.set("codex".to_owned());
+                                    draft_model.set("gpt-5.3-codex".to_owned());
+                                    active_editor.set(Some(ProviderEditor::AddCodexAccount));
+                                })
+                                .into_element()
+                            };
+
+                            view()
+                                .w_full()
+                                .rounded(px(9.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::card_bg())
+                                .p(px(4.0))
+                                .gap(px(2.0))
+                                .child(menu_option_button("Add OpenRouter key...", move || {
+                                    add_menu_open.set(false);
+                                    store::clear_preferences_messages();
+                                    draft_primary.set(String::new());
+                                    draft_secondary.set(String::new());
+                                    draft_cap.set("50".to_owned());
+                                    draft_model.set("openrouter/auto".to_owned());
+                                    active_editor.set(Some(ProviderEditor::AddOpenRouterKey));
+                                }))
+                                .child(menu_option_button("Manage Claude CLI account", move || {
+                                    add_menu_open.set(false);
+                                    active_editor.set(None);
+                                    store::select_provider("claude".to_owned());
+                                }))
+                                .child(codex_option)
+                        })
                     },
                 )),
         )
@@ -608,6 +636,10 @@ fn providers_detail_column(
                 )
                 .into_element();
             }
+            if editor == Some(ProviderEditor::AddCodexAccount) {
+                return add_codex_account_card(active_editor, draft_primary, draft_model)
+                    .into_element();
+            }
 
             let prefs = store::preferences();
             let selected_id = store::selected_provider_id();
@@ -772,6 +804,114 @@ fn add_openrouter_key_card(
                                 active_editor.set(None);
                             }))
                             .child(primary_button("Add Key", submit)),
+                    ),
+            ),
+        )
+}
+
+fn add_codex_account_card(
+    active_editor: Signal<Option<ProviderEditor>>,
+    draft_binary: Signal<String>,
+    draft_model: Signal<String>,
+) -> impl IntoElement {
+    let submit = move || {
+        let binary = draft_binary.get_untracked();
+        let model = draft_model.get_untracked();
+        if store::add_codex_account(&binary, &model) {
+            active_editor.set(None);
+        }
+    };
+
+    view()
+        .gap(px(12.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(detail_badge(ProviderKind::Codex.badge()))
+                .child(
+                    view()
+                        .gap(px(1.5))
+                        .child(
+                            text("Add Codex CLI account")
+                                .text_size(px(15.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text(
+                                "Runs through the Codex CLI with an isolated configuration folder",
+                            )
+                            .text_size(px(12.0))
+                            .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
+        .child(
+            grouped_card("Codex CLI").child(card_divider()).child(
+                view()
+                    .p(px(16.0))
+                    .gap(px(12.0))
+                    .child(form_field(
+                        "CLI binary",
+                        input()
+                            .test_id("prefs-new-codex-binary")
+                            .value(move || draft_binary.get())
+                            .on_change(move |v: &str| draft_binary.set(v.to_owned()))
+                            .placeholder("codex")
+                            .app_class("font-mono")
+                            .px(px(10.0))
+                            .py(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::card_inset_bg())
+                            .rounded(px(7.0))
+                            .text_color(palette::text_primary()),
+                    ))
+                    .child(form_field(
+                        "Default model",
+                        input()
+                            .test_id("prefs-new-codex-model")
+                            .value(move || draft_model.get())
+                            .on_change(move |v: &str| draft_model.set(v.to_owned()))
+                            .placeholder("gpt-5.3-codex")
+                            .app_class("font-mono")
+                            .px(px(10.0))
+                            .py(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::card_inset_bg())
+                            .rounded(px(7.0))
+                            .text_color(palette::text_primary()),
+                    ))
+                    .child(preferences_error_banner())
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(secondary_button("Cancel", move || {
+                                store::clear_preferences_messages();
+                                active_editor.set(None);
+                            }))
+                            .child(
+                                button()
+                                    .test_id("prefs-new-codex-submit")
+                                    .on_press(submit)
+                                    .px(px(13.0))
+                                    .py(px(6.0))
+                                    .rounded(px(7.0))
+                                    .bg(palette::nav_active_bg())
+                                    .active(|s| s.opacity(0.8))
+                                    .child(
+                                        text("Add Codex")
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette::nav_active_fg()),
+                                    ),
+                            ),
                     ),
             ),
         )
@@ -1170,6 +1310,7 @@ fn cli_account_detail_pane(
     let account_id = account.id.clone();
     let account_id_model = account.id.clone();
     let account_id_toggle = account.id.clone();
+    let account_id_remove = account.id.clone();
     let account_id_path = account.id.clone();
     let account_id_path_cta = account.id.clone();
     let current_model = account.default_model.clone();
@@ -1183,6 +1324,8 @@ fn cli_account_detail_pane(
         active_editor.get() == Some(ProviderEditor::ChangeModel(account.id.clone()));
     let is_editing_cli_path =
         active_editor.get() == Some(ProviderEditor::EditCliPath(account.id.clone()));
+    let is_confirming_remove =
+        active_editor.get() == Some(ProviderEditor::ConfirmRemove(account.id.clone()));
 
     let total_available_models = account.available_models.len();
     let visible_models = account.visible_available_models();
@@ -1452,6 +1595,31 @@ fn cli_account_detail_pane(
                             .text_color(palette::destructive_text()),
                     ),
             )
+            .child(
+                button()
+                    .test_id("prefs-codex-remove")
+                    .on_press(move || {
+                        add_menu_open.set(false);
+                        store::clear_preferences_messages();
+                        active_editor.set(Some(ProviderEditor::ConfirmRemove(
+                            account_id_remove.clone(),
+                        )));
+                    })
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text("Remove...")
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::destructive_text()),
+                    ),
+            )
             .into_element()
     } else {
         view()
@@ -1461,6 +1629,31 @@ fn cli_account_detail_pane(
             .child(primary_button("Sign In", move || {
                 store::set_cli_account_connected(&account_id, true)
             }))
+            .child(
+                button()
+                    .test_id("prefs-codex-remove")
+                    .on_press(move || {
+                        add_menu_open.set(false);
+                        store::clear_preferences_messages();
+                        active_editor.set(Some(ProviderEditor::ConfirmRemove(
+                            account_id_remove.clone(),
+                        )));
+                    })
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text("Remove...")
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::destructive_text()),
+                    ),
+            )
             .into_element()
     };
 
@@ -1588,6 +1781,54 @@ fn cli_account_detail_pane(
         )
         .child(preferences_error_banner())
         .child(bottom_actions)
+        .child(when(
+            move || !is_claude && is_confirming_remove,
+            move || {
+                view()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .p(px(12.0))
+                    .rounded(px(9.0))
+                    .border_1()
+                    .border_color(palette::destructive_text())
+                    .bg(palette::card_bg())
+                    .child(
+                        text("Remove Codex CLI account from Bruk?")
+                            .text_size(px(12.5))
+                            .text_color(palette::text_primary()),
+                    )
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(8.0))
+                            .child(secondary_button("Cancel", move || {
+                                active_editor.set(None);
+                            }))
+                            .child(
+                                button()
+                                    .test_id("prefs-codex-confirm-remove")
+                                    .on_press(move || {
+                                        store::remove_codex_account();
+                                        active_editor.set(None);
+                                    })
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .rounded(px(7.0))
+                                    .bg(palette::destructive_text())
+                                    .active(|s| s.opacity(0.8))
+                                    .child(
+                                        text("Remove Account")
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette::nav_active_fg()),
+                                    ),
+                            ),
+                    )
+            },
+        ))
         .child(preferences_feedback_caption())
 }
 

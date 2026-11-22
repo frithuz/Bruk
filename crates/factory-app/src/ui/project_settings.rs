@@ -1174,7 +1174,7 @@ fn providers_tab() -> impl IntoElement {
                 let settings = store::active_project_settings();
                 let prefs = store::preferences();
 
-                let provider_picker = view()
+                let mut provider_picker = view()
                     .flex_row()
                     .p(px(2.5))
                     .rounded(px(8.0))
@@ -1184,17 +1184,19 @@ fn providers_tab() -> impl IntoElement {
                         "Claude",
                         settings.default_provider == ProviderKind::Claude,
                         || store::set_project_default_provider(ProviderKind::Claude),
-                    ))
-                    .child(segment_button(
+                    ));
+                if prefs.codex.is_some() || settings.default_provider == ProviderKind::Codex {
+                    provider_picker = provider_picker.child(segment_button(
                         "Codex",
                         settings.default_provider == ProviderKind::Codex,
                         || store::set_project_default_provider(ProviderKind::Codex),
-                    ))
-                    .child(segment_button(
-                        "OpenRouter",
-                        settings.default_provider == ProviderKind::OpenRouter,
-                        || store::set_project_default_provider(ProviderKind::OpenRouter),
                     ));
+                }
+                let provider_picker = provider_picker.child(segment_button(
+                    "OpenRouter",
+                    settings.default_provider == ProviderKind::OpenRouter,
+                    || store::set_project_default_provider(ProviderKind::OpenRouter),
+                ));
 
                 let mut or_picker = view().flex_row().flex_wrap().gap(px(6.0));
                 or_picker = or_picker.child(pill_choice(
@@ -1290,23 +1292,31 @@ fn providers_tab() -> impl IntoElement {
                                     ),
                             ),
                     )
-                    .child(
-                        grouped_card("Available accounts")
+                    .child({
+                        let mut accounts_card = grouped_card("Available accounts")
                             .child(card_divider())
                             .child(static_row(
                                 "Claude CLI",
-                                format!("{} · Inherited from Preferences", prefs.claude.list_subtitle()),
+                                format!(
+                                    "{} · Inherited from Preferences",
+                                    prefs.claude.list_subtitle()
+                                ),
                                 false,
-                            ))
-                            .child(card_divider())
-                            .child(static_row(
+                            ));
+                        if let Some(codex) = &prefs.codex {
+                            accounts_card = accounts_card.child(card_divider()).child(static_row(
                                 "Codex CLI",
-                                format!("{} · Inherited from Preferences", prefs.codex.list_subtitle()),
+                                format!(
+                                    "{} · Inherited from Preferences",
+                                    codex.list_subtitle()
+                                ),
                                 false,
-                            ))
+                            ));
+                        }
+                        accounts_card
                             .child(card_divider())
-                            .child(static_row("OpenRouter", selected_or_summary, false)),
-                    )
+                            .child(static_row("OpenRouter", selected_or_summary, false))
+                    })
                     .child(
                         view().flex_row().justify_end().child(secondary_button(
                             "ps-open-provider-prefs",
