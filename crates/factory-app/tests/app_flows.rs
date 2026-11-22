@@ -1137,6 +1137,11 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     let mut app = start_with_demo_db(db_path);
 
     // Navigate to Machines from the sidebar.
+    assert!(
+        app.screen()
+            .matches("role:button[Machines, 5 registered]")
+            .unwrap()
+    );
     app.press("Machines").unwrap();
     app.wait_for("5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk")
         .unwrap();
@@ -1670,6 +1675,12 @@ fn fresh_launch_without_demo_mode_shows_proper_empty_states_across_views() {
     assert!(!app.screen().shows("@vitest/coverage-v8"));
 
     // Machines shows an empty fleet state with an Add Machine call to action.
+    assert!(
+        app.screen()
+            .matches("role:button[Machines, 0 registered]")
+            .unwrap()
+    );
+    assert!(!app.screen().shows("0 registered"));
     app.press_key("alt+mod+m").unwrap();
     app.wait_for("No machines configured · Bruk 0.9.0 (data schema 7)")
         .unwrap();

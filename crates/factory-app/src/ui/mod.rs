@@ -1097,6 +1097,11 @@ fn sidebar_inbox_item() -> impl IntoElement {
 fn sidebar_machines_item() -> impl IntoElement {
     let is_active = || store::active_view() == ActiveView::Machines;
     button()
+        .test_id("sidebar-machines-btn")
+        .accessibility_label(move || {
+            let count = store::machines().len();
+            Some(SharedString::from(format!("Machines, {count} registered")))
+        })
         .on_press(store::open_machines)
         .rounded(px(7.0))
         .hover(|s| s.bg(palette::sidebar_hover_bg()))
