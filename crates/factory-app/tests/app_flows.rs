@@ -1,7 +1,7 @@
 //! Headless Native Shell UI tests for the Dashboard landing page, Inbox, Machines,
 //! SQLite project tracking, and workflow execution.
 
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use nsh_core::{
     platform::Os,
@@ -12,7 +12,13 @@ use nsh_testing::Headless;
 use tempfile::TempDir;
 
 fn start_with_db(db_path: PathBuf) -> Headless {
-    let mut config = EngineConfig::new(factory_app::root_with_db_path(db_path));
+    start_with_db_and_claude_path(db_path, OsString::new())
+}
+
+fn start_with_db_and_claude_path(db_path: PathBuf, path_env: OsString) -> Headless {
+    let mut config = EngineConfig::new(factory_app::root_with_db_path_and_claude_path(
+        db_path, path_env,
+    ));
     config.environment.os = Os::MacOs;
     config.viewport = Size::new(px(1360.0), px(920.0));
     let mut app = Headless::start(config).unwrap();
@@ -1797,4 +1803,257 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     app.press("id:ps-tab-providers").unwrap();
     app.wait_for("No OpenRouter keys configured").unwrap();
+}
+
+#[cfg(unix)]
+fn write_fake_claude(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = dir.join(name);
+    std::fs::write(&path, script).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_cli_on_path_and_logged_in_hides_sign_in_and_uses_system_account() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let claude_path = write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":true,"authMethod":"claude.ai","email":"system-user@example.com","subscriptionType":"max","planTier":"max_5x","configDirectory":"/Users/system/.claude"}'
+"#,
+    );
+
+    let mut app = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+
+    // Open Preferences (⌘,); Claude is selected by default when no OpenRouter keys exist.
+    app.press_key("mod+,").unwrap();
+    app.wait_for("system-user@example.com").unwrap();
+
+    assert!(app.screen().shows("CLI works"));
+    assert!(app.screen().shows("Max 5x"));
+    assert!(app.screen().shows(&claude_path.display().to_string()));
+    assert!(app.screen().shows("/Users/system/.claude"));
+    assert!(
+        app.screen()
+            .shows("Using your existing system Claude CLI login.")
+    );
+    // Authentication is proven on the system, so "Sign In" must not appear.
+    assert!(!app.screen().matches("id:prefs-claude-sign-in").unwrap());
+    assert!(!app.screen().matches("role:button[Sign In]").unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_cli_missing_from_path_accepts_custom_path_and_persists_across_restart() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let custom_dir = temp.path().join("opt-claude");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    let custom_claude = write_fake_claude(
+        &custom_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":true,"authMethod":"claude.ai","email":"custom-path@example.com","subscriptionType":"pro","configDirectory":"/Users/custom/.claude"}'
+"#,
+    );
+    let custom_claude_str = custom_claude.display().to_string();
+
+    {
+        let mut app = start_with_db_and_claude_path(db_path.clone(), OsString::new());
+        app.press_key("mod+,").unwrap();
+        app.wait_for("Not found on default PATH").unwrap();
+        assert!(app.screen().shows("CLI not found on PATH"));
+        // Sign In is not shown when the binary itself is missing.
+        assert!(!app.screen().matches("id:prefs-claude-sign-in").unwrap());
+
+        // Open the path editor and verify invalid paths report an error.
+        app.press("id:prefs-claude-path-edit").unwrap();
+        app.wait_for("id:prefs-claude-path-input").unwrap();
+        app.type_text("id:prefs-claude-path-input", "/nonexistent/claude")
+            .unwrap();
+        app.press("id:prefs-claude-path-save").unwrap();
+        app.wait_for("Claude CLI was not found at '/nonexistent/claude'.")
+            .unwrap();
+
+        // Enter the valid custom binary path; Bruk probes and proves system authentication.
+        app.clear("id:prefs-claude-path-input").unwrap();
+        app.type_text("id:prefs-claude-path-input", &custom_claude_str)
+            .unwrap();
+        app.press("id:prefs-claude-path-save").unwrap();
+        app.wait_for("custom-path@example.com").unwrap();
+        assert!(app.screen().shows("CLI works"));
+        assert!(app.screen().shows("Pro"));
+        assert!(app.screen().shows("Custom"));
+        assert!(!app.screen().matches("id:prefs-claude-sign-in").unwrap());
+        assert!(!app.screen().matches("role:button[Sign In]").unwrap());
+
+        app.press_window_close("preferences").unwrap();
+    }
+
+    // Reopen with an empty PATH and verify the custom path persisted and stays authenticated.
+    let mut reopened = start_with_db_and_claude_path(db_path, OsString::new());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("custom-path@example.com").unwrap();
+    assert!(reopened.screen().shows("CLI works"));
+    assert!(reopened.screen().shows(&custom_claude_str));
+    assert!(
+        !reopened
+            .screen()
+            .matches("id:prefs-claude-sign-in")
+            .unwrap()
+    );
+
+    // Clearing back to default PATH returns to the not-found state on the empty PATH.
+    reopened.press("id:prefs-claude-path-edit").unwrap();
+    reopened.wait_for("id:prefs-claude-path-reset").unwrap();
+    reopened.press("id:prefs-claude-path-reset").unwrap();
+    reopened.wait_for("Not found on default PATH").unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_cli_on_path_but_logged_out_shows_sign_in_and_updates_after_login() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    let state_file = temp.path().join("logged_in");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let script = format!(
+        r#"#!/bin/sh
+STATE_FILE="{state}"
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  touch "$STATE_FILE"
+  exit 0
+fi
+if [ -f "$STATE_FILE" ]; then
+  echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"fresh-login@example.com","subscriptionType":"max","configDirectory":"/Users/fresh/.claude"}}'
+  exit 0
+else
+  echo '{{"loggedIn":false,"authMethod":"none","configDirectory":"/Users/fresh/.claude"}}'
+  exit 1
+fi
+"#,
+        state = state_file.display()
+    );
+    write_fake_claude(&bin_dir, "claude", &script);
+
+    let mut app = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+    app.press_key("mod+,").unwrap();
+    app.wait_for("id:prefs-claude-sign-in").unwrap();
+    assert!(app.screen().shows("Not signed in"));
+
+    // Pressing Sign In runs `claude auth login` and refreshes into the authenticated state,
+    // hiding the Sign In button automatically.
+    app.press("id:prefs-claude-sign-in").unwrap();
+    app.wait_for("fresh-login@example.com").unwrap();
+    assert!(app.screen().shows("CLI works"));
+    assert!(!app.screen().matches("id:prefs-claude-sign-in").unwrap());
+    assert!(!app.screen().matches("role:button[Sign In]").unwrap());
+}
+
+#[cfg(unix)]
+#[test]
+fn claude_cli_queries_available_models_and_remaining_usage_for_ui() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    let usage_counter = temp.path().join("usage_count");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    let script = format!(
+        r#"#!/bin/sh
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"live-cli@example.com","subscriptionType":"max","planTier":"max_5x","configDirectory":"/Users/live/.claude"}}'
+  exit 0
+fi
+
+# Consume stdin control requests and emit initialize + get_usage control responses.
+cat >/dev/null
+COUNT_FILE="{counter}"
+if [ -f "$COUNT_FILE" ]; then
+  SESSION_PCT=22
+else
+  touch "$COUNT_FILE"
+  SESSION_PCT=8
+fi
+echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"bruk_init","response":{{"models":[{{"value":"default","resolvedModel":"claude-opus-5-5","displayName":"Default (recommended)","description":"Opus 5.5"}},{{"value":"opus","resolvedModel":"claude-opus-5-5","displayName":"Opus 5.5","description":"For complex work"}},{{"value":"fable","resolvedModel":"claude-fable-5-2","displayName":"Fable 5.2","description":"For your toughest challenges"}},{{"value":"sonnet","resolvedModel":"claude-sonnet-5-5","displayName":"Sonnet 5.5","description":"Most efficient"}}]}}}}}}'
+echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"bruk_usage","response":{{"rate_limits_available":true,"rate_limits":{{"limits":[{{"kind":"session","group":"session","percent":'"$SESSION_PCT"',"resets_at":"2099-11-22T23:59:59+00:00","severity":"normal","scope":null}},{{"kind":"weekly_all","group":"weekly","percent":12,"resets_at":"2099-11-29T20:00:00+00:00","severity":"normal","scope":null}},{{"kind":"weekly_scoped","group":"weekly","percent":5,"resets_at":"2099-11-29T20:00:00+00:00","severity":"normal","scope":{{"model":{{"display_name":"Fable"}}}}}}]}}}}}}}}'
+"#,
+        counter = usage_counter.display()
+    );
+    write_fake_claude(&bin_dir, "claude", &script);
+
+    let mut app =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    app.press_key("mod+,").unwrap();
+
+    // Remaining usage windows and scheduled quota resets queried from the CLI appear in the card.
+    app.wait_for("92% remaining").unwrap();
+    assert!(app.screen().shows("Usage remaining"));
+    assert!(app.screen().shows("Quota resets"));
+    assert!(app.screen().shows("Current session (5h)"));
+    assert!(app.screen().shows("Weekly (all models)"));
+    assert!(app.screen().shows("88% remaining"));
+    assert!(app.screen().shows("Weekly (Fable)"));
+    assert!(app.screen().shows("95% remaining"));
+
+    // Refresh re-queries the CLI and updates remaining usage live.
+    app.press("id:prefs-claude-usage-refresh").unwrap();
+    app.wait_for("78% remaining").unwrap();
+
+    // Opening the Model editor shows the live models queried from the CLI.
+    app.press("id:prefs-cli-model-change").unwrap();
+    app.wait_for("Available from Claude CLI (3 models)")
+        .unwrap();
+    assert!(app.screen().shows("Model Family Filter"));
+    assert!(app.screen().shows("Opus 5.5"));
+    assert!(app.screen().shows("Fable 5.2"));
+    assert!(app.screen().shows("Sonnet 5.5"));
+
+    // Unchecking Fable in the Model Family Filter hides it from the model selection view.
+    app.press("id:prefs-claude-family-fable").unwrap();
+    app.wait_for("Showing 2 of 3 models from Claude CLI (Fable hidden)")
+        .unwrap();
+    assert!(!app.screen().shows("Fable 5.2"));
+    assert!(app.screen().shows("Opus 5.5"));
+    assert!(app.screen().shows("Sonnet 5.5"));
+
+    // Re-checking Fable restores it immediately.
+    app.press("id:prefs-claude-family-fable").unwrap();
+    app.wait_for("Available from Claude CLI (3 models)")
+        .unwrap();
+    assert!(app.screen().shows("Fable 5.2"));
+
+    // Uncheck Fable again and verify the filter persists across app restarts.
+    app.press("id:prefs-claude-family-fable").unwrap();
+    app.wait_for("Showing 2 of 3 models from Claude CLI (Fable hidden)")
+        .unwrap();
+
+    app.press("id:prefs-claude-model-sonnet").unwrap();
+    app.press("role:button[Save Model]").unwrap();
+    app.wait_for("Default model set to sonnet.").unwrap();
+    assert!(app.screen().shows("sonnet"));
+    app.press_window_close("preferences").unwrap();
+
+    // Reopen against the same SQLite DB and verify Fable stays hidden.
+    let mut reopened = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("Usage remaining").unwrap();
+    reopened.press("id:prefs-cli-model-change").unwrap();
+    reopened
+        .wait_for("Showing 2 of 3 models from Claude CLI (Fable hidden)")
+        .unwrap();
+    assert!(!reopened.screen().shows("Fable 5.2"));
+    assert!(reopened.screen().shows("Opus 5.5"));
+    assert!(reopened.screen().shows("Sonnet 5.5"));
 }

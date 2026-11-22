@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::claude_cli::{
+    ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
+};
+
 /// Top-level toolbar tabs inside the macOS Preferences window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +137,10 @@ pub enum ConnectionTestState {
     Failed(String),
 }
 
+fn default_true() -> bool {
+    true
+}
+
 /// Single-account CLI provider configuration (Claude or Codex).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliAccount {
@@ -143,8 +151,29 @@ pub struct CliAccount {
     pub plan: String,
     pub connected: bool,
     pub cli_binary: String,
+    /// Optional user-specified path to the CLI binary when it is not on the default `PATH`.
+    #[serde(default)]
+    pub custom_cli_path: Option<String>,
+    /// Whether the CLI executable was found on the system (`PATH` or `custom_cli_path`).
+    #[serde(default = "default_true")]
+    pub binary_found: bool,
+    /// Whether this provider uses the user's existing system CLI login instead of an isolated config.
+    #[serde(default)]
+    pub uses_system_login: bool,
     pub config_dir: String,
     pub default_model: String,
+    /// Model families unchecked in the Model Family Filter (e.g. `["Fable"]`).
+    #[serde(default)]
+    pub hidden_model_families: Vec<String>,
+    /// Live model choices queried from the CLI (never persisted so upgrades stay fresh).
+    #[serde(skip)]
+    pub available_models: Vec<ClaudeModelOption>,
+    /// Live plan usage/rate-limit windows queried from the CLI (never persisted).
+    #[serde(skip)]
+    pub usage: Option<ClaudeUsageSummary>,
+    /// Optional non-fatal note if querying models/usage from the CLI returned a warning.
+    #[serde(skip)]
+    pub usage_warning: Option<String>,
     pub test_state: ConnectionTestState,
     pub used_by_projects: Vec<String>,
 }
@@ -152,15 +181,75 @@ pub struct CliAccount {
 impl CliAccount {
     /// Compact subtitle displayed beneath the provider name in the account list.
     pub fn list_subtitle(&self) -> String {
+        if !self.binary_found {
+            return "CLI not found".to_owned();
+        }
         if !self.connected {
             return "Not signed in".to_owned();
         }
-        format!("{} · {}", self.email, self.plan)
+        match (self.email.trim(), self.plan.trim()) {
+            ("", "") => "Signed in".to_owned(),
+            (email, "") => email.to_owned(),
+            ("", plan) => plan.to_owned(),
+            (email, plan) => format!("{email} · {plan}"),
+        }
     }
 
     /// Subtitle displayed beneath the title in the detail header.
     pub fn header_subtitle(&self) -> String {
-        format!("{} · CLI account", self.provider.label())
+        if self.uses_system_login {
+            format!("{} · System CLI login", self.provider.label())
+        } else {
+            format!("{} · CLI account", self.provider.label())
+        }
+    }
+
+    /// Returns whether the given model family is enabled (visible) in the model selection view.
+    pub fn is_model_family_visible(&self, family: &str) -> bool {
+        !self
+            .hidden_model_families
+            .iter()
+            .any(|hidden| hidden.eq_ignore_ascii_case(family))
+    }
+
+    /// Returns the distinct model families available for filtering, preserving CLI discovery order.
+    pub fn available_model_families(&self) -> Vec<String> {
+        let mut families = Vec::new();
+        let mut push_unique = |family: String| {
+            if !family.is_empty()
+                && !families
+                    .iter()
+                    .any(|existing: &String| existing.eq_ignore_ascii_case(&family))
+            {
+                families.push(family);
+            }
+        };
+
+        if !self.available_models.is_empty() {
+            for model in &self.available_models {
+                push_unique(model.family());
+            }
+        } else if self.provider == ProviderKind::Claude {
+            for fallback in ["Opus", "Sonnet", "Haiku"] {
+                push_unique(fallback.to_owned());
+            }
+        }
+
+        // Ensure previously hidden families remain toggleable even before live models finish loading.
+        for hidden in &self.hidden_model_families {
+            push_unique(hidden.clone());
+        }
+
+        families
+    }
+
+    /// Returns only the CLI-reported models whose family is currently enabled by the filter.
+    pub fn visible_available_models(&self) -> Vec<ClaudeModelOption> {
+        self.available_models
+            .iter()
+            .filter(|model| self.is_model_family_visible(&model.family()))
+            .cloned()
+            .collect()
     }
 }
 
@@ -439,9 +528,15 @@ impl AppPreferences {
                 plan: String::new(),
                 connected: false,
                 cli_binary: "claude".to_owned(),
-                config_dir: "~/Library/Application Support/software-factory/providers/claude"
-                    .to_owned(),
+                custom_cli_path: None,
+                binary_found: false,
+                uses_system_login: true,
+                config_dir: "~/.claude".to_owned(),
                 default_model: "claude-sonnet-4-6".to_owned(),
+                hidden_model_families: Vec::new(),
+                available_models: Vec::new(),
+                usage: None,
+                usage_warning: None,
                 test_state: ConnectionTestState::Untested,
                 used_by_projects: Vec::new(),
             },
@@ -453,9 +548,16 @@ impl AppPreferences {
                 plan: String::new(),
                 connected: false,
                 cli_binary: "codex".to_owned(),
+                custom_cli_path: None,
+                binary_found: true,
+                uses_system_login: false,
                 config_dir: "~/Library/Application Support/software-factory/providers/codex"
                     .to_owned(),
                 default_model: "gpt-5.3-codex".to_owned(),
+                hidden_model_families: Vec::new(),
+                available_models: Vec::new(),
+                usage: None,
+                usage_warning: None,
                 test_state: ConnectionTestState::Untested,
                 used_by_projects: Vec::new(),
             },
@@ -482,9 +584,59 @@ impl AppPreferences {
                 plan: "Max".to_owned(),
                 connected: true,
                 cli_binary: "claude".to_owned(),
-                config_dir: "~/Library/Application Support/software-factory/providers/claude"
-                    .to_owned(),
+                custom_cli_path: None,
+                binary_found: true,
+                uses_system_login: true,
+                config_dir: "~/.claude".to_owned(),
                 default_model: "claude-sonnet-4-6".to_owned(),
+                hidden_model_families: Vec::new(),
+                available_models: vec![
+                    ClaudeModelOption {
+                        value: "opus".to_owned(),
+                        resolved_model: "claude-opus-5-5".to_owned(),
+                        display_name: "Opus 5.5".to_owned(),
+                        description: "For complex work and everyday tasks".to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "fable".to_owned(),
+                        resolved_model: "claude-fable-5-2".to_owned(),
+                        display_name: "Fable 5.2".to_owned(),
+                        description: "For your toughest challenges".to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "sonnet".to_owned(),
+                        resolved_model: "claude-sonnet-5-5".to_owned(),
+                        display_name: "Sonnet 5.5".to_owned(),
+                        description: "Most efficient for simpler tasks".to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "haiku".to_owned(),
+                        resolved_model: "claude-haiku-5-5".to_owned(),
+                        display_name: "Haiku 5.5".to_owned(),
+                        description: "Fastest for quick answers".to_owned(),
+                    },
+                ],
+                usage: Some(ClaudeUsageSummary {
+                    rate_limits_available: true,
+                    windows: vec![
+                        ClaudeUsageWindow {
+                            label: "Current session (5h)".to_owned(),
+                            used_percent: 18,
+                            remaining_percent: 82,
+                            resets_at: Some("2026-11-23T00:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                        ClaudeUsageWindow {
+                            label: "Weekly (all models)".to_owned(),
+                            used_percent: 9,
+                            remaining_percent: 91,
+                            resets_at: Some("2026-11-29T20:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                    ],
+                    extra_usage_note: None,
+                }),
+                usage_warning: None,
                 test_state: ConnectionTestState::Works,
                 used_by_projects: vec![
                     "api-gateway".to_owned(),
@@ -500,9 +652,16 @@ impl AppPreferences {
                 plan: "Pro".to_owned(),
                 connected: true,
                 cli_binary: "codex".to_owned(),
+                custom_cli_path: None,
+                binary_found: true,
+                uses_system_login: false,
                 config_dir: "~/Library/Application Support/software-factory/providers/codex"
                     .to_owned(),
                 default_model: "gpt-5.3-codex".to_owned(),
+                hidden_model_families: Vec::new(),
+                available_models: Vec::new(),
+                usage: None,
+                usage_warning: None,
                 test_state: ConnectionTestState::Works,
                 used_by_projects: vec!["api-gateway".to_owned(), "mobile-app".to_owned()],
             },
@@ -789,6 +948,121 @@ impl AppPreferences {
         Ok(())
     }
 
+    /// Sets or clears the optional custom binary path override for the Claude CLI.
+    ///
+    /// Empty or whitespace-only input clears the override and reverts to default `PATH` lookup.
+    pub fn set_claude_custom_path(&mut self, custom_path: Option<&str>) {
+        let normalized = custom_path
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        self.claude.custom_cli_path = normalized;
+    }
+
+    /// Applies the outcome of probing the local `claude` CLI onto `self.claude`.
+    pub fn apply_claude_probe(&mut self, probe: &ClaudeCliProbe, explicit_test: bool) {
+        self.claude.uses_system_login = true;
+        match probe {
+            ClaudeCliProbe::Authenticated {
+                binary_path,
+                email,
+                plan,
+                config_dir,
+                ..
+            } => {
+                self.claude.binary_found = true;
+                self.claude.connected = true;
+                self.claude.cli_binary = binary_path.display().to_string();
+                self.claude.email = email.clone();
+                self.claude.plan = plan.clone();
+                self.claude.config_dir = config_dir.clone();
+                self.claude.test_state = ConnectionTestState::Works;
+            }
+            ClaudeCliProbe::NotAuthenticated {
+                binary_path,
+                config_dir,
+            } => {
+                self.claude.binary_found = true;
+                self.claude.connected = false;
+                self.claude.cli_binary = binary_path.display().to_string();
+                self.claude.email.clear();
+                self.claude.plan.clear();
+                self.claude.available_models.clear();
+                self.claude.usage = None;
+                self.claude.usage_warning = None;
+                self.claude.config_dir = config_dir.clone();
+                self.claude.test_state = if explicit_test {
+                    ConnectionTestState::Failed("Sign in to the Claude CLI first".to_owned())
+                } else {
+                    ConnectionTestState::Untested
+                };
+            }
+            ClaudeCliProbe::BinaryNotFound { error } => {
+                self.claude.binary_found = false;
+                self.claude.connected = false;
+                self.claude.cli_binary = self
+                    .claude
+                    .custom_cli_path
+                    .clone()
+                    .unwrap_or_else(|| "claude".to_owned());
+                self.claude.email.clear();
+                self.claude.plan.clear();
+                self.claude.available_models.clear();
+                self.claude.usage = None;
+                self.claude.usage_warning = None;
+                self.claude.config_dir = "~/.claude".to_owned();
+                self.claude.test_state = ConnectionTestState::Failed(error.short_status());
+            }
+            ClaudeCliProbe::ProbeFailed {
+                binary_path,
+                message,
+            } => {
+                self.claude.binary_found = true;
+                self.claude.connected = false;
+                self.claude.cli_binary = binary_path.display().to_string();
+                self.claude.email.clear();
+                self.claude.plan.clear();
+                self.claude.available_models.clear();
+                self.claude.usage = None;
+                self.claude.usage_warning = None;
+                self.claude.test_state = ConnectionTestState::Failed(message.clone());
+            }
+        }
+    }
+
+    /// Applies live model options and usage limits fetched from the Claude CLI.
+    pub fn apply_claude_details(&mut self, details: ClaudeCliDetails) {
+        if !details.models.is_empty() {
+            self.claude.available_models = details.models;
+        }
+        if details.usage.is_some() {
+            self.claude.usage = details.usage;
+        }
+        self.claude.usage_warning = details.warning;
+    }
+
+    /// Toggles visibility of a Claude model family (e.g. `"Fable"`) in the model selection view.
+    ///
+    /// Returns `true` if the family is now visible (checked), or `false` if hidden (unchecked).
+    pub fn toggle_claude_model_family(&mut self, family: &str) -> bool {
+        let trimmed = family.trim();
+        if trimmed.is_empty() {
+            return true;
+        }
+        if let Some(idx) = self
+            .claude
+            .hidden_model_families
+            .iter()
+            .position(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            self.claude.hidden_model_families.remove(idx);
+            true
+        } else {
+            self.claude.hidden_model_families.push(trimmed.to_owned());
+            false
+        }
+    }
+
     /// Toggles an extension entry by id.
     pub fn toggle_extension(&mut self, id: &str) {
         if let Some(entry) = self.extensions.entries.iter_mut().find(|e| e.id == id) {
@@ -968,5 +1242,114 @@ mod tests {
         assert!(parse_dollar_amount("-10").is_err());
         assert!(parse_dollar_amount("abc").is_err());
         assert!(parse_dollar_amount("12.345").is_err());
+    }
+
+    #[test]
+    fn claude_probe_updates_account_status_and_custom_path() {
+        use std::path::PathBuf;
+
+        use crate::claude_cli::ClaudeBinaryError;
+
+        let mut prefs = AppPreferences::empty();
+        assert!(!prefs.claude.binary_found);
+        assert_eq!(prefs.claude.list_subtitle(), "CLI not found");
+
+        prefs.apply_claude_probe(
+            &ClaudeCliProbe::Authenticated {
+                binary_path: PathBuf::from("/Users/dev/.local/bin/claude"),
+                email: "dev@example.com".to_owned(),
+                plan: "Max 5x".to_owned(),
+                auth_method: "claude.ai".to_owned(),
+                config_dir: "/Users/dev/.claude".to_owned(),
+            },
+            false,
+        );
+        assert!(prefs.claude.connected);
+        assert!(prefs.claude.binary_found);
+        assert!(prefs.claude.uses_system_login);
+        assert_eq!(prefs.claude.cli_binary, "/Users/dev/.local/bin/claude");
+        assert_eq!(prefs.claude.config_dir, "/Users/dev/.claude");
+        assert_eq!(prefs.claude.list_subtitle(), "dev@example.com · Max 5x");
+        assert_eq!(prefs.claude.test_state, ConnectionTestState::Works);
+
+        prefs.apply_claude_probe(
+            &ClaudeCliProbe::NotAuthenticated {
+                binary_path: PathBuf::from("/Users/dev/.local/bin/claude"),
+                config_dir: "/Users/dev/.claude".to_owned(),
+            },
+            false,
+        );
+        assert!(!prefs.claude.connected);
+        assert!(prefs.claude.binary_found);
+        assert_eq!(prefs.claude.list_subtitle(), "Not signed in");
+        assert_eq!(prefs.claude.test_state, ConnectionTestState::Untested);
+
+        prefs.set_claude_custom_path(Some("  /opt/claude/bin/claude  "));
+        assert_eq!(
+            prefs.claude.custom_cli_path.as_deref(),
+            Some("/opt/claude/bin/claude")
+        );
+        prefs.apply_claude_probe(
+            &ClaudeCliProbe::BinaryNotFound {
+                error: ClaudeBinaryError::CustomPathNotFound(PathBuf::from(
+                    "/opt/claude/bin/claude",
+                )),
+            },
+            false,
+        );
+        assert!(!prefs.claude.binary_found);
+        assert!(!prefs.claude.connected);
+        assert_eq!(prefs.claude.list_subtitle(), "CLI not found");
+        assert_eq!(
+            prefs.claude.test_state,
+            ConnectionTestState::Failed("Custom path not found".to_owned())
+        );
+
+        prefs.set_claude_custom_path(Some("   "));
+        assert_eq!(prefs.claude.custom_cli_path, None);
+    }
+
+    #[test]
+    fn deserializes_legacy_cli_account_without_new_claude_fields() {
+        let legacy_json = r#"{
+            "id": "claude",
+            "provider": "claude",
+            "display_name": "Claude",
+            "email": "",
+            "plan": "",
+            "connected": false,
+            "cli_binary": "claude",
+            "config_dir": "~/.claude",
+            "default_model": "claude-sonnet-4-6",
+            "test_state": {"state": "untested"},
+            "used_by_projects": []
+        }"#;
+        let account: CliAccount = serde_json::from_str(legacy_json).unwrap();
+        assert_eq!(account.custom_cli_path, None);
+        assert!(account.binary_found);
+        assert!(!account.uses_system_login);
+        assert!(account.hidden_model_families.is_empty());
+    }
+
+    #[test]
+    fn model_family_filter_hides_and_restores_matching_models() {
+        let mut prefs = AppPreferences::sample();
+        assert_eq!(
+            prefs.claude.available_model_families(),
+            vec!["Opus", "Fable", "Sonnet", "Haiku"]
+        );
+        assert_eq!(prefs.claude.visible_available_models().len(), 4);
+
+        // Uncheck Fable.
+        assert!(!prefs.toggle_claude_model_family("Fable"));
+        assert!(!prefs.claude.is_model_family_visible("fable"));
+        let visible = prefs.claude.visible_available_models();
+        assert_eq!(visible.len(), 3);
+        assert!(visible.iter().all(|m| m.family() != "Fable"));
+
+        // Re-check Fable (case-insensitive).
+        assert!(prefs.toggle_claude_model_family("fable"));
+        assert!(prefs.claude.is_model_family_visible("Fable"));
+        assert_eq!(prefs.claude.visible_available_models().len(), 4);
     }
 }

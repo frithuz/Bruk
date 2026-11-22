@@ -2,13 +2,17 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
+    future::Future,
     path::Path,
+    pin::Pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
 };
 
 use factory_core::{
     AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, CoreUpdatePolicy, DashboardDataset,
+    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, CoreUpdatePolicy, DashboardDataset,
     DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry,
     DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, InboxFilter,
     InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
@@ -17,7 +21,8 @@ use factory_core::{
     ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
     RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
     Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
-    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
+    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort, fetch_claude_details, probe_claude_cli,
+    resolve_claude_binary, run_claude_auth_login,
 };
 use nsh_core::{
     element::desktop::main_window,
@@ -41,6 +46,62 @@ pub(crate) enum ActiveView {
     RegisterProject,
 }
 
+/// Controls how `claude` is searched on `PATH` when no custom binary path is configured.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum ClaudePathLookup {
+    /// Search the current process's `PATH` environment variable (production default).
+    #[default]
+    SystemPath,
+    /// Search only this explicit `PATH` value (used by isolated tests).
+    ExplicitPath(OsString),
+}
+
+impl ClaudePathLookup {
+    fn resolve_path_env(&self) -> Option<OsString> {
+        match self {
+            Self::SystemPath => std::env::var_os("PATH"),
+            Self::ExplicitPath(path) => Some(path.clone()),
+        }
+    }
+}
+
+struct ThreadOneshot<T> {
+    state: Arc<Mutex<(Option<T>, Option<Waker>)>>,
+}
+
+impl<T> Future for ThreadOneshot<T> {
+    type Output = T;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.state.lock().expect("oneshot lock poisoned");
+        if let Some(value) = guard.0.take() {
+            Poll::Ready(value)
+        } else {
+            guard.1 = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+fn spawn_blocking_task<T: Send + 'static>(
+    work: impl FnOnce() -> T + Send + 'static,
+) -> ThreadOneshot<T> {
+    let state = Arc::new(Mutex::new((None, None::<Waker>)));
+    let shared = state.clone();
+    std::thread::spawn(move || {
+        let result = work();
+        let waker = {
+            let mut guard = shared.lock().expect("oneshot lock poisoned");
+            guard.0 = Some(result);
+            guard.1.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    });
+    ThreadOneshot { state }
+}
+
 #[derive(Clone)]
 struct AppState {
     factory: FactoryState,
@@ -49,6 +110,9 @@ struct AppState {
     demo_mode: bool,
     using_sample_projects: bool,
     saved_real_preferences: Option<AppPreferences>,
+    claude_path_lookup: ClaudePathLookup,
+    claude_sign_in_in_progress: bool,
+    claude_details_loading: bool,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
     expanded_projects: BTreeSet<ProjectId>,
@@ -130,12 +194,18 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::from_database_result(ProjectDatabase::open_default())
+        Self::from_database_result_with_path(
+            ProjectDatabase::open_default(),
+            ClaudePathLookup::SystemPath,
+        )
     }
 }
 
 impl AppState {
-    fn from_database_result(result: Result<ProjectDatabase, factory_core::StorageError>) -> Self {
+    fn from_database_result_with_path(
+        result: Result<ProjectDatabase, factory_core::StorageError>,
+        claude_path_lookup: ClaudePathLookup,
+    ) -> Self {
         let (db, db_path_display, persisted_projects, persisted_prefs, status_message, reg_error) =
             match result {
                 Ok(db) => {
@@ -185,9 +255,11 @@ impl AppState {
             demo_mode,
             status_message,
             reg_error,
+            claude_path_lookup,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build_for_mode(
         db: Option<Arc<Mutex<ProjectDatabase>>>,
         db_path_display: String,
@@ -196,6 +268,7 @@ impl AppState {
         demo_mode: bool,
         status_message: Option<String>,
         registration_error: Option<String>,
+        claude_path_lookup: ClaudePathLookup,
     ) -> Self {
         let (preferences, saved_real_preferences) = if demo_mode {
             let mut real_copy = persisted_prefs.clone();
@@ -210,6 +283,10 @@ impl AppState {
         } else {
             let mut clean = persisted_prefs;
             clean.demo_mode = false;
+            let path_env = claude_path_lookup.resolve_path_env();
+            let probe =
+                probe_claude_cli(clean.claude.custom_cli_path.as_deref(), path_env.as_deref());
+            clean.apply_claude_probe(&probe, false);
             (clean, None)
         };
 
@@ -329,6 +406,9 @@ impl AppState {
             demo_mode,
             using_sample_projects,
             saved_real_preferences,
+            claude_path_lookup,
+            claude_sign_in_in_progress: false,
+            claude_details_loading: false,
             active_view,
             selected_project,
             expanded_projects,
@@ -685,6 +765,16 @@ impl AppState {
             self.preferences_error = Some(format!("Could not save preferences: {err}"));
         }
     }
+
+    fn refresh_claude_status(&mut self, explicit_test: bool) -> ClaudeCliProbe {
+        let path_env = self.claude_path_lookup.resolve_path_env();
+        let probe = probe_claude_cli(
+            self.preferences.claude.custom_cli_path.as_deref(),
+            path_env.as_deref(),
+        );
+        self.preferences.apply_claude_probe(&probe, explicit_test);
+        probe
+    }
 }
 
 fn draft_defaults_for_selection(
@@ -749,14 +839,25 @@ fn state() -> Signal<AppState> {
 pub(crate) fn init_default() {
     let mode = state().with_untracked(|s| s.preferences.appearance.mode);
     apply_appearance_mode(mode);
+    refresh_claude_details_async();
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
 pub(crate) fn init_with_database_path(path: &Path) {
-    let loaded = AppState::from_database_result(ProjectDatabase::open(path));
+    init_with_database_path_and_claude_path(path, ClaudePathLookup::SystemPath);
+}
+
+/// Initializes the per-surface store against an explicit SQLite DB path and Claude `PATH` lookup.
+pub(crate) fn init_with_database_path_and_claude_path(
+    path: &Path,
+    claude_path_lookup: ClaudePathLookup,
+) {
+    let loaded =
+        AppState::from_database_result_with_path(ProjectDatabase::open(path), claude_path_lookup);
     let mode = loaded.preferences.appearance.mode;
     state().set(loaded);
     apply_appearance_mode(mode);
+    refresh_claude_details_async();
 }
 
 pub(crate) fn demo_mode() -> bool {
@@ -775,6 +876,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
         let prev_sidebar_visible = s.sidebar_visible;
         let prev_prefs_open = s.preferences_open;
         let prev_prefs_tab = s.preferences_tab;
+        let claude_path_lookup = s.claude_path_lookup.clone();
 
         let persisted_projects = db
             .as_ref()
@@ -811,6 +913,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
             enabled,
             status,
             None,
+            claude_path_lookup,
         );
         next.sidebar_visible = prev_sidebar_visible;
         next.preferences_open = prev_prefs_open;
@@ -846,6 +949,9 @@ pub(crate) fn set_demo_mode(enabled: bool) {
     });
     if let Some(mode) = appearance_to_apply {
         apply_appearance_mode(mode);
+    }
+    if !enabled {
+        refresh_claude_details_async();
     }
 }
 
@@ -2795,8 +2901,40 @@ pub(crate) fn clear_preferences_messages() {
 }
 
 pub(crate) fn test_selected_provider() {
+    let mut should_refresh_details = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
+        if !s.demo_mode && id == s.preferences.claude.id {
+            match s.refresh_claude_status(true) {
+                ClaudeCliProbe::Authenticated {
+                    binary_path, email, ..
+                } => {
+                    s.preferences_error = None;
+                    s.preferences_feedback = Some(format!(
+                        "Verified Claude CLI at {} ({email}).",
+                        binary_path.display()
+                    ));
+                    should_refresh_details = true;
+                }
+                ClaudeCliProbe::NotAuthenticated { binary_path, .. } => {
+                    s.preferences_error = None;
+                    s.preferences_feedback = Some(format!(
+                        "Found Claude CLI at {}, but no active system login was detected.",
+                        binary_path.display()
+                    ));
+                }
+                ClaudeCliProbe::BinaryNotFound { error } => {
+                    s.preferences_feedback = None;
+                    s.preferences_error = Some(error.to_string());
+                }
+                ClaudeCliProbe::ProbeFailed { message, .. } => {
+                    s.preferences_feedback = None;
+                    s.preferences_error = Some(message);
+                }
+            }
+            s.persist_preferences();
+            return;
+        }
         match s.preferences.test_provider(&id) {
             Ok(_) => {
                 s.preferences_error = None;
@@ -2808,6 +2946,9 @@ pub(crate) fn test_selected_provider() {
             }
         }
     });
+    if should_refresh_details {
+        refresh_claude_details_async();
+    }
 }
 
 pub(crate) fn add_openrouter_key(
@@ -2964,6 +3105,255 @@ pub(crate) fn set_cli_account_connected(id: &str, connected: bool) {
             s.preferences_error = Some(err.to_string());
         }
     });
+}
+
+pub(crate) fn claude_sign_in_in_progress() -> bool {
+    state().with(|s| s.claude_sign_in_in_progress)
+}
+
+pub(crate) fn claude_details_loading() -> bool {
+    state().with(|s| s.claude_details_loading)
+}
+
+/// Fetches the live model catalog and remaining plan usage from the authenticated `claude` CLI
+/// on a background thread without blocking the UI.
+pub(crate) fn refresh_claude_details_async() {
+    let mut binary_to_query = None;
+    state().update(|s| {
+        if s.demo_mode || !s.preferences.claude.connected || s.claude_details_loading {
+            return;
+        }
+        let binary = s.preferences.claude.cli_binary.trim();
+        if binary.is_empty() {
+            return;
+        }
+        s.claude_details_loading = true;
+        s.preferences.claude.usage_warning = None;
+        binary_to_query = Some(std::path::PathBuf::from(binary));
+    });
+
+    if let Some(binary_path) = binary_to_query {
+        let expected_binary = binary_path.display().to_string();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let details = spawn_blocking_task(move || fetch_claude_details(&binary_path)).await;
+                state().update(|s| {
+                    s.claude_details_loading = false;
+                    if s.demo_mode
+                        || !s.preferences.claude.connected
+                        || s.preferences.claude.cli_binary != expected_binary
+                    {
+                        return;
+                    }
+                    s.preferences.apply_claude_details(details);
+                });
+            });
+        });
+    }
+}
+
+/// Updates or clears the custom Claude CLI binary path and re-probes system authentication.
+///
+/// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
+/// entered path could not be resolved to an executable binary.
+pub(crate) fn update_claude_cli_path(raw_path: &str) -> bool {
+    let mut updated = false;
+    let mut should_refresh_details = false;
+    state().update(|s| {
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            s.preferences.set_claude_custom_path(None);
+            if s.demo_mode {
+                s.preferences.claude.cli_binary = "claude".to_owned();
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Using Claude CLI from default PATH.".to_owned());
+            } else {
+                match s.refresh_claude_status(false) {
+                    ClaudeCliProbe::Authenticated { binary_path, .. } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Using default PATH — verified Claude CLI at {}.",
+                            binary_path.display()
+                        ));
+                        should_refresh_details = true;
+                    }
+                    ClaudeCliProbe::NotAuthenticated { binary_path, .. } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Using default PATH ({}) — sign in to verify authentication.",
+                            binary_path.display()
+                        ));
+                    }
+                    ClaudeCliProbe::BinaryNotFound { error } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!("Cleared custom path. {}", error));
+                    }
+                    ClaudeCliProbe::ProbeFailed { message, .. } => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(message);
+                    }
+                }
+            }
+            s.persist_preferences();
+            updated = true;
+            return;
+        }
+
+        if s.demo_mode {
+            s.preferences.set_claude_custom_path(Some(trimmed));
+            s.preferences.claude.cli_binary = trimmed.to_owned();
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Claude CLI path set to {trimmed}."));
+            s.persist_preferences();
+            updated = true;
+            return;
+        }
+
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        if let Err(err) = resolve_claude_binary(Some(trimmed), path_env.as_deref()) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+
+        s.preferences.set_claude_custom_path(Some(trimmed));
+        match s.refresh_claude_status(false) {
+            ClaudeCliProbe::Authenticated {
+                binary_path, email, ..
+            } => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!(
+                    "Claude CLI verified at {} ({email}).",
+                    binary_path.display()
+                ));
+                should_refresh_details = true;
+            }
+            ClaudeCliProbe::NotAuthenticated { binary_path, .. } => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!(
+                    "Found Claude CLI at {}. Sign in to verify authentication.",
+                    binary_path.display()
+                ));
+            }
+            ClaudeCliProbe::BinaryNotFound { error } => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(error.to_string());
+            }
+            ClaudeCliProbe::ProbeFailed { message, .. } => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(message);
+            }
+        }
+        s.persist_preferences();
+        updated = true;
+    });
+    if should_refresh_details {
+        refresh_claude_details_async();
+    }
+    updated
+}
+
+/// Clears any custom Claude CLI binary path override and reverts to default `PATH` discovery.
+pub(crate) fn reset_claude_cli_path() {
+    let _ = update_claude_cli_path("");
+}
+
+/// Toggles visibility of a Claude model family (e.g. `"Fable"`) in the model selection view.
+pub(crate) fn toggle_claude_model_family(family: &str) {
+    state().update(|s| {
+        let now_visible = s.preferences.toggle_claude_model_family(family);
+        s.preferences_error = None;
+        s.preferences_feedback = Some(if now_visible {
+            format!("Showing {family} models in selection.")
+        } else {
+            format!("Hiding {family} models from selection.")
+        });
+        s.persist_preferences();
+    });
+}
+
+/// Launches `claude auth login` on a background thread and refreshes system login status when done.
+pub(crate) fn sign_in_claude() {
+    let mut binary_to_run = None;
+    state().update(|s| {
+        if s.demo_mode {
+            let _ = s.preferences.set_cli_connected("claude", true);
+            s.preferences_error = None;
+            s.preferences_feedback = Some("Signed in to Claude CLI.".to_owned());
+            return;
+        }
+        if s.claude_sign_in_in_progress {
+            return;
+        }
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        match resolve_claude_binary(
+            s.preferences.claude.custom_cli_path.as_deref(),
+            path_env.as_deref(),
+        ) {
+            Ok(binary_path) => {
+                s.claude_sign_in_in_progress = true;
+                s.preferences_error = None;
+                s.preferences_feedback = Some(
+                    "Opening Claude sign-in in your browser... Bruk will update when login finishes."
+                        .to_owned(),
+                );
+                binary_to_run = Some(binary_path);
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+
+    if let Some(binary_path) = binary_to_run {
+        Owner::detached().run(|| {
+            spawn(async move {
+                let login_result =
+                    spawn_blocking_task(move || run_claude_auth_login(&binary_path)).await;
+                let mut should_refresh_details = false;
+                state().update(|s| {
+                    s.claude_sign_in_in_progress = false;
+                    if s.demo_mode {
+                        return;
+                    }
+                    match login_result {
+                        Ok(()) => match s.refresh_claude_status(false) {
+                            ClaudeCliProbe::Authenticated { email, .. } => {
+                                s.preferences_error = None;
+                                s.preferences_feedback =
+                                    Some(format!("Signed in to Claude CLI as {email}."));
+                                should_refresh_details = true;
+                            }
+                            ClaudeCliProbe::NotAuthenticated { .. } => {
+                                s.preferences_feedback = None;
+                                s.preferences_error = Some(
+                                    "Claude sign-in finished, but no active login was detected."
+                                        .to_owned(),
+                                );
+                            }
+                            ClaudeCliProbe::BinaryNotFound { error } => {
+                                s.preferences_feedback = None;
+                                s.preferences_error = Some(error.to_string());
+                            }
+                            ClaudeCliProbe::ProbeFailed { message, .. } => {
+                                s.preferences_feedback = None;
+                                s.preferences_error = Some(message);
+                            }
+                        },
+                        Err(err) => {
+                            s.preferences_feedback = None;
+                            s.preferences_error = Some(err);
+                        }
+                    }
+                    s.persist_preferences();
+                });
+                if should_refresh_details {
+                    refresh_claude_details_async();
+                }
+            });
+        });
+    }
 }
 
 pub(crate) fn set_appearance_mode(mode: AppearanceMode) {
@@ -3371,6 +3761,7 @@ pub(crate) fn reset_preferences_to_defaults() {
             s.saved_real_preferences = Some(AppPreferences::empty());
         } else {
             s.preferences = AppPreferences::empty();
+            s.refresh_claude_status(false);
         }
         s.selected_provider_id = default_selected_provider_id(&s.preferences);
         s.preferences_error = None;
@@ -3378,6 +3769,7 @@ pub(crate) fn reset_preferences_to_defaults() {
         s.persist_preferences();
     });
     apply_appearance_mode(AppearanceMode::System);
+    refresh_claude_details_async();
 }
 
 // --- Project Settings -------------------------------------------------------------------
@@ -4642,7 +5034,10 @@ mod tests {
         let db = ProjectDatabase::open(&db_path).unwrap();
 
         // Default fresh DB has Demo Mode disabled and empty data everywhere.
-        let clean = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        let clean = AppState::from_database_result_with_path(
+            ProjectDatabase::open(&db_path),
+            ClaudePathLookup::ExplicitPath(OsString::new()),
+        );
         assert!(!clean.demo_mode);
         assert!(clean.factory.projects().is_empty());
         assert!(clean.inbox.pending.is_empty());
@@ -4656,7 +5051,10 @@ mod tests {
         demo_prefs.demo_mode = true;
         db.save_preferences(&demo_prefs).unwrap();
 
-        let mut demo = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        let mut demo = AppState::from_database_result_with_path(
+            ProjectDatabase::open(&db_path),
+            ClaudePathLookup::ExplicitPath(OsString::new()),
+        );
         assert!(demo.demo_mode);
         assert!(demo.using_sample_projects);
         assert_eq!(demo.factory.projects().len(), 3);
@@ -4683,7 +5081,10 @@ mod tests {
         demo_prefs.demo_mode = false;
         db.save_preferences(&demo_prefs).unwrap();
 
-        let restored = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        let restored = AppState::from_database_result_with_path(
+            ProjectDatabase::open(&db_path),
+            ClaudePathLookup::ExplicitPath(OsString::new()),
+        );
         assert!(!restored.demo_mode);
         assert!(!restored.using_sample_projects);
         assert_eq!(restored.factory.projects().len(), 1);

@@ -1,14 +1,17 @@
 //! Native macOS Preferences window (`⌘,`) with tabbed settings and provider account management.
 
 use factory_core::{
-    AppearanceMode, CliAccount, ConnectionTestState, CoreUpdatePolicy, DefaultLandingView,
-    MachineAgentKind, MachineConnectionStatus, MachinePlatform, MachineRecord, OpenRouterKey,
-    PreferencesTab, ProviderKind, SchemaCompatibility, format_whole_or_cents,
+    AppearanceMode, ClaudeModelOption, ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow,
+    CliAccount, ConnectionTestState, CoreUpdatePolicy, DefaultLandingView, MachineAgentKind,
+    MachineConnectionStatus, MachinePlatform, MachineRecord, OpenRouterKey, PreferencesTab,
+    ProviderKind, SchemaCompatibility, format_reset_schedule_now, format_whole_or_cents,
+    model_family_from_id,
 };
 use nsh_base::{button, input};
 use nsh_core::{
     desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes, WindowKind, WindowPosition},
     element::desktop::{current_window, window},
+    file_dialog::OpenDialog,
     prelude::*,
 };
 
@@ -23,6 +26,7 @@ enum ProviderEditor {
     AddOpenRouterKey,
     ReplaceKey(String),
     EditCap(String),
+    EditCliPath(String),
     ChangeModel(String),
     RenameKey(String),
     ConfirmRemove(String),
@@ -251,7 +255,7 @@ fn providers_tab() -> impl IntoElement {
             )
             .child(
                 text(
-                    "Claude and Codex run through their CLIs, each with its own configuration folder, so your global settings, sign-ins and history are never read or changed. OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
+                    "Claude uses your existing system CLI login on PATH (or a custom binary path if it is installed elsewhere). Codex runs through its CLI with an isolated configuration folder. OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
                 )
                 .text_size(px(12.0))
                 .text_color(palette::text_muted()),
@@ -618,11 +622,23 @@ fn providers_detail_column(
                 )
                 .into_element()
             } else if let Some(account) = prefs.cli_account(&selected_id).cloned() {
-                cli_account_detail_pane(account, active_editor, add_menu_open, draft_model)
-                    .into_element()
+                cli_account_detail_pane(
+                    account,
+                    active_editor,
+                    add_menu_open,
+                    draft_primary,
+                    draft_model,
+                )
+                .into_element()
             } else {
-                cli_account_detail_pane(prefs.claude, active_editor, add_menu_open, draft_model)
-                    .into_element()
+                cli_account_detail_pane(
+                    prefs.claude,
+                    active_editor,
+                    add_menu_open,
+                    draft_primary,
+                    draft_model,
+                )
+                .into_element()
             }
         }))
 }
@@ -1147,26 +1163,305 @@ fn cli_account_detail_pane(
     account: CliAccount,
     active_editor: Signal<Option<ProviderEditor>>,
     add_menu_open: Signal<bool>,
+    draft_cli_path: Signal<String>,
     draft_model: Signal<String>,
 ) -> impl IntoElement {
+    let is_claude = account.provider == ProviderKind::Claude;
     let account_id = account.id.clone();
     let account_id_model = account.id.clone();
     let account_id_toggle = account.id.clone();
+    let account_id_path = account.id.clone();
+    let account_id_path_cta = account.id.clone();
     let current_model = account.default_model.clone();
+    let current_custom_path = account.custom_cli_path.clone().unwrap_or_default();
+    let current_custom_path_cta = current_custom_path.clone();
+    let has_custom_path = account.custom_cli_path.is_some();
     let connected = account.connected;
+    let binary_found = account.binary_found;
+    let uses_system_login = account.uses_system_login;
     let is_changing_model =
         active_editor.get() == Some(ProviderEditor::ChangeModel(account.id.clone()));
+    let is_editing_cli_path =
+        active_editor.get() == Some(ProviderEditor::EditCliPath(account.id.clone()));
 
-    let model_presets: &[&str] = match account.provider {
-        ProviderKind::Claude => &["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"],
-        ProviderKind::Codex => &["gpt-5.3-codex", "gpt-5.2-codex", "o4-mini"],
-        ProviderKind::OpenRouter => &["openrouter/auto"],
+    let total_available_models = account.available_models.len();
+    let visible_models = account.visible_available_models();
+    let model_families: Vec<(String, bool)> = account
+        .available_model_families()
+        .into_iter()
+        .map(|family| {
+            let visible = account.is_model_family_visible(&family);
+            (family, visible)
+        })
+        .collect();
+    let has_model_families = !model_families.is_empty();
+    let hidden_family_names: Vec<String> = model_families
+        .iter()
+        .filter(|(_, visible)| !*visible)
+        .map(|(family, _)| family.clone())
+        .collect();
+    let usage_summary = account.usage.clone();
+    let usage_warning = account.usage_warning.clone();
+
+    let model_presets: Vec<&'static str> = match account.provider {
+        ProviderKind::Claude => ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]
+            .into_iter()
+            .filter(|id| {
+                model_family_from_id(id)
+                    .map(|family| account.is_model_family_visible(&family))
+                    .unwrap_or(true)
+            })
+            .collect(),
+        ProviderKind::Codex => vec!["gpt-5.3-codex", "gpt-5.2-codex", "o4-mini"],
+        ProviderKind::OpenRouter => vec!["openrouter/auto"],
     };
 
     let projects_display = if account.used_by_projects.is_empty() {
         "None".to_owned()
     } else {
         account.used_by_projects.join(" · ")
+    };
+
+    let account_display = if connected {
+        if account.email.is_empty() {
+            "Signed in".to_owned()
+        } else {
+            account.email.clone()
+        }
+    } else if !binary_found {
+        "CLI not found".to_owned()
+    } else {
+        "Not signed in".to_owned()
+    };
+
+    let subscription_display = if connected && !account.plan.trim().is_empty() {
+        account.plan.clone()
+    } else {
+        "—".to_owned()
+    };
+
+    let cli_binary_row: AnyElement = if is_claude {
+        let binary_text = if binary_found {
+            account.cli_binary.clone()
+        } else if let Some(custom) = &account.custom_cli_path {
+            format!("{custom} (not found)")
+        } else {
+            "Not found on default PATH".to_owned()
+        };
+        let path_badge_label = if has_custom_path {
+            "Custom"
+        } else if binary_found {
+            "PATH"
+        } else {
+            ""
+        };
+        let edit_btn_label = if binary_found {
+            "Change..."
+        } else {
+            "Set Path..."
+        };
+
+        view()
+            .gap(px(8.0))
+            .px(px(16.0))
+            .py(px(11.0))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(12.0))
+                    .child(
+                        view()
+                            .flex_1()
+                            .min_w(px(0.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.0))
+                            .child(row_label("CLI binary"))
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .flex_row()
+                                    .items_center()
+                                    .flex_wrap()
+                                    .gap(px(6.0))
+                                    .child(
+                                        text(binary_text)
+                                            .app_class("font-mono")
+                                            .text_size(px(12.5))
+                                            .text_color(if binary_found {
+                                                palette::text_primary()
+                                            } else {
+                                                palette::destructive_text()
+                                            }),
+                                    )
+                                    .child(when(
+                                        move || !path_badge_label.is_empty(),
+                                        move || {
+                                            view()
+                                                .px(px(6.0))
+                                                .py(px(1.5))
+                                                .rounded(px(4.5))
+                                                .border_1()
+                                                .border_color(palette::border_color())
+                                                .bg(palette::card_inset_bg())
+                                                .child(
+                                                    text(path_badge_label)
+                                                        .text_size(px(10.5))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(palette::text_secondary()),
+                                                )
+                                        },
+                                    )),
+                            ),
+                    )
+                    .child(
+                        button()
+                            .test_id("prefs-claude-path-edit")
+                            .on_press(move || {
+                                add_menu_open.set(false);
+                                store::clear_preferences_messages();
+                                draft_cli_path.set(current_custom_path.clone());
+                                active_editor.set(Some(ProviderEditor::EditCliPath(
+                                    account_id_path.clone(),
+                                )));
+                            })
+                            .px(px(12.0))
+                            .py(px(5.5))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::control_bg())
+                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                            .active(|s| s.opacity(0.8))
+                            .child(
+                                text(edit_btn_label)
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::text_primary()),
+                            ),
+                    ),
+            )
+            .child(when(
+                move || is_editing_cli_path,
+                move || claude_cli_path_editor(draft_cli_path, has_custom_path, active_editor),
+            ))
+            .into_element()
+    } else {
+        static_row("CLI binary", account.cli_binary.clone(), true).into_element()
+    };
+
+    let bottom_actions: AnyElement = if is_claude {
+        if connected {
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    text(if uses_system_login {
+                        "Using your existing system Claude CLI login."
+                    } else {
+                        "Signed in to Claude CLI."
+                    })
+                    .text_size(px(12.0))
+                    .text_color(palette::text_muted()),
+                )
+                .into_element()
+        } else if binary_found {
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    button()
+                        .test_id("prefs-claude-sign-in")
+                        .disabled(store::claude_sign_in_in_progress)
+                        .on_press(store::sign_in_claude)
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .bg(palette::nav_active_bg())
+                        .active(|s| s.opacity(0.8))
+                        .disabled_style(|s| s.opacity(0.5))
+                        .child(
+                            text(move || {
+                                if store::claude_sign_in_in_progress() {
+                                    "Signing in...".to_owned()
+                                } else {
+                                    "Sign In".to_owned()
+                                }
+                            })
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::nav_active_fg()),
+                        ),
+                )
+                .into_element()
+        } else {
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    button()
+                        .test_id("prefs-claude-set-path-cta")
+                        .on_press(move || {
+                            add_menu_open.set(false);
+                            store::clear_preferences_messages();
+                            draft_cli_path.set(current_custom_path_cta.clone());
+                            active_editor.set(Some(ProviderEditor::EditCliPath(
+                                account_id_path_cta.clone(),
+                            )));
+                        })
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .bg(palette::nav_active_bg())
+                        .active(|s| s.opacity(0.8))
+                        .child(
+                            text("Set Claude Path...")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::nav_active_fg()),
+                        ),
+                )
+                .into_element()
+        }
+    } else if connected {
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(
+                button()
+                    .on_press(move || store::set_cli_account_connected(&account_id_toggle, false))
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text("Sign Out")
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::destructive_text()),
+                    ),
+            )
+            .into_element()
+    } else {
+        view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(primary_button("Sign In", move || {
+                store::set_cli_account_connected(&account_id, true)
+            }))
+            .into_element()
     };
 
     view()
@@ -1181,27 +1476,11 @@ fn cli_account_detail_pane(
         .child(
             grouped_card("CLI Account")
                 .child(card_divider())
-                .child(static_row(
-                    "Account",
-                    if connected {
-                        account.email.clone()
-                    } else {
-                        "Not signed in".to_owned()
-                    },
-                    false,
-                ))
+                .child(static_row("Account", account_display, false))
                 .child(card_divider())
-                .child(static_row(
-                    "Subscription",
-                    if connected {
-                        account.plan.clone()
-                    } else {
-                        "—".to_owned()
-                    },
-                    false,
-                ))
+                .child(static_row("Subscription", subscription_display, false))
                 .child(card_divider())
-                .child(static_row("CLI binary", account.cli_binary.clone(), true))
+                .child(cli_binary_row)
                 .child(card_divider())
                 .child(static_row(
                     "Config folder",
@@ -1209,6 +1488,16 @@ fn cli_account_detail_pane(
                     true,
                 )),
         )
+        .child(when(
+            move || is_claude && connected,
+            move || {
+                claude_usage_card(
+                    usage_summary.clone(),
+                    usage_warning.clone(),
+                    store::claude_details_loading(),
+                )
+            },
+        ))
         .child(
             grouped_card("Defaults for this provider")
                 .child(card_divider())
@@ -1237,20 +1526,60 @@ fn cli_account_detail_pane(
                                                 .text_color(palette::text_primary()),
                                         ),
                                 )
-                                .child(secondary_button("Change...", move || {
-                                    add_menu_open.set(false);
-                                    store::clear_preferences_messages();
-                                    draft_model.set(current_model.clone());
-                                    active_editor.set(Some(ProviderEditor::ChangeModel(
-                                        account_id_model.clone(),
-                                    )));
-                                })),
+                                .child(
+                                    button()
+                                        .test_id("prefs-cli-model-change")
+                                        .on_press(move || {
+                                            add_menu_open.set(false);
+                                            store::clear_preferences_messages();
+                                            draft_model.set(current_model.clone());
+                                            active_editor.set(Some(ProviderEditor::ChangeModel(
+                                                account_id_model.clone(),
+                                            )));
+                                        })
+                                        .px(px(12.0))
+                                        .py(px(5.5))
+                                        .rounded(px(7.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::control_bg())
+                                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                        .active(|s| s.opacity(0.8))
+                                        .child(
+                                            text("Change...")
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(palette::text_primary()),
+                                        ),
+                                ),
                         )
                         .child(when(
                             move || is_changing_model,
-                            move || model_picker_editor(draft_model, model_presets, active_editor),
+                            move || {
+                                if is_claude && total_available_models > 0 {
+                                    claude_dynamic_model_picker(
+                                        draft_model,
+                                        visible_models.clone(),
+                                        total_available_models,
+                                        hidden_family_names.clone(),
+                                        active_editor,
+                                    )
+                                    .into_element()
+                                } else {
+                                    model_picker_editor(draft_model, &model_presets, active_editor)
+                                        .into_element()
+                                }
+                            },
                         )),
-                ),
+                )
+                .child(when(
+                    move || is_claude && has_model_families,
+                    move || {
+                        view()
+                            .child(card_divider())
+                            .child(claude_model_family_filter_row(model_families.clone()))
+                    },
+                )),
         )
         .child(
             grouped_card("Used by")
@@ -1258,18 +1587,497 @@ fn cli_account_detail_pane(
                 .child(static_row("Projects", projects_display, false)),
         )
         .child(preferences_error_banner())
+        .child(bottom_actions)
+        .child(preferences_feedback_caption())
+}
+
+fn claude_usage_card(
+    usage: Option<ClaudeUsageSummary>,
+    warning: Option<String>,
+    loading: bool,
+) -> impl IntoElement {
+    let mut card = view()
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .px(px(16.0))
+                .py(px(9.0))
+                .child(
+                    text("Usage remaining")
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_primary()),
+                )
+                .child(
+                    button()
+                        .test_id("prefs-claude-usage-refresh")
+                        .disabled(loading)
+                        .on_press(store::refresh_claude_details_async)
+                        .px(px(9.0))
+                        .py(px(3.5))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .active(|s| s.opacity(0.8))
+                        .disabled_style(|s| s.opacity(0.5))
+                        .child(
+                            text(if loading { "Refreshing..." } else { "Refresh" })
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
+        );
+
+    match usage {
+        Some(summary) if summary.rate_limits_available && !summary.windows.is_empty() => {
+            for window in &summary.windows {
+                card = card
+                    .child(card_divider())
+                    .child(claude_usage_window_row(window));
+            }
+            let resets = summary.upcoming_resets();
+            if !resets.is_empty() {
+                card = card
+                    .child(card_divider())
+                    .child(claude_quota_resets_section(&resets));
+            }
+            if let Some(extra) = summary.extra_usage_note {
+                card = card.child(card_divider()).child(
+                    view().px(px(16.0)).py(px(10.0)).child(
+                        text(extra)
+                            .text_size(px(12.0))
+                            .text_color(palette::text_muted()),
+                    ),
+                );
+            }
+        }
+        Some(_) => {
+            card = card.child(card_divider()).child(
+                view().px(px(16.0)).py(px(11.0)).child(
+                    text("Plan usage limits are not available for this authentication method.")
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                ),
+            );
+        }
+        None if loading => {
+            card = card.child(card_divider()).child(
+                view().px(px(16.0)).py(px(11.0)).child(
+                    text("Checking remaining usage from Claude CLI...")
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                ),
+            );
+        }
+        None => {
+            let msg = warning.unwrap_or_else(|| {
+                "Usage limits have not been loaded yet. Click Refresh to check.".to_owned()
+            });
+            card = card.child(card_divider()).child(
+                view().px(px(16.0)).py(px(11.0)).child(
+                    text(msg)
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                ),
+            );
+        }
+    }
+
+    card
+}
+
+fn claude_usage_window_row(window: &ClaudeUsageWindow) -> impl IntoElement {
+    let remaining_fraction = (window.remaining_percent as f32 / 100.0).clamp(0.0, 1.0);
+    let tone_color = if window.remaining_percent <= 10 || window.severity == "critical" {
+        palette::destructive_text()
+    } else if window.remaining_percent <= 25 || window.severity == "warning" {
+        palette::warning_text()
+    } else {
+        palette::success_text()
+    };
+
+    view()
+        .px(px(16.0))
+        .py(px(11.0))
+        .gap(px(6.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    text(window.label.clone())
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            text(format!("{}% remaining", window.remaining_percent))
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .tabular_nums()
+                                .text_color(tone_color),
+                        )
+                        .child(
+                            text(format!("{}% used", window.used_percent))
+                                .text_size(px(11.5))
+                                .tabular_nums()
+                                .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
+        .child(
+            view()
+                .w_full()
+                .h(px(6.0))
+                .rounded_full()
+                .bg(palette::card_inset_bg())
+                .overflow_hidden()
+                .flex_row()
+                .child(
+                    view()
+                        .h_full()
+                        .w(relative(remaining_fraction))
+                        .rounded_full()
+                        .bg(tone_color),
+                ),
+        )
+}
+
+fn claude_quota_resets_section(resets: &[ClaudeQuotaReset]) -> impl IntoElement {
+    let mut rows = view().gap(px(5.0));
+    for item in resets {
+        let formatted =
+            format_reset_schedule_now(&item.resets_at).unwrap_or_else(|| item.resets_at.clone());
+        rows = rows.child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    text(item.label.clone())
+                        .text_size(px(12.0))
+                        .text_color(palette::text_secondary()),
+                )
+                .child(
+                    text(formatted)
+                        .text_size(px(12.0))
+                        .tabular_nums()
+                        .text_color(palette::text_muted()),
+                ),
+        );
+    }
+
+    view()
+        .px(px(16.0))
+        .py(px(10.0))
+        .gap(px(6.0))
+        .child(
+            text("Quota resets")
+                .text_size(px(11.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_secondary()),
+        )
+        .child(rows)
+}
+
+fn claude_model_family_filter_row(families: Vec<(String, bool)>) -> impl IntoElement {
+    let mut checkboxes = view().flex_row().flex_wrap().gap(px(8.0));
+    for (family, checked) in families {
+        let family_for_press = family.clone();
+        let test_id = format!("prefs-claude-family-{}", family.to_ascii_lowercase());
+        let label_for_a11y = format!("{family} model family");
+        checkboxes = checkboxes.child(
+            button()
+                .test_id(&test_id)
+                .accessibility_label(label_for_a11y)
+                .on_press(move || store::toggle_claude_model_family(&family_for_press))
+                .px(px(9.0))
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(if checked {
+                    palette::card_selected_border()
+                } else {
+                    palette::border_color()
+                })
+                .bg(if checked {
+                    palette::card_selected_bg()
+                } else {
+                    palette::control_bg()
+                })
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            view()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .rounded(px(3.5))
+                                .border_1()
+                                .border_color(if checked {
+                                    palette::nav_active_bg()
+                                } else {
+                                    palette::border_color()
+                                })
+                                .bg(if checked {
+                                    palette::nav_active_bg()
+                                } else {
+                                    palette::card_inset_bg()
+                                })
+                                .items_center()
+                                .justify_center()
+                                .child(when(
+                                    move || checked,
+                                    || icons::check(palette::nav_active_fg()),
+                                )),
+                        )
+                        .child(
+                            text(family)
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(if checked {
+                                    palette::text_primary()
+                                } else {
+                                    palette::text_muted()
+                                }),
+                        ),
+                ),
+        );
+    }
+
+    view()
+        .px(px(16.0))
+        .py(px(11.0))
+        .gap(px(8.0))
+        .child(
+            view()
+                .gap(px(2.0))
+                .child(
+                    text("Model Family Filter")
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                )
+                .child(
+                    text("Uncheck a model family to hide it from the model selection view.")
+                        .text_size(px(11.5))
+                        .text_color(palette::text_muted()),
+                ),
+        )
+        .child(checkboxes)
+}
+
+fn claude_dynamic_model_picker(
+    draft_model: Signal<String>,
+    models: Vec<ClaudeModelOption>,
+    total_count: usize,
+    hidden_families: Vec<String>,
+    active_editor: Signal<Option<ProviderEditor>>,
+) -> impl IntoElement {
+    let visible_count = models.len();
+    let caption = if hidden_families.is_empty() {
+        format!("Available from Claude CLI ({total_count} models)")
+    } else {
+        format!(
+            "Showing {visible_count} of {total_count} models from Claude CLI ({} hidden)",
+            hidden_families.join(", ")
+        )
+    };
+    let mut list = view().gap(px(4.0));
+    if models.is_empty() {
+        list = list.child(
+            text("All model families are hidden by your Model Family Filter. Check a family below to show models.")
+                .text_size(px(12.0))
+                .text_color(palette::text_muted()),
+        );
+    }
+    for option in models {
+        let value = option.value.clone();
+        let value_for_select = value.clone();
+        let value_for_check = value.clone();
+        let resolved_for_check = option.resolved_model.clone();
+        let meta_label = if option.value != option.resolved_model {
+            format!("{} · {}", option.value, option.resolved_model)
+        } else {
+            option.value.clone()
+        };
+        let description = option.description.clone();
+        let has_description = !description.is_empty();
+        let test_id = format!("prefs-claude-model-{}", option.value);
+
+        list = list.child(
+            button()
+                .test_id(&test_id)
+                .on_press(move || draft_model.set(value_for_select.clone()))
+                .w_full()
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(move || {
+                    let current = draft_model.get();
+                    if current == value_for_check || current == resolved_for_check {
+                        palette::card_selected_border()
+                    } else {
+                        palette::border_color()
+                    }
+                })
+                .bg(move || {
+                    let current = draft_model.get();
+                    if current == value || current == option.resolved_model {
+                        palette::card_selected_bg()
+                    } else {
+                        palette::card_inset_bg()
+                    }
+                })
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    view()
+                        .w_full()
+                        .gap(px(2.0))
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.0))
+                                .child(
+                                    text(option.display_name.clone())
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette::text_primary()),
+                                )
+                                .child(
+                                    text(meta_label)
+                                        .app_class("font-mono")
+                                        .text_size(px(11.0))
+                                        .text_color(palette::text_muted()),
+                                ),
+                        )
+                        .child(when(
+                            move || has_description,
+                            move || {
+                                text(description.clone())
+                                    .text_size(px(11.5))
+                                    .text_color(palette::text_muted())
+                            },
+                        )),
+                ),
+        );
+    }
+
+    view()
+        .pt(px(4.0))
+        .gap(px(8.0))
+        .child(
+            text(caption)
+                .text_size(px(11.5))
+                .text_color(palette::text_muted()),
+        )
+        .child(list)
+        .child(inline_single_field_editor(
+            draft_model,
+            "Model alias or full model ID",
+            true,
+            "Save Model",
+            move || {
+                if store::update_selected_provider_model(&draft_model.get_untracked()) {
+                    active_editor.set(None);
+                }
+            },
+            move || {
+                store::clear_preferences_messages();
+                active_editor.set(None);
+            },
+        ))
+}
+
+fn claude_cli_path_editor(
+    draft_path: Signal<String>,
+    has_custom_path: bool,
+    active_editor: Signal<Option<ProviderEditor>>,
+) -> impl IntoElement {
+    let save_path = move || {
+        if store::update_claude_cli_path(&draft_path.get_untracked()) {
+            active_editor.set(None);
+        }
+    };
+    let on_submit = save_path;
+
+    let browse_binary = move || {
+        let answer = pick_paths(
+            OpenDialog::files()
+                .title("Select Claude CLI Binary")
+                .button_label("Select"),
+        );
+        Owner::detached().run(|| {
+            spawn(async move {
+                if let Ok(Some(paths)) = answer.await
+                    && let Some(chosen) = paths.into_iter().next()
+                {
+                    draft_path.set(chosen.display().to_string());
+                }
+            });
+        });
+    };
+
+    view()
+        .pt(px(4.0))
+        .gap(px(8.0))
+        .child(
+            text("Leave blank to auto-detect 'claude' on the default PATH, or enter the full path to the executable.")
+                .text_size(px(11.5))
+                .text_color(palette::text_muted()),
+        )
         .child(
             view()
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
-                .child(if connected {
+                .child(
+                    input()
+                        .test_id("prefs-claude-path-input")
+                        .value(move || draft_path.get())
+                        .on_change(move |v: &str| draft_path.set(v.to_owned()))
+                        .on_submit(move |_: &str| on_submit())
+                        .placeholder("/usr/local/bin/claude or ~/.local/bin/claude")
+                        .app_class("font-mono")
+                        .flex_1()
+                        .px(px(10.0))
+                        .py(px(6.5))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::card_inset_bg())
+                        .rounded(px(7.0))
+                        .text_color(palette::text_primary()),
+                )
+                .child(
                     button()
-                        .on_press(move || {
-                            store::set_cli_account_connected(&account_id_toggle, false)
-                        })
+                        .test_id("prefs-claude-path-browse")
+                        .on_press(browse_binary)
                         .px(px(12.0))
-                        .py(px(6.0))
+                        .py(px(5.5))
                         .rounded(px(7.0))
                         .border_1()
                         .border_color(palette::border_color())
@@ -1277,20 +2085,71 @@ fn cli_account_detail_pane(
                         .hover(|s| s.bg(palette::subtle_surface_bg()))
                         .active(|s| s.opacity(0.8))
                         .child(
-                            text("Sign Out")
+                            text("Browse...")
                                 .text_size(px(12.5))
                                 .font_weight(FontWeight::MEDIUM)
-                                .text_color(palette::destructive_text()),
-                        )
-                        .into_element()
-                } else {
-                    primary_button("Sign In", move || {
-                        store::set_cli_account_connected(&account_id, true)
-                    })
-                    .into_element()
-                }),
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
         )
-        .child(preferences_feedback_caption())
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(when(
+                    move || has_custom_path,
+                    move || {
+                        button()
+                            .test_id("prefs-claude-path-reset")
+                            .on_press(move || {
+                                store::reset_claude_cli_path();
+                                active_editor.set(None);
+                            })
+                            .px(px(10.0))
+                            .py(px(5.5))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::control_bg())
+                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                            .active(|s| s.opacity(0.8))
+                            .child(
+                                text("Use Default PATH")
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::text_secondary()),
+                            )
+                    },
+                ))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(secondary_button("Cancel", move || {
+                            store::clear_preferences_messages();
+                            active_editor.set(None);
+                        }))
+                        .child(
+                            button()
+                                .test_id("prefs-claude-path-save")
+                                .on_press(save_path)
+                                .px(px(12.0))
+                                .py(px(6.0))
+                                .rounded(px(7.0))
+                                .bg(palette::nav_active_bg())
+                                .active(|s| s.opacity(0.8))
+                                .child(
+                                    text("Save Path")
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette::nav_active_fg()),
+                                ),
+                        ),
+                ),
+        )
 }
 
 fn detail_header(
@@ -1380,7 +2239,7 @@ fn detail_badge(label: &'static str) -> impl IntoElement {
 
 fn model_picker_editor(
     draft_model: Signal<String>,
-    presets: &'static [&'static str],
+    presets: &[&'static str],
     active_editor: Signal<Option<ProviderEditor>>,
 ) -> impl IntoElement {
     let mut chips = view().flex_row().flex_wrap().gap(px(6.0));

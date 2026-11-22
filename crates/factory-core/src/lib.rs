@@ -4,6 +4,7 @@
 //! workflow orchestration, persistence, and agent integrations can be tested
 //! and reused across the macOS app, CLI tools, or background daemons.
 
+pub mod claude_cli;
 pub mod dashboard;
 pub mod engine;
 pub mod inbox;
@@ -17,6 +18,14 @@ pub mod workflow_editor;
 pub mod workflow_run;
 pub mod workflows_overview;
 
+pub use claude_cli::{
+    CLAUDE_BINARY_NAME, ClaudeBinaryError, ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption,
+    ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow, expand_tilde, fetch_claude_details,
+    format_reset_countdown, format_reset_countdown_now, format_reset_schedule,
+    format_reset_schedule_now, model_family_from_id, parse_claude_auth_status,
+    parse_claude_details_stream, probe_claude_cli, probe_claude_cli_from_env,
+    resolve_claude_binary, resolve_claude_binary_from_env, run_claude_auth_login,
+};
 pub use dashboard::{
     DashboardDataset, DashboardGranularity, DashboardInsight, DashboardQuery, DashboardSnapshot,
     HighTokenRun, InboxItem, InboxRequestKind, MachineNode, MachineStatus, ProjectActivityRow,

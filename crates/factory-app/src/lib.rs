@@ -4,7 +4,7 @@ mod menu;
 mod store;
 mod ui;
 
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 use nsh_base::theme;
 use nsh_core::{element::Root, prelude::*};
@@ -32,6 +32,19 @@ pub fn root_with_db_path(db_path: PathBuf) -> Root {
     Root::new::<AppWithDb>(move || AppWithDbProps {
         db_path: db_path.clone(),
         open_menubar_popover: false,
+        claude_path_env: None,
+    })
+}
+
+/// Builds a Native Shell [`Root`] backed by a specific SQLite database file and an explicit
+/// `PATH` search value for deterministic Claude CLI discovery in tests.
+pub fn root_with_db_path_and_claude_path(db_path: PathBuf, path_env: OsString) -> Root {
+    let db_path = db_path.to_string_lossy().into_owned();
+    let claude_path_env = Some(path_env.to_string_lossy().into_owned());
+    Root::new::<AppWithDb>(move || AppWithDbProps {
+        db_path: db_path.clone(),
+        open_menubar_popover: false,
+        claude_path_env: claude_path_env.clone(),
     })
 }
 
@@ -42,6 +55,7 @@ pub fn root_with_db_path_and_menubar_popover(db_path: PathBuf) -> Root {
     Root::new::<AppWithDb>(move || AppWithDbProps {
         db_path: db_path.clone(),
         open_menubar_popover: true,
+        claude_path_env: Some(String::new()),
     })
 }
 
@@ -49,11 +63,18 @@ pub fn root_with_db_path_and_menubar_popover(db_path: PathBuf) -> Root {
 struct AppWithDbProps {
     db_path: String,
     open_menubar_popover: bool,
+    claude_path_env: Option<String>,
 }
 
 #[component]
 fn AppWithDb(props: AppWithDbProps) -> impl IntoElement {
-    store::init_with_database_path(std::path::Path::new(&props.db_path));
+    match &props.claude_path_env {
+        Some(path_env) => store::init_with_database_path_and_claude_path(
+            std::path::Path::new(&props.db_path),
+            store::ClaudePathLookup::ExplicitPath(OsString::from(path_env)),
+        ),
+        None => store::init_with_database_path(std::path::Path::new(&props.db_path)),
+    }
     if props.open_menubar_popover {
         store::open_menubar_popover(None);
     }

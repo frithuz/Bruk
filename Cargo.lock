@@ -747,6 +747,7 @@ dependencies = [
 name = "factory-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "dirs",
  "rusqlite",
  "serde",
