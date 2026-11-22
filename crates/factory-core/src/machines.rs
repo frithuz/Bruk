@@ -3,11 +3,11 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Current Wald desktop application version displayed in the Machines header.
-pub const WALD_APP_VERSION: &str = "0.9.0";
+/// Current Bruk desktop application version displayed in the Machines header.
+pub const BRUK_APP_VERSION: &str = "0.9.0";
 
-/// Current Wald data schema version compared against each remote core on connection.
-pub const WALD_DATA_SCHEMA: u32 = 7;
+/// Current Bruk data schema version compared against each remote core on connection.
+pub const BRUK_DATA_SCHEMA: u32 = 7;
 
 /// Operating system family badge rendered on each machine list card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ impl MachinePlatform {
     }
 }
 
-/// Live SSH and sync state for a machine running a Wald core.
+/// Live SSH and sync state for a machine running a Bruk core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineConnectionStatus {
@@ -65,22 +65,22 @@ impl MachineConnectionStatus {
     }
 }
 
-/// Result of comparing a machine core's data schema against Wald's current schema.
+/// Result of comparing a machine core's data schema against Bruk's current schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SchemaCompatibility {
     InSync,
     CoreUpdateSuggested,
-    NeedsNewerWald,
+    NeedsNewerBruk,
 }
 
 impl SchemaCompatibility {
-    pub fn from_schemas(wald_schema: u32, core_schema: u32) -> Self {
-        if core_schema == wald_schema {
+    pub fn from_schemas(bruk_schema: u32, core_schema: u32) -> Self {
+        if core_schema == bruk_schema {
             Self::InSync
-        } else if core_schema < wald_schema {
+        } else if core_schema < bruk_schema {
             Self::CoreUpdateSuggested
         } else {
-            Self::NeedsNewerWald
+            Self::NeedsNewerBruk
         }
     }
 
@@ -88,7 +88,7 @@ impl SchemaCompatibility {
         match self {
             Self::InSync => None,
             Self::CoreUpdateSuggested => Some("Core update suggested"),
-            Self::NeedsNewerWald => Some("Needs a newer Wald"),
+            Self::NeedsNewerBruk => Some("Needs a newer Bruk"),
         }
     }
 }
@@ -132,7 +132,7 @@ pub struct MachineCatchUpSummary {
     pub changes: Vec<String>,
 }
 
-/// Policy governing how Wald proposes or applies remote core updates.
+/// Policy governing how Bruk proposes or applies remote core updates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CoreUpdatePolicy {
@@ -166,7 +166,7 @@ impl CoreUpdatePolicy {
     }
 }
 
-/// CLI agent installed on a machine whose isolated Wald sign-in can be managed.
+/// CLI agent installed on a machine whose isolated Bruk sign-in can be managed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MachineAgentKind {
@@ -247,8 +247,8 @@ impl MachineRecord {
         }
     }
 
-    pub fn compatibility(&self, wald_schema: u32) -> SchemaCompatibility {
-        SchemaCompatibility::from_schemas(wald_schema, self.core_schema)
+    pub fn compatibility(&self, bruk_schema: u32) -> SchemaCompatibility {
+        SchemaCompatibility::from_schemas(bruk_schema, self.core_schema)
     }
 
     pub fn core_summary_label(&self) -> String {
@@ -284,12 +284,12 @@ impl MachineRecord {
         }
     }
 
-    /// Detailed schema comparison line shown in Preferences › Machines › Wald core.
-    pub fn data_schema_detail(&self, wald_schema: u32) -> String {
+    /// Detailed schema comparison line shown in Preferences › Machines › Bruk core.
+    pub fn data_schema_detail(&self, bruk_schema: u32) -> String {
         if self.is_local {
             return format!("{} · bundled with this app · in sync", self.core_schema);
         }
-        match self.compatibility(wald_schema) {
+        match self.compatibility(bruk_schema) {
             SchemaCompatibility::InSync => {
                 if self.status.is_offline() {
                     format!("{} · same as this app · offline", self.core_schema)
@@ -298,11 +298,11 @@ impl MachineRecord {
                 }
             }
             SchemaCompatibility::CoreUpdateSuggested => format!(
-                "{} · behind this app ({wald_schema}) · update suggested",
+                "{} · behind this app ({bruk_schema}) · update suggested",
                 self.core_schema
             ),
-            SchemaCompatibility::NeedsNewerWald => format!(
-                "{} · ahead of this app ({wald_schema}) · not syncing",
+            SchemaCompatibility::NeedsNewerBruk => format!(
+                "{} · ahead of this app ({bruk_schema}) · not syncing",
                 self.core_schema
             ),
         }
@@ -311,7 +311,7 @@ impl MachineRecord {
     /// Status line for Claude Code on this machine.
     pub fn claude_status_summary(&self) -> String {
         let auth = if self.claude_signed_in {
-            "signed in inside Wald"
+            "signed in inside Bruk"
         } else {
             "not signed in"
         };
@@ -321,7 +321,7 @@ impl MachineRecord {
     /// Status line for Codex on this machine.
     pub fn codex_status_summary(&self) -> String {
         let auth = if self.codex_signed_in {
-            "signed in inside Wald"
+            "signed in inside Bruk"
         } else {
             "not signed in"
         };
@@ -362,11 +362,11 @@ pub enum MachinesError {
     LocalMachineProtected,
 }
 
-/// Fleet of local and remote machines managed by Wald.
+/// Fleet of local and remote machines managed by Bruk.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachinesFleet {
-    pub wald_version: String,
-    pub wald_schema: u32,
+    pub bruk_version: String,
+    pub bruk_schema: u32,
     pub machines: Vec<MachineRecord>,
 }
 
@@ -380,8 +380,8 @@ impl MachinesFleet {
     /// Seeds the 5-machine fleet matching `21 Machines.png`.
     pub fn sample() -> Self {
         Self {
-            wald_version: WALD_APP_VERSION.to_owned(),
-            wald_schema: WALD_DATA_SCHEMA,
+            bruk_version: BRUK_APP_VERSION.to_owned(),
+            bruk_schema: BRUK_DATA_SCHEMA,
             machines: vec![
                 MachineRecord {
                     id: 1,
@@ -418,7 +418,7 @@ impl MachinesFleet {
                     core_version: "0.9.0".to_owned(),
                     core_schema: 7,
                     core_sync_note: "Bundled · in sync".to_owned(),
-                    core_install_path: "/Applications/Wald.app/Contents/MacOS/wald-core".to_owned(),
+                    core_install_path: "/Applications/Bruk.app/Contents/MacOS/bruk-core".to_owned(),
                     core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
                     claude_binary_path: "/opt/homebrew/bin/claude".to_owned(),
                     claude_signed_in: true,
@@ -480,14 +480,14 @@ impl MachinesFleet {
                     ipv4: "10.0.4.21".to_owned(),
                     ipv6: "fd00::4:21".to_owned(),
                     ssh_port: 22,
-                    ssh_user: "wald".to_owned(),
+                    ssh_user: "bruk".to_owned(),
                     jump_host: None,
                     host_key_type: "ED25519".to_owned(),
                     host_key_fingerprint: "SHA256:Y7nR…2fKa".to_owned(),
                     host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKm8v4N9zQ2pL7wX3rY1tB6cF5hJ8kM0nP4qR7sU2fKa root@build-box-01".to_owned(),
                     host_key_trusted_on: "Nov 3".to_owned(),
-                    ssh_target: "wald@build-box-01".to_owned(),
-                    ssh_key_name: "wald-build".to_owned(),
+                    ssh_target: "bruk@build-box-01".to_owned(),
+                    ssh_key_name: "bruk-build".to_owned(),
                     ssh_key_type: "ED25519".to_owned(),
                     ssh_key_short_fingerprint: "SHA256:q3Ff…8kPw".to_owned(),
                     ssh_key_provider: "SSH agent (macOS Keychain)".to_owned(),
@@ -495,18 +495,18 @@ impl MachinesFleet {
                     core_version: "0.8.5".to_owned(),
                     core_schema: 7,
                     core_sync_note: "Same schema · in sync".to_owned(),
-                    core_install_path: "/home/wald/.wald/core".to_owned(),
+                    core_install_path: "/home/bruk/.bruk/core".to_owned(),
                     core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
                     claude_binary_path: "/usr/local/bin/claude".to_owned(),
                     claude_signed_in: true,
-                    codex_binary_path: "/home/wald/.local/bin/codex".to_owned(),
+                    codex_binary_path: "/home/bruk/.local/bin/codex".to_owned(),
                     codex_signed_in: true,
-                    workspace_folder: "/home/wald/work".to_owned(),
+                    workspace_folder: "/home/bruk/work".to_owned(),
                     max_sessions_at_once: 4,
                     sessions_subtitle: "Live again after catching up".to_owned(),
                     catch_up: Some(MachineCatchUpSummary {
                         headline: "Reconnected 2 minutes ago and caught up".to_owned(),
-                        summary: "While Wald was away, the 4 sessions here produced 318 events: 3 steps finished, one loop ran out of attempts, and 2 new requests are in the Inbox.".to_owned(),
+                        summary: "While Bruk was away, the 4 sessions here produced 318 events: 3 steps finished, one loop ran out of attempts, and 2 new requests are in the Inbox.".to_owned(),
                         changes: vec![
                             "#44 api-gateway › Dependency upgrade — paused for permission in Inbox (214 events)".to_owned(),
                             "#12 marketing-site › Docs refresh — asked a clarifying question in Inbox (46 events)".to_owned(),
@@ -574,14 +574,14 @@ impl MachinesFleet {
                     ipv4: "10.0.4.29".to_owned(),
                     ipv6: "fd00::4:29".to_owned(),
                     ssh_port: 22,
-                    ssh_user: "wald".to_owned(),
+                    ssh_user: "bruk".to_owned(),
                     jump_host: None,
                     host_key_type: "ED25519".to_owned(),
                     host_key_fingerprint: "SHA256:K4mP…9dLx".to_owned(),
-                    host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPw7nR2xK4mP9dLxV8cQ1bF3hT6yJ0uE5aS8zN4m9dLx wald@win-ci-02".to_owned(),
+                    host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPw7nR2xK4mP9dLxV8cQ1bF3hT6yJ0uE5aS8zN4m9dLx bruk@win-ci-02".to_owned(),
                     host_key_trusted_on: "Oct 19".to_owned(),
-                    ssh_target: "wald@win-ci-02".to_owned(),
-                    ssh_key_name: "wald-ci".to_owned(),
+                    ssh_target: "bruk@win-ci-02".to_owned(),
+                    ssh_key_name: "bruk-ci".to_owned(),
                     ssh_key_type: "ED25519".to_owned(),
                     ssh_key_short_fingerprint: "SHA256:k8Lm…2pRt".to_owned(),
                     ssh_key_provider: "SSH agent (macOS Keychain)".to_owned(),
@@ -589,13 +589,13 @@ impl MachinesFleet {
                     core_version: "0.8.3".to_owned(),
                     core_schema: 6,
                     core_sync_note: "Older schema · update suggested".to_owned(),
-                    core_install_path: "C:\\Users\\wald\\.wald\\core".to_owned(),
+                    core_install_path: "C:\\Users\\bruk\\.bruk\\core".to_owned(),
                     core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
                     claude_binary_path: "C:\\Program Files\\Claude\\claude.exe".to_owned(),
                     claude_signed_in: true,
-                    codex_binary_path: "C:\\Users\\wald\\.local\\bin\\codex.exe".to_owned(),
+                    codex_binary_path: "C:\\Users\\bruk\\.local\\bin\\codex.exe".to_owned(),
                     codex_signed_in: true,
-                    workspace_folder: "C:\\wald\\work".to_owned(),
+                    workspace_folder: "C:\\bruk\\work".to_owned(),
                     max_sessions_at_once: 2,
                     sessions_subtitle: "Continuing on host while disconnected".to_owned(),
                     catch_up: None,
@@ -639,14 +639,14 @@ impl MachinesFleet {
                     ipv4: "10.0.4.44".to_owned(),
                     ipv6: "fd00::4:44".to_owned(),
                     ssh_port: 22,
-                    ssh_user: "wald".to_owned(),
+                    ssh_user: "bruk".to_owned(),
                     jump_host: Some("bastion.lab.internal".to_owned()),
                     host_key_type: "ED25519".to_owned(),
                     host_key_fingerprint: "SHA256:R9tV…3nQz".to_owned(),
                     host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIR9tV3nQzB2mK8wL5pX1cF7jN0dH4yE6qA9sU3nQz root@gpu-01".to_owned(),
                     host_key_trusted_on: "Nov 11".to_owned(),
-                    ssh_target: "wald@gpu-01".to_owned(),
-                    ssh_key_name: "wald-gpu".to_owned(),
+                    ssh_target: "bruk@gpu-01".to_owned(),
+                    ssh_key_name: "bruk-gpu".to_owned(),
                     ssh_key_type: "ED25519".to_owned(),
                     ssh_key_short_fingerprint: "SHA256:x9Rt…4nBv".to_owned(),
                     ssh_key_provider: "SSH agent (macOS Keychain)".to_owned(),
@@ -654,15 +654,15 @@ impl MachinesFleet {
                     core_version: "1.0.0".to_owned(),
                     core_schema: 8,
                     core_sync_note: "Newer schema · not syncing".to_owned(),
-                    core_install_path: "/home/wald/.wald/core".to_owned(),
+                    core_install_path: "/home/bruk/.bruk/core".to_owned(),
                     core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
                     claude_binary_path: "/usr/local/bin/claude".to_owned(),
                     claude_signed_in: true,
-                    codex_binary_path: "/home/wald/.local/bin/codex".to_owned(),
+                    codex_binary_path: "/home/bruk/.local/bin/codex".to_owned(),
                     codex_signed_in: false,
-                    workspace_folder: "/home/wald/work".to_owned(),
+                    workspace_folder: "/home/bruk/work".to_owned(),
                     max_sessions_at_once: 6,
-                    sessions_subtitle: "Paused sync until Wald is updated".to_owned(),
+                    sessions_subtitle: "Paused sync until Bruk is updated".to_owned(),
                     catch_up: None,
                     sessions: vec![MachineSession {
                         run_number: 5,
@@ -694,14 +694,14 @@ impl MachinesFleet {
                     ipv4: "10.0.4.38".to_owned(),
                     ipv6: "fd00::4:38".to_owned(),
                     ssh_port: 22,
-                    ssh_user: "wald".to_owned(),
+                    ssh_user: "bruk".to_owned(),
                     jump_host: None,
                     host_key_type: "ED25519".to_owned(),
                     host_key_fingerprint: "SHA256:M2vX…7qHs".to_owned(),
-                    host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2vX7qHsT4kP9wN1bC6fR8jL3dY5zE0uA2mQ7qHs wald@mini-lab".to_owned(),
+                    host_key_full: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIM2vX7qHsT4kP9wN1bC6fR8jL3dY5zE0uA2mQ7qHs bruk@mini-lab".to_owned(),
                     host_key_trusted_on: "Oct 28".to_owned(),
-                    ssh_target: "wald@mini-lab".to_owned(),
-                    ssh_key_name: "wald-lab".to_owned(),
+                    ssh_target: "bruk@mini-lab".to_owned(),
+                    ssh_key_name: "bruk-lab".to_owned(),
                     ssh_key_type: "ED25519".to_owned(),
                     ssh_key_short_fingerprint: "SHA256:m2Vx…9qKd".to_owned(),
                     ssh_key_provider: "SSH agent (macOS Keychain)".to_owned(),
@@ -709,13 +709,13 @@ impl MachinesFleet {
                     core_version: "0.9.0".to_owned(),
                     core_schema: 7,
                     core_sync_note: "Same schema · offline".to_owned(),
-                    core_install_path: "/Users/wald/.wald/core".to_owned(),
+                    core_install_path: "/Users/bruk/.bruk/core".to_owned(),
                     core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
                     claude_binary_path: "/opt/homebrew/bin/claude".to_owned(),
                     claude_signed_in: true,
-                    codex_binary_path: "/Users/wald/.local/bin/codex".to_owned(),
+                    codex_binary_path: "/Users/bruk/.local/bin/codex".to_owned(),
                     codex_signed_in: true,
-                    workspace_folder: "/Users/wald/work".to_owned(),
+                    workspace_folder: "/Users/bruk/work".to_owned(),
                     max_sessions_at_once: 2,
                     sessions_subtitle: "No active sessions".to_owned(),
                     catch_up: None,
@@ -764,20 +764,20 @@ impl MachinesFleet {
         self.machines
             .iter()
             .filter(|m| {
-                m.compatibility(self.wald_schema) == SchemaCompatibility::CoreUpdateSuggested
+                m.compatibility(self.bruk_schema) == SchemaCompatibility::CoreUpdateSuggested
             })
             .count()
     }
 
-    pub fn needs_newer_wald_count(&self) -> usize {
+    pub fn needs_newer_bruk_count(&self) -> usize {
         self.machines
             .iter()
-            .filter(|m| m.compatibility(self.wald_schema) == SchemaCompatibility::NeedsNewerWald)
+            .filter(|m| m.compatibility(self.bruk_schema) == SchemaCompatibility::NeedsNewerBruk)
             .count()
     }
 
     /// Formats the unified top-bar subtitle:
-    /// `5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald`
+    /// `5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk`
     pub fn header_subtitle(&self) -> String {
         let machine_count = self.machines.len();
         let machine_word = if machine_count == 1 {
@@ -796,8 +796,8 @@ impl MachinesFleet {
             format!("{machine_count} {machine_word}"),
             format!("{session_count} {session_word}"),
             format!(
-                "Wald {} (data schema {})",
-                self.wald_version, self.wald_schema
+                "Bruk {} (data schema {})",
+                self.bruk_version, self.bruk_schema
             ),
         ];
 
@@ -808,11 +808,11 @@ impl MachinesFleet {
             parts.push(format!("{updates} core updates suggested"));
         }
 
-        let newer = self.needs_newer_wald_count();
+        let newer = self.needs_newer_bruk_count();
         if newer == 1 {
-            parts.push("1 machine needs a newer Wald".to_owned());
+            parts.push("1 machine needs a newer Bruk".to_owned());
         } else if newer > 1 {
-            parts.push(format!("{newer} machines need a newer Wald"));
+            parts.push(format!("{newer} machines need a newer Bruk"));
         }
 
         parts.join(" · ")
@@ -827,7 +827,7 @@ impl MachinesFleet {
         if self.machines[idx].is_local {
             return Err(MachinesError::LocalMachineProtected);
         }
-        let wald_schema = self.wald_schema;
+        let bruk_schema = self.bruk_schema;
         let machine = &mut self.machines[idx];
         machine.status = MachineConnectionStatus::Disconnected;
         machine.status_detail = "Disconnected just now".to_owned();
@@ -840,12 +840,12 @@ impl MachinesFleet {
         for session in &mut machine.sessions {
             session.link_label = "Disconnected".to_owned();
         }
-        machine.core_sync_note = match machine.compatibility(wald_schema) {
+        machine.core_sync_note = match machine.compatibility(bruk_schema) {
             SchemaCompatibility::InSync => "Same schema · offline".to_owned(),
             SchemaCompatibility::CoreUpdateSuggested => {
                 "Older schema · update suggested".to_owned()
             }
-            SchemaCompatibility::NeedsNewerWald => "Newer schema · not syncing".to_owned(),
+            SchemaCompatibility::NeedsNewerBruk => "Newer schema · not syncing".to_owned(),
         };
         Ok(&self.machines[idx])
     }
@@ -856,15 +856,15 @@ impl MachinesFleet {
             .iter()
             .position(|m| m.id == id)
             .ok_or(MachinesError::NotFound(id))?;
-        let wald_schema = self.wald_schema;
+        let bruk_schema = self.bruk_schema;
         let machine = &mut self.machines[idx];
-        let compat = machine.compatibility(wald_schema);
+        let compat = machine.compatibility(bruk_schema);
         match compat {
-            SchemaCompatibility::NeedsNewerWald => {
+            SchemaCompatibility::NeedsNewerBruk => {
                 machine.status = MachineConnectionStatus::NotSyncing;
                 machine.status_detail = "Connected just now".to_owned();
                 machine.core_sync_note = "Newer schema · not syncing".to_owned();
-                machine.sessions_subtitle = "Paused sync until Wald is updated".to_owned();
+                machine.sessions_subtitle = "Paused sync until Bruk is updated".to_owned();
                 for session in &mut machine.sessions {
                     session.link_label = "Not syncing".to_owned();
                 }
@@ -896,8 +896,8 @@ impl MachinesFleet {
             .iter()
             .position(|m| m.id == id)
             .ok_or(MachinesError::NotFound(id))?;
-        let target_version = self.wald_version.clone();
-        let target_schema = self.wald_schema;
+        let target_version = self.bruk_version.clone();
+        let target_schema = self.bruk_schema;
         let machine = &mut self.machines[idx];
         machine.core_version = target_version;
         machine.core_schema = target_schema;
@@ -909,15 +909,15 @@ impl MachinesFleet {
         Ok(&self.machines[idx])
     }
 
-    /// Updates every machine whose core schema is older than Wald's current schema.
+    /// Updates every machine whose core schema is older than Bruk's current schema.
     pub fn update_all_suggested_cores(&mut self) -> usize {
-        let wald_version = self.wald_version.clone();
-        let wald_schema = self.wald_schema;
+        let bruk_version = self.bruk_version.clone();
+        let bruk_schema = self.bruk_schema;
         let mut updated = 0;
         for machine in &mut self.machines {
-            if machine.compatibility(wald_schema) == SchemaCompatibility::CoreUpdateSuggested {
-                machine.core_version = wald_version.clone();
-                machine.core_schema = wald_schema;
+            if machine.compatibility(bruk_schema) == SchemaCompatibility::CoreUpdateSuggested {
+                machine.core_version = bruk_version.clone();
+                machine.core_schema = bruk_schema;
                 machine.core_sync_note = if machine.status.is_connected() {
                     "Same schema · in sync".to_owned()
                 } else {
@@ -1002,7 +1002,7 @@ impl MachinesFleet {
             .split_once('@')
             .map(|(u, _)| u.trim().to_owned())
             .filter(|u| !u.is_empty())
-            .unwrap_or_else(|| "wald".to_owned());
+            .unwrap_or_else(|| "bruk".to_owned());
 
         let kernel = match draft.platform {
             MachinePlatform::Mac => "Darwin 25.1.0".to_owned(),
@@ -1013,20 +1013,20 @@ impl MachinesFleet {
         let (core_install_path, workspace_folder, claude_binary_path, codex_binary_path) =
             match draft.platform {
                 MachinePlatform::Mac => (
-                    format!("/Users/{ssh_user}/.wald/core"),
+                    format!("/Users/{ssh_user}/.bruk/core"),
                     format!("/Users/{ssh_user}/work"),
                     "/opt/homebrew/bin/claude".to_owned(),
                     format!("/Users/{ssh_user}/.local/bin/codex"),
                 ),
                 MachinePlatform::Linux => (
-                    format!("/home/{ssh_user}/.wald/core"),
+                    format!("/home/{ssh_user}/.bruk/core"),
                     format!("/home/{ssh_user}/work"),
                     "/usr/local/bin/claude".to_owned(),
                     format!("/home/{ssh_user}/.local/bin/codex"),
                 ),
                 MachinePlatform::Windows => (
-                    format!("C:\\Users\\{ssh_user}\\.wald\\core"),
-                    "C:\\wald\\work".to_owned(),
+                    format!("C:\\Users\\{ssh_user}\\.bruk\\core"),
+                    "C:\\bruk\\work".to_owned(),
                     "C:\\Program Files\\Claude\\claude.exe".to_owned(),
                     format!("C:\\Users\\{ssh_user}\\.local\\bin\\codex.exe"),
                 ),
@@ -1067,13 +1067,13 @@ impl MachinesFleet {
             ),
             host_key_trusted_on: "Today".to_owned(),
             ssh_target,
-            ssh_key_name: "wald-build".to_owned(),
+            ssh_key_name: "bruk-build".to_owned(),
             ssh_key_type: "ED25519".to_owned(),
             ssh_key_short_fingerprint: format!("SHA256:n{next_id}Wk…7cPm"),
             ssh_key_provider: "SSH agent (macOS Keychain)".to_owned(),
             ssh_key_fingerprint: format!("ED25519 · SHA256:n{next_id}Wk…7c…"),
-            core_version: self.wald_version.clone(),
-            core_schema: self.wald_schema,
+            core_version: self.bruk_version.clone(),
+            core_schema: self.bruk_schema,
             core_sync_note: "Same schema · in sync".to_owned(),
             core_install_path,
             core_update_policy: CoreUpdatePolicy::SuggestAskFirst,
@@ -1099,23 +1099,23 @@ impl MachinesFleet {
             .iter()
             .position(|m| m.id == id)
             .ok_or(MachinesError::NotFound(id))?;
-        let wald_schema = self.wald_schema;
+        let bruk_schema = self.bruk_schema;
         let machine = &mut self.machines[idx];
         if machine.is_local {
             machine.status = MachineConnectionStatus::Connected;
             return Ok(format!(
-                "Local Wald core {} (schema {}) responded in 2 ms.",
+                "Local Bruk core {} (schema {}) responded in 2 ms.",
                 machine.core_version, machine.core_schema
             ));
         }
 
-        let compat = machine.compatibility(wald_schema);
+        let compat = machine.compatibility(bruk_schema);
         match compat {
-            SchemaCompatibility::NeedsNewerWald => {
+            SchemaCompatibility::NeedsNewerBruk => {
                 machine.status = MachineConnectionStatus::NotSyncing;
                 machine.status_detail = "Checked just now".to_owned();
                 Ok(format!(
-                    "SSH connected to {} ({}), but core schema {} needs a newer Wald.",
+                    "SSH connected to {} ({}), but core schema {} needs a newer Bruk.",
                     machine.name, machine.ipv4, machine.core_schema
                 ))
             }
@@ -1131,7 +1131,7 @@ impl MachinesFleet {
                     session.link_label = "Streaming".to_owned();
                 }
                 Ok(format!(
-                    "SSH connected to {}@{} (14 ms) · Wald core {} (schema {}).",
+                    "SSH connected to {}@{} (14 ms) · Bruk core {} (schema {}).",
                     machine.ssh_user, machine.ipv4, machine.core_version, machine.core_schema
                 ))
             }
@@ -1204,24 +1204,24 @@ impl MachinesFleet {
     }
 
     pub fn check_core_now(&mut self, id: u64) -> Result<String, MachinesError> {
-        let wald_schema = self.wald_schema;
-        let wald_version = self.wald_version.clone();
+        let bruk_schema = self.bruk_schema;
+        let bruk_version = self.bruk_version.clone();
         let machine = self
             .machines
             .iter()
             .find(|m| m.id == id)
             .ok_or(MachinesError::NotFound(id))?;
-        let summary = match machine.compatibility(wald_schema) {
+        let summary = match machine.compatibility(bruk_schema) {
             SchemaCompatibility::InSync => format!(
-                "Core {} on {} matches data schema {wald_schema} — no update needed.",
+                "Core {} on {} matches data schema {bruk_schema} — no update needed.",
                 machine.core_version, machine.name
             ),
             SchemaCompatibility::CoreUpdateSuggested => format!(
-                "Core {} (schema {}) is behind Wald {wald_version} (schema {wald_schema}) — update suggested.",
+                "Core {} (schema {}) is behind Bruk {bruk_version} (schema {bruk_schema}) — update suggested.",
                 machine.core_version, machine.core_schema
             ),
-            SchemaCompatibility::NeedsNewerWald => format!(
-                "Core {} uses schema {}, which is ahead of Wald {wald_version} (schema {wald_schema}).",
+            SchemaCompatibility::NeedsNewerBruk => format!(
+                "Core {} uses schema {}, which is ahead of Bruk {bruk_version} (schema {bruk_schema}).",
                 machine.core_version, machine.core_schema
             ),
         };
@@ -1323,10 +1323,10 @@ mod tests {
         assert_eq!(fleet.machines.len(), 5);
         assert_eq!(fleet.total_sessions(), 10);
         assert_eq!(fleet.core_update_suggested_count(), 1);
-        assert_eq!(fleet.needs_newer_wald_count(), 1);
+        assert_eq!(fleet.needs_newer_bruk_count(), 1);
         assert_eq!(
             fleet.header_subtitle(),
-            "5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald"
+            "5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk"
         );
         assert_eq!(fleet.default_selected_id(), Some(2));
 
@@ -1371,7 +1371,7 @@ mod tests {
         assert_eq!(fleet.core_update_suggested_count(), 0);
         assert_eq!(
             fleet.header_subtitle(),
-            "5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 machine needs a newer Wald"
+            "5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 machine needs a newer Bruk"
         );
         assert_eq!(fleet.machine(3).unwrap().core_version, "0.9.0");
         assert_eq!(fleet.machine(3).unwrap().core_schema, 7);
@@ -1396,7 +1396,7 @@ mod tests {
                 os_label: "Ubuntu 24.04".to_owned(),
                 arch: "arm64".to_owned(),
                 address: "10.0.4.60:22".to_owned(),
-                ssh_target: "wald@ci-arm-03".to_owned(),
+                ssh_target: "bruk@ci-arm-03".to_owned(),
                 allowed_projects: vec!["api-gateway".to_owned()],
             })
             .unwrap();
@@ -1431,34 +1431,34 @@ mod tests {
         assert_eq!(build_box.ipv4, "10.0.4.21");
         assert_eq!(build_box.ipv6, "fd00::4:21");
         assert_eq!(build_box.ssh_port, 22);
-        assert_eq!(build_box.ssh_user, "wald");
+        assert_eq!(build_box.ssh_user, "bruk");
         assert_eq!(build_box.jump_host, None);
         assert_eq!(
             build_box.host_key_summary(),
             "ED25519 SHA256:Y7nR…2fKa · trusted Nov 3"
         );
-        assert_eq!(build_box.ssh_key_in_use_label(), "wald-build · ED25519");
+        assert_eq!(build_box.ssh_key_in_use_label(), "bruk-build · ED25519");
         assert_eq!(build_box.ssh_key_short_fingerprint, "SHA256:q3Ff…8kPw");
         assert_eq!(build_box.ssh_key_provider, "SSH agent (macOS Keychain)");
         assert_eq!(build_box.core_version, "0.8.5");
         assert_eq!(
-            build_box.data_schema_detail(fleet.wald_schema),
+            build_box.data_schema_detail(fleet.bruk_schema),
             "7 · same as this app · in sync"
         );
-        assert_eq!(build_box.core_install_path, "/home/wald/.wald/core");
+        assert_eq!(build_box.core_install_path, "/home/bruk/.bruk/core");
         assert_eq!(
             build_box.core_update_policy.label(),
             "Suggest when its schema is behind · ask first"
         );
         assert_eq!(
             build_box.claude_status_summary(),
-            "/usr/local/bin/claude · isolated config · signed in inside Wald"
+            "/usr/local/bin/claude · isolated config · signed in inside Bruk"
         );
         assert_eq!(
             build_box.codex_status_summary(),
-            "/home/wald/.local/bin/codex · isolated config · signed in inside Wald"
+            "/home/bruk/.local/bin/codex · isolated config · signed in inside Bruk"
         );
-        assert_eq!(build_box.workspace_folder, "/home/wald/work");
+        assert_eq!(build_box.workspace_folder, "/home/bruk/work");
         assert_eq!(build_box.max_sessions_at_once, 4);
 
         fleet.set_ssh_user(2, "builder").unwrap();
@@ -1474,11 +1474,11 @@ mod tests {
         assert_eq!(fleet.machine(2).unwrap().jump_host, None);
 
         fleet
-            .set_ssh_key(2, "wald-deploy", "ED25519", "SHA256:z8Kp…1mQr")
+            .set_ssh_key(2, "bruk-deploy", "ED25519", "SHA256:z8Kp…1mQr")
             .unwrap();
         assert_eq!(
             fleet.machine(2).unwrap().ssh_key_in_use_label(),
-            "wald-deploy · ED25519"
+            "bruk-deploy · ED25519"
         );
 
         fleet

@@ -104,7 +104,7 @@ fn inbox_and_machines_views_update_sidebar_badges() {
 
     // Navigate to Machines and verify the fleet header and reconnect flow.
     app.press("Machines").unwrap();
-    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+    app.wait_for("5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk")
         .unwrap();
     app.press("id:machine-card-win-ci-02").unwrap();
     app.wait_for("Windows 11 24H2").unwrap();
@@ -279,7 +279,7 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
     assert!(app.window_state("inbox").unwrap().is_none());
 
     app.press_key("alt+mod+m").unwrap();
-    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+    app.wait_for("5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk")
         .unwrap();
 
     app.press_key("mod+shift+d").unwrap();
@@ -514,7 +514,7 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
     assert!(app.screen().shows("Codex CLI"));
     assert!(app.screen().shows("Pinned in agent"));
     assert!(app.screen().shows("Workspace write"));
-    assert!(app.screen().shows("Isolated · Wald-managed"));
+    assert!(app.screen().shows("Isolated · Bruk-managed"));
     assert!(app.screen().shows("Worktree"));
     assert!(app.screen().shows("release/2.8"));
     assert!(app.screen().shows("Attempt 2 of 5"));
@@ -823,7 +823,7 @@ fn workflows_overview_renders_reference_table_inspector_templates_and_flows() {
     assert!(app.screen().shows("Review a pull request"));
     assert!(app.screen().shows("Two models compare notes"));
     assert!(app.screen().shows("Import from file..."));
-    assert!(app.screen().shows("A .wald-workflow file"));
+    assert!(app.screen().shows("A .bruk-workflow file"));
 
     // Verify default right-hand inspector for Fix issue.
     assert!(app.screen().shows("Edit"));
@@ -894,7 +894,7 @@ fn workflows_overview_renders_reference_table_inspector_templates_and_flows() {
     app.wait_for("Nightly smoke tests").unwrap();
     assert!(app.screen().shows("api-gateway · 8 workflows · 3 running"));
 
-    // Import a .wald-workflow file via the Import... drawer.
+    // Import a .bruk-workflow file via the Import... drawer.
     app.press("id:wfo-header-import").unwrap();
     app.wait_for("Import workflow from file").unwrap();
     app.press("id:wfo-import-submit").unwrap();
@@ -1085,7 +1085,7 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
 
     // Navigate to Machines from the sidebar.
     app.press("Machines").unwrap();
-    app.wait_for("5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Wald")
+    app.wait_for("5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk")
         .unwrap();
 
     // Verify top header buttons.
@@ -1107,13 +1107,13 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     assert!(app.screen().shows("gpu-01"));
     assert!(app.screen().shows("Fedora 41 · x86_64"));
     assert!(app.screen().shows("Not syncing"));
-    assert!(app.screen().shows("Needs a newer Wald"));
+    assert!(app.screen().shows("Needs a newer Bruk"));
     assert!(app.screen().shows("mini-lab"));
     assert!(app.screen().shows("Unreachable"));
     assert!(app.screen().shows("Since Sunday"));
     assert!(
         app.screen()
-            .shows("Machines connect over SSH with a key. Sessions keep running on a machine when Wald disconnects, and catch up when it reconnects. On every connection Wald and the core compare data schemas; version numbers only matter when the schema differs.")
+            .shows("Machines connect over SSH with a key. Sessions keep running on a machine when Bruk disconnects, and catch up when it reconnects. On every connection Bruk and the core compare data schemas; version numbers only matter when the schema differs.")
     );
 
     // Verify default selected build-box-01 detail pane matches 21 Machines.png.
@@ -1125,14 +1125,14 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     );
     assert!(
         app.screen()
-            .shows("While Wald was away, the 4 sessions here produced 318 events: 3 steps finished, one loop ran out of attempts, and 2 new requests are in the Inbox.")
+            .shows("While Bruk was away, the 4 sessions here produced 318 events: 3 steps finished, one loop ran out of attempts, and 2 new requests are in the Inbox.")
     );
     assert!(app.screen().shows("Show What Changed"));
     assert!(app.screen().shows("Ubuntu 24.04.1 LTS"));
     assert!(app.screen().shows("x86_64 · 16 cores · 64 GB"));
     assert!(app.screen().shows("10.0.4.21:22"));
     assert!(app.screen().shows("fd00::4:21"));
-    assert!(app.screen().shows("wald@build-box-01"));
+    assert!(app.screen().shows("bruk@build-box-01"));
     assert!(app.screen().shows("ED25519 · SHA256:q3Ff…8k…"));
     assert!(app.screen().shows("0.8.5 · schema 7"));
     assert!(app.screen().shows("Same schema · in sync"));
@@ -1176,7 +1176,7 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
 
     // Switch to gpu-01 and mini-lab to verify contextual banners and empty session table.
     app.press("id:machine-card-gpu-01").unwrap();
-    app.wait_for("Core 1.0.0 uses data schema 8, which needs a newer Wald")
+    app.wait_for("Core 1.0.0 uses data schema 8, which needs a newer Bruk")
         .unwrap();
     assert!(app.screen().shows("Fedora 41 Workstation"));
 
@@ -1186,10 +1186,10 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
 
     // Open Update Cores drawer and update all suggested cores (clears win-ci-02 warning).
     app.press("id:machines-header-update-cores").unwrap();
-    app.wait_for("Update Wald Cores").unwrap();
+    app.wait_for("Update Bruk Cores").unwrap();
     app.press("id:machines-update-all-cores").unwrap();
     app.wait_for(
-        "5 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 machine needs a newer Wald",
+        "5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 machine needs a newer Bruk",
     )
     .unwrap();
 
@@ -1197,16 +1197,16 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     app.press("id:machines-header-add").unwrap();
     app.wait_for("Add SSH Machine").unwrap();
     app.type_text("id:machines-add-name", "ci-arm-03").unwrap();
-    app.type_text("id:machines-add-ssh", "wald@ci-arm-03")
+    app.type_text("id:machines-add-ssh", "bruk@ci-arm-03")
         .unwrap();
     app.type_text("id:machines-add-address", "10.0.4.60:22")
         .unwrap();
     app.press("id:machines-add-submit").unwrap();
     app.wait_for("Added machine 'ci-arm-03' over SSH").unwrap();
     assert!(app.screen().shows(
-        "6 machines · 10 sessions · Wald 0.9.0 (data schema 7) · 1 machine needs a newer Wald"
+        "6 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 machine needs a newer Bruk"
     ));
-    assert!(app.screen().shows("wald@ci-arm-03"));
+    assert!(app.screen().shows("bruk@ci-arm-03"));
 
     // Select build-box-01 and click Open on session #45 to jump to the live WorkflowRun view.
     app.press("id:machine-card-build-box-01").unwrap();
@@ -1263,7 +1263,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     assert!(app.screen().shows("10.0.4.21"));
     assert!(app.screen().shows("fd00::4:21"));
     assert!(app.screen().shows("22"));
-    assert!(app.screen().shows("wald"));
+    assert!(app.screen().shows("bruk"));
     assert!(app.screen().shows("None"));
     assert!(
         app.screen()
@@ -1272,37 +1272,37 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
 
     // SSH key card
     assert!(app.screen().shows("SSH key"));
-    assert!(app.screen().shows("wald-build · ED25519"));
+    assert!(app.screen().shows("bruk-build · ED25519"));
     assert!(app.screen().shows("SHA256:q3Ff…8kPw"));
     assert!(app.screen().shows("SSH agent (macOS Keychain)"));
     assert!(
         app.screen()
-            .shows("Wald only connects with SSH keys. Password sign-in is not supported.")
+            .shows("Bruk only connects with SSH keys. Password sign-in is not supported.")
     );
 
-    // Wald core card
-    assert!(app.screen().shows("Wald core"));
+    // Bruk core card
+    assert!(app.screen().shows("Bruk core"));
     assert!(app.screen().shows("0.8.5"));
     assert!(app.screen().shows("7 · same as this app · in sync"));
     assert!(app.screen().shows("Check Now"));
-    assert!(app.screen().shows("/home/wald/.wald/core"));
+    assert!(app.screen().shows("/home/bruk/.bruk/core"));
     assert!(
         app.screen()
             .shows("Suggest when its schema is behind · ask first")
     );
     assert!(app.screen().shows(
-        "Versions only matter when the data schema differs. Wald and the core compare schemas on every connection."
+        "Versions only matter when the data schema differs. Bruk and the core compare schemas on every connection."
     ));
 
     // Agents on this machine card
     assert!(app.screen().shows("Agents on this machine"));
     assert!(
         app.screen()
-            .shows("/usr/local/bin/claude · isolated config · signed in inside Wald")
+            .shows("/usr/local/bin/claude · isolated config · signed in inside Bruk")
     );
     assert!(
         app.screen()
-            .shows("/home/wald/.local/bin/codex · isolated config · signed in inside Wald")
+            .shows("/home/bruk/.local/bin/codex · isolated config · signed in inside Bruk")
     );
     assert!(app.screen().shows(
         "The project's key is sent per session from this Mac's Keychain, never stored on the machine"
@@ -1310,7 +1310,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
 
     // Work card and bottom Remove Machine action
     assert!(app.screen().shows("Work"));
-    assert!(app.screen().shows("/home/wald/work"));
+    assert!(app.screen().shows("/home/bruk/work"));
     assert!(app.screen().shows("Sessions at once"));
     assert!(app.screen().shows("4"));
     assert!(
@@ -1322,7 +1322,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     // Interactive flows on build-box-01:
     // 1. Test Connection & Check Now
     app.press("id:prefs-machine-test-connection").unwrap();
-    app.wait_for("SSH connected to wald@10.0.4.21 (14 ms) · Wald core 0.8.5 (schema 7).")
+    app.wait_for("SSH connected to bruk@10.0.4.21 (14 ms) · Bruk core 0.8.5 (schema 7).")
         .unwrap();
 
     app.press("id:prefs-machine-check-core").unwrap();
@@ -1352,11 +1352,11 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
 
     // 5. Switch SSH key via preset
     app.press("id:prefs-machine-change-ssh-key").unwrap();
-    app.wait_for("id:prefs-machine-ssh-preset-wald-deploy")
+    app.wait_for("id:prefs-machine-ssh-preset-bruk-deploy")
         .unwrap();
-    app.press("id:prefs-machine-ssh-preset-wald-deploy")
+    app.press("id:prefs-machine-ssh-preset-bruk-deploy")
         .unwrap();
-    app.wait_for("wald-deploy · ED25519").unwrap();
+    app.wait_for("bruk-deploy · ED25519").unwrap();
 
     // 6. Change Core updates policy
     app.press("id:prefs-machine-change-core-updates").unwrap();
@@ -1374,7 +1374,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     app.wait_for("/usr/local/bin/claude · isolated config · not signed in")
         .unwrap();
     app.press("id:prefs-machine-claude-auth").unwrap();
-    app.wait_for("/usr/local/bin/claude · isolated config · signed in inside Wald")
+    app.wait_for("/usr/local/bin/claude · isolated config · signed in inside Bruk")
         .unwrap();
 
     // 8. Change Sessions at once and edit Projects

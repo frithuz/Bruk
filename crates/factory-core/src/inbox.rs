@@ -514,7 +514,7 @@ impl InboxState {
                     note_placeholder: "e.g. Use the istanbul provider that's already installed".to_owned(),
                     body: AttentionRequestBody::Permission(PermissionDetail {
                         machine_name: "build-box-01".to_owned(),
-                        working_dir: "/home/wald/work/api-gateway".to_owned(),
+                        working_dir: "/home/bruk/work/api-gateway".to_owned(),
                         command: "npm install --save-dev @vitest/coverage-v8".to_owned(),
                         risk_tags: vec![
                             PermissionRiskTag {

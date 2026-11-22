@@ -31,9 +31,9 @@ pub use inbox::{
     ReviewFileStat, WaitingRulesConfig,
 };
 pub use machines::{
-    CoreUpdatePolicy, MachineAgentKind, MachineCatchUpSummary, MachineConnectionStatus,
-    MachinePlatform, MachineRecord, MachineSession, MachinesError, MachinesFleet, NewMachineDraft,
-    SchemaCompatibility, SessionNowTone, WALD_APP_VERSION, WALD_DATA_SCHEMA,
+    BRUK_APP_VERSION, BRUK_DATA_SCHEMA, CoreUpdatePolicy, MachineAgentKind, MachineCatchUpSummary,
+    MachineConnectionStatus, MachinePlatform, MachineRecord, MachineSession, MachinesError,
+    MachinesFleet, NewMachineDraft, SchemaCompatibility, SessionNowTone,
 };
 pub use model::{
     LogEntry, LogLevel, Project, ProjectId, RunId, RunStatus, StepKind, StepRun, StepRunStatus,

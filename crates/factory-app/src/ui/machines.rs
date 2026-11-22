@@ -117,13 +117,13 @@ fn machine_list_pane() -> impl IntoElement {
             let mut list = view().flex_1().p(px(14.0)).gap(px(10.0));
             for machine in &fleet.machines {
                 let is_selected = selected_id == Some(machine.id);
-                list = list.child(machine_list_card(machine, fleet.wald_schema, is_selected));
+                list = list.child(machine_list_card(machine, fleet.bruk_schema, is_selected));
             }
 
             list = list.child(
                 view().px(px(4.0)).pt(px(6.0)).pb(px(10.0)).child(
                     text(
-                        "Machines connect over SSH with a key. Sessions keep running on a machine when Wald disconnects, and catch up when it reconnects. On every connection Wald and the core compare data schemas; version numbers only matter when the schema differs.",
+                        "Machines connect over SSH with a key. Sessions keep running on a machine when Bruk disconnects, and catch up when it reconnects. On every connection Bruk and the core compare data schemas; version numbers only matter when the schema differs.",
                     )
                     .text_size(px(11.5))
                     .text_color(palette::text_muted()),
@@ -136,13 +136,13 @@ fn machine_list_pane() -> impl IntoElement {
 
 fn machine_list_card(
     machine: &MachineRecord,
-    wald_schema: u32,
+    bruk_schema: u32,
     is_selected: bool,
 ) -> impl IntoElement {
     let id = machine.id;
     let slug = slugify(&machine.name);
     let test_id = format!("machine-card-{slug}");
-    let compat = machine.compatibility(wald_schema);
+    let compat = machine.compatibility(bruk_schema);
     let badge_bg = if is_selected {
         palette::machine_badge_selected_bg()
     } else {
@@ -229,7 +229,7 @@ fn machine_list_card(
                 palette::pill_warning_border(),
                 palette::pill_warning_text(),
             ),
-            SchemaCompatibility::NeedsNewerWald => (
+            SchemaCompatibility::NeedsNewerBruk => (
                 palette::pill_error_bg(),
                 palette::pill_error_border(),
                 palette::pill_error_text(),
@@ -350,13 +350,13 @@ fn machine_detail_pane(
                 container = container.child(machine_detail_header(&machine));
 
                 if let Some(banner) =
-                    machine_status_banner(&machine, fleet.wald_schema, &fleet.wald_version, changes_expanded)
+                    machine_status_banner(&machine, fleet.bruk_schema, &fleet.bruk_version, changes_expanded)
                 {
                     container = container.child(banner);
                 }
 
                 container = container
-                    .child(machine_info_cards_row(&machine, fleet.wald_schema))
+                    .child(machine_info_cards_row(&machine, fleet.bruk_schema))
                     .child(machine_sessions_section(&machine))
                     .child(machine_footer_row(&machine, settings_open));
 
@@ -481,8 +481,8 @@ fn machine_detail_header(machine: &MachineRecord) -> impl IntoElement {
 
 fn machine_status_banner(
     machine: &MachineRecord,
-    wald_schema: u32,
-    wald_version: &str,
+    bruk_schema: u32,
+    bruk_version: &str,
     changes_expanded: bool,
 ) -> Option<AnyElement> {
     if let Some(catch_up) = &machine.catch_up {
@@ -490,7 +490,7 @@ fn machine_status_banner(
     }
 
     let id = machine.id;
-    let compat = machine.compatibility(wald_schema);
+    let compat = machine.compatibility(bruk_schema);
     if compat == SchemaCompatibility::CoreUpdateSuggested {
         return Some(
             view()
@@ -519,11 +519,11 @@ fn machine_status_banner(
                                 .gap(px(3.0))
                                 .child(
                                     text(format!(
-                                        "Core {} (schema {}) is behind Wald {} (schema {})",
+                                        "Core {} (schema {}) is behind Bruk {} (schema {})",
                                         machine.core_version,
                                         machine.core_schema,
-                                        wald_version,
-                                        wald_schema
+                                        bruk_version,
+                                        bruk_schema
                                     ))
                                     .text_size(px(13.0))
                                     .font_weight(FontWeight::SEMIBOLD)
@@ -531,7 +531,7 @@ fn machine_status_banner(
                                 )
                                 .child(
                                     text(
-                                        "Update the Wald core binary on this host to match schema 7 so session metadata and catch-up events stay fully compatible.",
+                                        "Update the Bruk core binary on this host to match schema 7 so session metadata and catch-up events stay fully compatible.",
                                     )
                                     .text_size(px(12.0))
                                     .text_color(palette::text_secondary()),
@@ -565,7 +565,7 @@ fn machine_status_banner(
         );
     }
 
-    if compat == SchemaCompatibility::NeedsNewerWald {
+    if compat == SchemaCompatibility::NeedsNewerBruk {
         return Some(
             view()
                 .rounded(px(10.0))
@@ -597,7 +597,7 @@ fn machine_status_banner(
                                 .gap(px(3.0))
                                 .child(
                                     text(format!(
-                                        "Core {} uses data schema {}, which needs a newer Wald",
+                                        "Core {} uses data schema {}, which needs a newer Bruk",
                                         machine.core_version, machine.core_schema
                                     ))
                                     .text_size(px(13.0))
@@ -606,7 +606,7 @@ fn machine_status_banner(
                                 )
                                 .child(
                                     text(format!(
-                                        "SSH is connected, but syncing is paused because this Wald ({wald_version}) only supports up to schema {wald_schema}."
+                                        "SSH is connected, but syncing is paused because this Bruk ({bruk_version}) only supports up to schema {bruk_schema}."
                                     ))
                                     .text_size(px(12.0))
                                     .text_color(palette::text_secondary()),
@@ -615,9 +615,9 @@ fn machine_status_banner(
                 )
                 .child(
                     button()
-                        .test_id("machine-banner-check-wald-update")
-                        .accessibility_label("Check for Wald Update")
-                        .on_press(store::check_wald_update)
+                        .test_id("machine-banner-check-bruk-update")
+                        .accessibility_label("Check for Bruk Update")
+                        .on_press(store::check_bruk_update)
                         .h(px(28.0))
                         .px(px(11.0))
                         .rounded(px(7.0))
@@ -630,7 +630,7 @@ fn machine_status_banner(
                         .hover(|s| s.bg(palette::subtle_surface_bg()))
                         .active(|s| s.opacity(0.8))
                         .child(
-                            text("Check for Wald Update")
+                            text("Check for Bruk Update")
                                 .text_size(px(12.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(palette::text_primary()),
@@ -831,11 +831,11 @@ fn catch_up_banner(catch_up: &MachineCatchUpSummary, expanded: bool) -> impl Int
     banner
 }
 
-fn machine_info_cards_row(machine: &MachineRecord, wald_schema: u32) -> impl IntoElement {
-    let core_note_color = match machine.compatibility(wald_schema) {
+fn machine_info_cards_row(machine: &MachineRecord, bruk_schema: u32) -> impl IntoElement {
+    let core_note_color = match machine.compatibility(bruk_schema) {
         SchemaCompatibility::InSync => palette::text_muted(),
         SchemaCompatibility::CoreUpdateSuggested => palette::pill_warning_text(),
-        SchemaCompatibility::NeedsNewerWald => palette::pill_error_text(),
+        SchemaCompatibility::NeedsNewerBruk => palette::pill_error_text(),
     };
 
     view()
@@ -866,7 +866,7 @@ fn machine_info_cards_row(machine: &MachineRecord, wald_schema: u32) -> impl Int
             palette::text_muted(),
         ))
         .child(info_metric_card(
-            "Wald core",
+            "Bruk core",
             &machine.core_summary_label(),
             true,
             &machine.core_sync_note,
@@ -1140,12 +1140,12 @@ fn update_cores_drawer(fleet: &MachinesFleet) -> impl IntoElement {
     let outdated: Vec<&MachineRecord> = fleet
         .machines
         .iter()
-        .filter(|m| m.compatibility(fleet.wald_schema) == SchemaCompatibility::CoreUpdateSuggested)
+        .filter(|m| m.compatibility(fleet.bruk_schema) == SchemaCompatibility::CoreUpdateSuggested)
         .collect();
     let newer: Vec<&MachineRecord> = fleet
         .machines
         .iter()
-        .filter(|m| m.compatibility(fleet.wald_schema) == SchemaCompatibility::NeedsNewerWald)
+        .filter(|m| m.compatibility(fleet.bruk_schema) == SchemaCompatibility::NeedsNewerBruk)
         .collect();
 
     let mut card = view()
@@ -1164,15 +1164,15 @@ fn update_cores_drawer(fleet: &MachinesFleet) -> impl IntoElement {
                     view()
                         .gap(px(2.0))
                         .child(
-                            text("Update Wald Cores")
+                            text("Update Bruk Cores")
                                 .text_size(px(13.5))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette::text_primary()),
                         )
                         .child(
                             text(format!(
-                                "Target binary: Wald core {} (data schema {})",
-                                fleet.wald_version, fleet.wald_schema
+                                "Target binary: Bruk core {} (data schema {})",
+                                fleet.bruk_version, fleet.bruk_schema
                             ))
                             .text_size(px(11.5))
                             .text_color(palette::text_muted()),
@@ -1229,8 +1229,8 @@ fn update_cores_drawer(fleet: &MachinesFleet) -> impl IntoElement {
                                     "Core {} (schema {}) → {} (schema {})",
                                     machine.core_version,
                                     machine.core_schema,
-                                    fleet.wald_version,
-                                    fleet.wald_schema
+                                    fleet.bruk_version,
+                                    fleet.bruk_schema
                                 ))
                                 .text_size(px(11.5))
                                 .text_color(palette::text_muted()),
@@ -1286,7 +1286,7 @@ fn update_cores_drawer(fleet: &MachinesFleet) -> impl IntoElement {
         let names: Vec<String> = newer.iter().map(|m| m.name.clone()).collect();
         card = card.child(
             text(format!(
-                "Skipped (newer schema — update Wald app instead): {}",
+                "Skipped (newer schema — update Bruk app instead): {}",
                 names.join(", ")
             ))
             .text_size(px(11.5))
@@ -1329,7 +1329,7 @@ fn add_machine_drawer(
                                 .text_color(palette::text_primary()),
                         )
                         .child(
-                            text("Connect a remote host over SSH with a key and install Wald core 0.9.0.")
+                            text("Connect a remote host over SSH with a key and install Bruk core 0.9.0.")
                                 .text_size(px(11.5))
                                 .text_color(palette::text_muted()),
                         ),
@@ -1413,7 +1413,7 @@ fn add_machine_drawer(
                                             draft_ssh.set(v.to_owned());
                                             draft_error.set(None);
                                         })
-                                        .placeholder("wald@build-box-02")
+                                        .placeholder("bruk@build-box-02")
                                         .bg(AdaptiveColor::TRANSPARENT)
                                         .text_size(px(12.5))
                                         .text_color(palette::text_primary()),
@@ -1676,7 +1676,7 @@ fn machine_settings_drawer(machine: &MachineRecord) -> impl IntoElement {
                 .items_center()
                 .justify_between()
                 .child(
-                    text("Remove this remote host from Wald's fleet list.")
+                    text("Remove this remote host from Bruk's fleet list.")
                         .text_size(px(11.5))
                         .text_color(palette::text_muted()),
                 )

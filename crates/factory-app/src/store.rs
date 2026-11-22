@@ -2265,7 +2265,7 @@ pub(crate) fn update_machine_core(id: u64) {
     state().update(|s| match s.machines_fleet.update_core(id) {
         Ok(machine) => {
             s.status_message = Some(format!(
-                "Updated Wald core on '{}' to {} (schema {})",
+                "Updated Bruk core on '{}' to {} (schema {})",
                 machine.name, machine.core_version, machine.core_schema
             ));
         }
@@ -2283,22 +2283,22 @@ pub(crate) fn update_all_suggested_cores() {
             s.status_message = Some("All compatible cores are already up to date.".to_owned());
         } else if updated == 1 {
             s.status_message = Some(format!(
-                "Updated 1 machine core to Wald {} (schema {})",
-                s.machines_fleet.wald_version, s.machines_fleet.wald_schema
+                "Updated 1 machine core to Bruk {} (schema {})",
+                s.machines_fleet.bruk_version, s.machines_fleet.bruk_schema
             ));
         } else {
             s.status_message = Some(format!(
-                "Updated {updated} machine cores to Wald {} (schema {})",
-                s.machines_fleet.wald_version, s.machines_fleet.wald_schema
+                "Updated {updated} machine cores to Bruk {} (schema {})",
+                s.machines_fleet.bruk_version, s.machines_fleet.bruk_schema
             ));
         }
     });
 }
 
-pub(crate) fn check_wald_update() {
+pub(crate) fn check_bruk_update() {
     state().update(|s| {
         s.status_message = Some(
-            "Wald 1.0.0 (data schema 8) is available in Software Update — install to resume syncing gpu-01."
+            "Bruk 1.0.0 (data schema 8) is available in Software Update — install to resume syncing gpu-01."
                 .to_owned(),
         );
     });
@@ -3038,7 +3038,7 @@ pub(crate) fn set_prefs_machine_agent_signed_in(id: u64, agent: MachineAgentKind
             Ok(()) => {
                 s.preferences_error = None;
                 s.preferences_feedback = Some(if signed_in {
-                    format!("Signed in to {} inside Wald.", agent.label())
+                    format!("Signed in to {} inside Bruk.", agent.label())
                 } else {
                     format!("Signed out of {} on this machine.", agent.label())
                 });
@@ -3100,7 +3100,7 @@ pub(crate) fn add_prefs_machine(
 ) -> bool {
     let trimmed_name = name.trim();
     let trimmed_user = if user.trim().is_empty() {
-        "wald"
+        "bruk"
     } else {
         user.trim()
     };
@@ -4081,7 +4081,7 @@ pub(crate) fn export_overview_workflow(id: &str) {
     state().update(|s| {
         let project = s.selected_project_name();
         let overview = s.ensure_workflows_overview_mut(&project);
-        let filename = format!("{id_owned}.wald-workflow");
+        let filename = format!("{id_owned}.bruk-workflow");
         let wf_name = overview
             .workflow(&id_owned)
             .map(|w| w.name.clone())

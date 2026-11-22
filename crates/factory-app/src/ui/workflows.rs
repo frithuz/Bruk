@@ -107,7 +107,7 @@ pub(crate) fn workflows_view() -> impl IntoElement {
     let new_desc = signal(String::new());
     let new_label = signal(String::new());
     let new_is_draft = signal(true);
-    let import_path = signal("canary-deploy.wald-workflow".to_owned());
+    let import_path = signal("canary-deploy.bruk-workflow".to_owned());
 
     let edit_name = signal(String::new());
     let edit_desc = signal(String::new());
@@ -422,7 +422,7 @@ fn import_workflow_drawer(import_path: Signal<String>) -> impl IntoElement {
     let submit = move || {
         let path = import_path.get_untracked();
         if store::import_overview_workflow(&path) {
-            import_path.set("canary-deploy.wald-workflow".to_owned());
+            import_path.set("canary-deploy.bruk-workflow".to_owned());
         }
     };
 
@@ -441,8 +441,8 @@ fn import_workflow_drawer(import_path: Signal<String>) -> impl IntoElement {
         )
         .child(labeled_input(
             "wfo-import-path",
-            "Workflow file (.wald-workflow)",
-            "path/to/workflow.wald-workflow",
+            "Workflow file (.bruk-workflow)",
+            "path/to/workflow.bruk-workflow",
             import_path,
         ))
         .child(
@@ -896,7 +896,7 @@ fn import_template_card() -> impl IntoElement {
                         .text_color(palette::text_primary()),
                 )
                 .child(
-                    text("A .wald-workflow file")
+                    text("A .bruk-workflow file")
                         .text_size(px(11.5))
                         .text_color(palette::text_muted()),
                 ),
@@ -1282,7 +1282,7 @@ fn inspector_more_menu(workflow: &WorkflowOverviewEntry) -> impl IntoElement {
         ))
         .child(menu_action_row(
             "wfo-action-export",
-            "Export .wald-workflow",
+            "Export .bruk-workflow",
             false,
             move || store::export_overview_workflow(&wf_id_export),
         ))

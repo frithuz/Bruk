@@ -1654,7 +1654,7 @@ fn machines_tab() -> impl IntoElement {
     let draft_add_name = signal(String::new());
     let draft_add_ipv4 = signal(String::new());
     let draft_add_port = signal("22".to_owned());
-    let draft_add_user = signal("wald".to_owned());
+    let draft_add_user = signal("bruk".to_owned());
     let draft_add_platform = signal(MachinePlatform::Linux);
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
@@ -1720,7 +1720,7 @@ fn machines_left_rail(
                     draft_add_name.set(String::new());
                     draft_add_ipv4.set(String::new());
                     draft_add_port.set("22".to_owned());
-                    draft_add_user.set("wald".to_owned());
+                    draft_add_user.set("bruk".to_owned());
                     draft_add_platform.set(MachinePlatform::Linux);
                     active_editor.set(Some(MachinePrefsEditor::AddMachine));
                 }),
@@ -1821,7 +1821,7 @@ fn machines_detail_column(
 
             let fleet = store::machines_fleet();
             if let Some(machine) = store::selected_prefs_machine() {
-                machine_prefs_detail_pane(machine, fleet.wald_schema, active_editor, draft_text)
+                machine_prefs_detail_pane(machine, fleet.bruk_schema, active_editor, draft_text)
                     .into_element()
             } else {
                 grouped_card("Machines")
@@ -1936,7 +1936,7 @@ fn add_machine_prefs_card(
                                         .test_id("prefs-new-machine-user")
                                         .value(move || draft_user.get())
                                         .on_change(move |v: &str| draft_user.set(v.to_owned()))
-                                        .placeholder("wald")
+                                        .placeholder("bruk")
                                         .app_class("font-mono")
                                         .px(px(10.0))
                                         .py(px(7.0))
@@ -1972,7 +1972,7 @@ fn add_machine_prefs_card(
                     ))
                     .child(
                         text(
-                            "Wald only connects with SSH keys from the macOS Keychain SSH agent. Password sign-in is not supported.",
+                            "Bruk only connects with SSH keys from the macOS Keychain SSH agent. Password sign-in is not supported.",
                         )
                         .text_size(px(11.5))
                         .text_color(palette::text_muted()),
@@ -2046,7 +2046,7 @@ fn machine_platform_option(
 
 fn machine_prefs_detail_pane(
     machine: MachineRecord,
-    wald_schema: u32,
+    bruk_schema: u32,
     active_editor: Signal<Option<MachinePrefsEditor>>,
     draft_text: Signal<String>,
 ) -> impl IntoElement {
@@ -2075,7 +2075,7 @@ fn machine_prefs_detail_pane(
         }
     };
 
-    let schema_color = match machine.compatibility(wald_schema) {
+    let schema_color = match machine.compatibility(bruk_schema) {
         SchemaCompatibility::InSync => {
             if machine.status.is_offline() {
                 palette::text_muted()
@@ -2084,7 +2084,7 @@ fn machine_prefs_detail_pane(
             }
         }
         SchemaCompatibility::CoreUpdateSuggested => palette::pill_warning_text(),
-        SchemaCompatibility::NeedsNewerWald => palette::destructive_text(),
+        SchemaCompatibility::NeedsNewerBruk => palette::destructive_text(),
     };
 
     let current_user = machine.ssh_user.clone();
@@ -2407,13 +2407,13 @@ fn machine_prefs_detail_pane(
         ))
         .child(
             view().px(px(16.0)).pt(px(2.0)).pb(px(12.0)).child(
-                text("Wald only connects with SSH keys. Password sign-in is not supported.")
+                text("Bruk only connects with SSH keys. Password sign-in is not supported.")
                     .text_size(px(11.5))
                     .text_color(palette::text_muted()),
             ),
         );
 
-    // --- Wald core card ---
+    // --- Bruk core card ---
     let data_schema_row = view()
         .flex_row()
         .items_center()
@@ -2430,7 +2430,7 @@ fn machine_prefs_detail_pane(
                 .gap(px(12.0))
                 .child(row_label("Data schema"))
                 .child(
-                    text(machine.data_schema_detail(wald_schema))
+                    text(machine.data_schema_detail(bruk_schema))
                         .text_size(px(12.5))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(schema_color),
@@ -2486,7 +2486,7 @@ fn machine_prefs_detail_pane(
             move || core_update_policy_picker(id, current_policy, active_editor),
         ));
 
-    let wald_core_card = grouped_card("Wald core")
+    let bruk_core_card = grouped_card("Bruk core")
         .child(card_divider())
         .child(static_row("Installed", machine.core_version.clone(), true))
         .child(card_divider())
@@ -2502,7 +2502,7 @@ fn machine_prefs_detail_pane(
         .child(
             view().px(px(16.0)).pt(px(2.0)).pb(px(12.0)).child(
                 text(
-                    "Versions only matter when the data schema differs. Wald and the core compare schemas on every connection.",
+                    "Versions only matter when the data schema differs. Bruk and the core compare schemas on every connection.",
                 )
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
@@ -2786,7 +2786,7 @@ fn machine_prefs_detail_pane(
         .child(system_card)
         .child(access_card)
         .child(ssh_key_card)
-        .child(wald_core_card)
+        .child(bruk_core_card)
         .child(agents_card)
         .child(work_card);
 
@@ -2832,7 +2832,7 @@ fn machine_prefs_detail_pane(
                         .bg(palette::card_bg())
                         .child(
                             text(format!(
-                                "Remove '{}' from Wald? Sessions on the host will keep running.",
+                                "Remove '{}' from Bruk? Sessions on the host will keep running.",
                                 machine_name_for_remove
                             ))
                             .text_size(px(12.5))
@@ -2886,9 +2886,9 @@ fn ssh_key_picker_editor(
     active_editor: Signal<Option<MachinePrefsEditor>>,
 ) -> impl IntoElement {
     const KEY_PRESETS: &[(&str, &str, &str)] = &[
-        ("wald-build", "ED25519", "SHA256:q3Ff…8kPw"),
-        ("wald-ci", "ED25519", "SHA256:k8Lm…2pRt"),
-        ("wald-deploy", "ED25519", "SHA256:z8Kp…1mQr"),
+        ("bruk-build", "ED25519", "SHA256:q3Ff…8kPw"),
+        ("bruk-ci", "ED25519", "SHA256:k8Lm…2pRt"),
+        ("bruk-deploy", "ED25519", "SHA256:z8Kp…1mQr"),
         ("id_ed25519_work", "ED25519", "SHA256:p4Tn…6wVx"),
     ];
 
@@ -3033,7 +3033,7 @@ fn agent_signout_confirm_banner(
         .bg(palette::card_inset_bg())
         .child(
             text(format!(
-                "Sign out of {} in Wald's isolated config on {}?",
+                "Sign out of {} in Bruk's isolated config on {}?",
                 agent.label(),
                 machine_name
             ))

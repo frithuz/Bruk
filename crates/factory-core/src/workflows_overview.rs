@@ -1309,7 +1309,7 @@ impl ProjectWorkflowsOverview {
         id
     }
 
-    /// Imports a mocked `.wald-workflow` file and adds it to this project.
+    /// Imports a mocked `.bruk-workflow` file and adds it to this project.
     pub fn import_from_file(&mut self, file_name: &str) -> Result<String, WorkflowsOverviewError> {
         let trimmed = file_name.trim();
         if trimmed.is_empty() {
@@ -1319,7 +1319,7 @@ impl ProjectWorkflowsOverview {
             .rsplit(['/', '\\'])
             .next()
             .unwrap_or(trimmed)
-            .trim_end_matches(".wald-workflow")
+            .trim_end_matches(".bruk-workflow")
             .trim_end_matches(".yaml")
             .trim_end_matches(".yml");
         let pretty = humanize_slug(if stem.is_empty() {
@@ -1636,7 +1636,7 @@ mod tests {
         );
 
         let imp_id = overview
-            .import_from_file("canary-deploy.wald-workflow")
+            .import_from_file("canary-deploy.bruk-workflow")
             .unwrap();
         assert_eq!(overview.workflow(&imp_id).unwrap().name, "Canary deploy");
 
