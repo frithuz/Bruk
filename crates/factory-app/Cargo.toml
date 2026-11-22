@@ -16,3 +16,4 @@ nsh-platform-macos.workspace = true
 [dev-dependencies]
 nsh-engine.workspace = true
 nsh-testing.workspace = true
+tempfile.workspace = true

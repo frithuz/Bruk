@@ -1,11 +1,14 @@
-//! Headless Native Shell UI tests for the Software Factory macOS app.
+//! Headless Native Shell UI tests for Software Factory and SQLite project tracking.
+
+use std::path::PathBuf;
 
 use nsh_core::prelude::{Size, px};
-use nsh_engine::{EngineConfig, Root};
+use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
+use tempfile::TempDir;
 
-fn start() -> Headless {
-    let mut config = EngineConfig::new(Root::of::<factory_app::App>());
+fn start_with_db(db_path: PathBuf) -> Headless {
+    let mut config = EngineConfig::new(factory_app::root_with_db_path(db_path));
     config.viewport = Size::new(px(1120.0), px(720.0));
     let mut app = Headless::start(config).unwrap();
     app.wait_for("Software Factory").unwrap();
@@ -13,26 +16,56 @@ fn start() -> Headless {
 }
 
 #[test]
-fn boots_with_starter_project_and_workflows() {
-    let app = start();
-    assert!(app.screen().shows("software-factory"));
-    assert!(app.screen().shows("Feature Implementation"));
-    assert!(app.screen().shows("Bug Triage & Fix"));
-    assert!(!app.screen().enabled("role:button[Run Workflow]").unwrap());
+fn registers_project_in_sqlite_and_reloads_on_restart() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("software-factory").join("factory.db");
+
+    {
+        let mut app = start_with_db(db_path.clone());
+        assert!(app.screen().shows("Register Project"));
+        assert!(!app.screen().enabled("role:button[Save Project]").unwrap());
+
+        app.type_text("text:Project name", "billing-api").unwrap();
+        app.type_text("text:Repository path", "/workspace/billing-api")
+            .unwrap();
+        app.press("role:button[Save Project]").unwrap();
+        app.wait_for("Registered project 'billing-api'").unwrap();
+        assert!(app.screen().shows("/workspace/billing-api"));
+
+        // Duplicate repository path should be rejected by SQLite UNIQUE constraint.
+        app.type_text("text:Project name", "billing-dup").unwrap();
+        app.type_text("text:Repository path", "/workspace/billing-api")
+            .unwrap();
+        app.press("role:button[Save Project]").unwrap();
+        app.wait_for("a project is already registered for repository path '/workspace/billing-api'")
+            .unwrap();
+    }
+
+    // Reopen the app against the same SQLite DB and verify persistence.
+    let mut reopened = start_with_db(db_path);
+    reopened.wait_for("billing-api").unwrap();
+    assert!(reopened.screen().shows("/workspace/billing-api"));
+    assert!(reopened.screen().shows("Feature Implementation"));
 }
 
 #[test]
-fn adds_project_and_runs_workflow_through_completion() {
-    let mut app = start();
+fn opens_registered_project_and_runs_workflow_to_completion() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
 
-    // Register a new project via the sidebar form.
-    app.type_text("text:Project name", "billing-api").unwrap();
-    app.type_text("text:Repository path", "/workspace/billing-api")
+    let mut app = start_with_db(db_path);
+
+    // Register a project from the registration view, then open its workspace.
+    app.type_text("text:Project name", "payments").unwrap();
+    app.type_text("text:Repository path", "/workspace/payments")
         .unwrap();
-    app.press("role:button[Add Project]").unwrap();
-    app.wait_for("Added project 'billing-api'").unwrap();
+    app.press("role:button[Save Project]").unwrap();
+    app.wait_for("Registered project 'payments'").unwrap();
 
-    // Select the 3-step Bug Triage & Fix workflow and launch a run.
+    app.press("role:button[Open Workspace]").unwrap();
+    app.wait_for("Run Workflow").unwrap();
+
+    // Select the 3-step Bug Triage & Fix workflow and run it through completion.
     app.press("Bug Triage & Fix").unwrap();
     app.type_text(
         "text:Describe work for the AI workflow to execute...",
@@ -43,7 +76,6 @@ fn adds_project_and_runs_workflow_through_completion() {
     app.wait_for("Started run #1").unwrap();
     app.wait_for("Run #1 · Queued (0/3)").unwrap();
 
-    // Advance through all three steps to Succeeded.
     app.press("role:button[Advance Step]").unwrap();
     app.wait_for("Run #1 · Running (1/3)").unwrap();
     app.press("role:button[Advance Step]").unwrap();

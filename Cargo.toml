@@ -13,9 +13,12 @@ publish = false
 
 [workspace.dependencies]
 factory-core = { path = "crates/factory-core" }
+dirs = "7"
 env_logger = "0.11"
+rusqlite = { version = "0.43", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+tempfile = "3"
 thiserror = "2"
 nsh-core = "0.6.1"
 nsh-base = "0.6.1"

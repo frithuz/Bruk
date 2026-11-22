@@ -106,6 +106,21 @@ impl FactoryState {
         }
     }
 
+    /// Creates a factory with starter workflows and a pre-loaded list of persisted projects.
+    pub fn with_projects(projects: Vec<Project>) -> Self {
+        let mut state = Self::empty();
+        state.seed_starter_workflows();
+        let next_id = projects
+            .iter()
+            .map(|project| project.id)
+            .max()
+            .unwrap_or(0)
+            + 1;
+        state.projects = projects;
+        state.next_project_id = next_id;
+        state
+    }
+
     /// Creates a factory pre-populated with sample projects and starter AI workflows.
     pub fn with_starter_catalog() -> Self {
         let mut state = Self::empty();
@@ -116,8 +131,12 @@ impl FactoryState {
             "main",
             "Rust + Native Shell macOS desktop workspace",
         );
+        state.seed_starter_workflows();
+        state
+    }
 
-        state.add_workflow(
+    fn seed_starter_workflows(&mut self) {
+        self.add_workflow(
             "Feature Implementation",
             "Plan the change, write code in a worktree, verify with tests, and prepare for review.",
             vec![
@@ -154,7 +173,7 @@ impl FactoryState {
             ],
         );
 
-        state.add_workflow(
+        self.add_workflow(
             "Bug Triage & Fix",
             "Reproduce the failure, isolate root cause, apply a targeted fix, and verify regression tests.",
             vec![
@@ -184,7 +203,7 @@ impl FactoryState {
             ],
         );
 
-        state.add_workflow(
+        self.add_workflow(
             "Codebase Audit",
             "Analyze architecture, security posture, and test gaps without modifying files.",
             vec![
@@ -205,8 +224,6 @@ impl FactoryState {
                 },
             ],
         );
-
-        state
     }
 
     pub fn projects(&self) -> &[Project] {
@@ -277,6 +294,21 @@ impl FactoryState {
         });
 
         Ok(self.projects.last().expect("project just pushed"))
+    }
+
+    /// Inserts an already-persisted project (for syncing with SQLite).
+    pub fn insert_project(&mut self, project: Project) {
+        if project.id >= self.next_project_id {
+            self.next_project_id = project.id + 1;
+        }
+        self.projects.push(project);
+    }
+
+    /// Removes a project by id. Returns `true` if removed.
+    pub fn remove_project(&mut self, id: ProjectId) -> bool {
+        let before = self.projects.len();
+        self.projects.retain(|project| project.id != id);
+        self.projects.len() != before
     }
 
     /// Adds a workflow definition to the catalog.

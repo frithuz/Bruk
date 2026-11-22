@@ -6,9 +6,11 @@
 
 pub mod engine;
 pub mod model;
+pub mod storage;
 
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
 pub use model::{
     LogEntry, LogLevel, Project, ProjectId, RunId, RunStatus, StepKind, StepRun, StepRunStatus,
     Workflow, WorkflowId, WorkflowRun, WorkflowStep,
 };
+pub use storage::{ProjectDatabase, StorageError, default_db_path};

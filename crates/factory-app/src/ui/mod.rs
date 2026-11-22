@@ -1,33 +1,25 @@
-//! Main macOS desktop layout: project & workflow sidebar + execution workspace.
+//! Main macOS desktop layout: project & workflow sidebar + active canvas view.
+
+mod register_project;
 
 use factory_core::{ProjectId, RunId, RunStatus, StepRunStatus, WorkflowId};
 use nsh_base::{button, input, theme};
 use nsh_core::prelude::*;
 
-use crate::store;
+use crate::store::{self, ActiveView};
 
-/// Top-level split workspace: left navigation rail and right workflow canvas.
-pub(crate) fn workspace() -> impl IntoElement {
+/// Top-level split shell: left navigation rail and right active view canvas.
+pub(crate) fn shell() -> impl IntoElement {
     view()
         .flex_1()
         .flex_row()
         .bg(move || theme().background)
         .child(sidebar())
-        .child(main_panel())
+        .child(content_pane())
 }
 
 fn sidebar() -> impl IntoElement {
-    let new_name = signal(String::new());
-    let new_path = signal(String::new());
-
-    let submit_project = move || {
-        let name = new_name.get_untracked();
-        let path = new_path.get_untracked();
-        if store::add_project(&name, &path, "main") {
-            new_name.set(String::new());
-            new_path.set(String::new());
-        }
-    };
+    let is_registering = || store::active_view() == ActiveView::RegisterProject;
 
     view()
         .w(px(280.0))
@@ -52,99 +44,73 @@ fn sidebar() -> impl IntoElement {
                 ),
         )
         .child(
-            scroll()
-                .flex_1()
+            button()
+                .on_press(store::open_register_project)
+                .px_3()
+                .py_2()
+                .rounded(move || theme().radius)
+                .bg(move || {
+                    if is_registering() {
+                        theme().sidebar_primary
+                    } else {
+                        theme().secondary
+                    }
+                })
+                .active(|s| s.opacity(0.8))
+                .items_center()
                 .child(
-                    view()
-                        .gap_5()
-                        .child(
-                            view()
-                                .gap_2()
-                                .child(section_label("PROJECTS"))
-                                .child(each(
-                                    store::project_ids,
-                                    |id: &ProjectId| *id,
-                                    |id, _| project_row(id.get_untracked()),
-                                )),
-                        )
-                        .child(
-                            view()
-                                .gap_2()
-                                .p_3()
-                                .rounded(move || theme().radius)
-                                .border_1()
-                                .border_color(move || theme().sidebar_border)
-                                .bg(move || theme().card)
-                                .child(section_label("ADD PROJECT"))
-                                .child(
-                                    input()
-                                        .value(move || new_name.get())
-                                        .on_change(move |value: &str| {
-                                            new_name.set(value.to_owned())
-                                        })
-                                        .placeholder("Project name")
-                                        .px_3()
-                                        .py_2()
-                                        .border_1()
-                                        .border_color(move || theme().input)
-                                        .rounded(move || theme().radius)
-                                        .text_sm()
-                                        .text_color(move || theme().foreground),
-                                )
-                                .child(
-                                    input()
-                                        .value(move || new_path.get())
-                                        .on_change(move |value: &str| {
-                                            new_path.set(value.to_owned())
-                                        })
-                                        .on_submit(move |_: &str| submit_project())
-                                        .placeholder("Repository path")
-                                        .px_3()
-                                        .py_2()
-                                        .border_1()
-                                        .border_color(move || theme().input)
-                                        .rounded(move || theme().radius)
-                                        .text_sm()
-                                        .text_color(move || theme().foreground),
-                                )
-                                .child(
-                                    button()
-                                        .disabled(move || {
-                                            new_name.with(|n| n.trim().is_empty())
-                                                || new_path.with(|p| p.trim().is_empty())
-                                        })
-                                        .on_press(submit_project)
-                                        .px_3()
-                                        .py_2()
-                                        .rounded(move || theme().radius)
-                                        .bg(move || theme().secondary)
-                                        .active(|s| s.opacity(0.75))
-                                        .disabled_style(|s| s.opacity(0.45))
-                                        .items_center()
-                                        .child(
-                                            text("Add Project")
-                                                .text_sm()
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(move || theme().secondary_foreground),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .gap_2()
-                                .child(section_label("WORKFLOWS"))
-                                .child(each(
-                                    store::workflow_ids,
-                                    |id: &WorkflowId| *id,
-                                    |id, _| workflow_row(id.get_untracked()),
-                                )),
-                        ),
+                    text("+ Register Project")
+                        .text_sm()
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(move || {
+                            if is_registering() {
+                                theme().sidebar_primary_foreground
+                            } else {
+                                theme().secondary_foreground
+                            }
+                        }),
                 ),
+        )
+        .child(
+            scroll().flex_1().child(
+                view()
+                    .gap_5()
+                    .child(
+                        view()
+                            .gap_2()
+                            .child(section_label("PROJECTS"))
+                            .child(when(
+                                || store::project_ids().is_empty(),
+                                || {
+                                    text("No projects tracked yet")
+                                        .text_xs()
+                                        .text_color(move || theme().muted_foreground)
+                                },
+                            ))
+                            .child(each(
+                                store::project_ids,
+                                |id: &ProjectId| *id,
+                                |id, _| project_row(id.get_untracked()),
+                            )),
+                    )
+                    .child(
+                        view()
+                            .gap_2()
+                            .child(section_label("WORKFLOWS"))
+                            .child(each(
+                                store::workflow_ids,
+                                |id: &WorkflowId| *id,
+                                |id, _| workflow_row(id.get_untracked()),
+                            )),
+                    ),
+            ),
         )
 }
 
 fn project_row(id: ProjectId) -> impl IntoElement {
-    let is_selected = move || store::selected_project_id() == Some(id);
+    let is_selected = move || {
+        store::active_view() == ActiveView::Workspace && store::selected_project_id() == Some(id)
+    };
     button()
         .on_press(move || store::select_project(id))
         .px_3()
@@ -178,7 +144,7 @@ fn project_row(id: ProjectId) -> impl IntoElement {
         .child(
             text(move || {
                 store::project_by_id(id)
-                    .map(|p| format!("{} · {}", p.default_branch, p.root_path.display()))
+                    .map(|p| p.root_path.display().to_string())
                     .unwrap_or_default()
             })
             .text_xs()
@@ -229,7 +195,27 @@ fn workflow_row(id: WorkflowId) -> impl IntoElement {
         )
 }
 
-fn main_panel() -> impl IntoElement {
+fn content_pane() -> impl IntoElement {
+    view()
+        .flex_1()
+        .p_6()
+        .gap_5()
+        .child(
+            view()
+                .flex_1()
+                .child(when(
+                    || store::active_view() == ActiveView::RegisterProject,
+                    register_project::register_project_view,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::Workspace,
+                    workflow_workspace,
+                )),
+        )
+        .child(status_bar())
+}
+
+fn workflow_workspace() -> impl IntoElement {
     let task_prompt = signal(String::new());
     let submit_run = move || {
         let prompt = task_prompt.get_untracked();
@@ -240,7 +226,6 @@ fn main_panel() -> impl IntoElement {
 
     view()
         .flex_1()
-        .p_6()
         .gap_5()
         .child(header_card())
         .child(launch_bar(task_prompt, submit_run))
@@ -252,7 +237,6 @@ fn main_panel() -> impl IntoElement {
                 .child(runs_list_panel())
                 .child(run_inspector_panel()),
         )
-        .child(status_bar())
 }
 
 fn header_card() -> impl IntoElement {
@@ -596,11 +580,9 @@ fn status_bar() -> impl IntoElement {
         .border_t_1()
         .border_color(move || theme().border)
         .child(
-            text(move || {
-                store::status_message().unwrap_or_else(|| "Ready".to_owned())
-            })
-            .text_xs()
-            .text_color(move || theme().muted_foreground),
+            text(move || store::status_message().unwrap_or_else(|| "Ready".to_owned()))
+                .text_xs()
+                .text_color(move || theme().muted_foreground),
         )
         .child(
             text("Native Shell · macOS AppKit")

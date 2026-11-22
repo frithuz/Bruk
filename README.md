@@ -8,9 +8,17 @@ A native macOS desktop application built in **Rust** with **[Native Shell (`nsh`
 
 This repository is a Cargo workspace split into two crates:
 
-- **`crates/factory-core`** — Pure Rust domain model and workflow execution engine (`Project`, `Workflow`, `WorkflowStep`, `WorkflowRun`, `StepExecutor`, and `FactoryState`), independent of UI/AppKit so workflows can be tested or reused from a CLI or daemon.
-- **`crates/factory-app`** — Native Shell (`nsh-core`, `nsh-base`, `nsh-platform-macos`) macOS AppKit desktop application providing a project & workflow sidebar, task launcher, run list, and step/log inspector.
+- **`crates/factory-core`** — Pure Rust domain model, SQLite project persistence (`ProjectDatabase` stored in the user's config folder), and workflow execution engine (`Project`, `Workflow`, `WorkflowStep`, `WorkflowRun`, `StepExecutor`, and `FactoryState`), independent of UI/AppKit so workflows can be tested or reused from a CLI or daemon.
+- **`crates/factory-app`** — Native Shell (`nsh-core`, `nsh-base`, `nsh-platform-macos`) macOS AppKit desktop application providing a dedicated Project Registration view (persisted to SQLite with a native folder picker), project & workflow sidebar, task launcher, run list, and step/log inspector.
 - **`nsh.json`** — Native Shell manifest pointing at `crates/factory-app` and its `App` root component.
+
+## Local Project Database
+
+Registered projects are persisted in SQLite at:
+
+- macOS default: `~/Library/Application Support/software-factory/factory.db`
+- XDG override: `$XDG_CONFIG_HOME/software-factory/factory.db`
+- Explicit override: `SOFTWARE_FACTORY_DB_PATH`
 
 ## Prerequisites
 

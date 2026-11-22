@@ -1,38 +1,136 @@
-//! Reactive per-surface application state backed by `factory-core`.
+//! Reactive per-surface application state backed by `factory-core` and SQLite.
 
-use std::path::PathBuf;
+use std::{
+    path::Path,
+    sync::{Arc, Mutex},
+};
 
 use factory_core::{
-    DryRunExecutor, FactoryState, Project, ProjectId, RunId, Workflow, WorkflowId, WorkflowRun,
+    DryRunExecutor, FactoryState, Project, ProjectDatabase, ProjectId, RunId, Workflow, WorkflowId,
+    WorkflowRun,
 };
 use nsh_core::prelude::*;
+
+/// Primary screen shown in the right-hand canvas.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ActiveView {
+    RegisterProject,
+    Workspace,
+}
 
 #[derive(Clone)]
 struct AppState {
     factory: FactoryState,
+    db: Option<Arc<Mutex<ProjectDatabase>>>,
+    db_path_display: String,
+    active_view: ActiveView,
     selected_project: Option<ProjectId>,
     selected_workflow: Option<WorkflowId>,
     selected_run: Option<RunId>,
     status_message: Option<String>,
+    registration_error: Option<String>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let factory = FactoryState::with_starter_catalog();
-        let selected_project = factory.projects().first().map(|project| project.id);
-        let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
-        Self {
-            factory,
-            selected_project,
-            selected_workflow,
-            selected_run: None,
-            status_message: None,
+        Self::from_database_result(ProjectDatabase::open_default())
+    }
+}
+
+impl AppState {
+    fn from_database_result(
+        result: Result<ProjectDatabase, factory_core::StorageError>,
+    ) -> Self {
+        match result {
+            Ok(db) => {
+                let db_path_display = db
+                    .path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| ":memory:".to_owned());
+                let (projects, status_message) = match db.list_projects() {
+                    Ok(projects) => (projects, None),
+                    Err(err) => (Vec::new(), Some(format!("Failed to load projects: {err}"))),
+                };
+                let factory = FactoryState::with_projects(projects);
+                let selected_project = factory.projects().first().map(|project| project.id);
+                let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+                let active_view = if selected_project.is_some() {
+                    ActiveView::Workspace
+                } else {
+                    ActiveView::RegisterProject
+                };
+                Self {
+                    factory,
+                    db: Some(Arc::new(Mutex::new(db))),
+                    db_path_display,
+                    active_view,
+                    selected_project,
+                    selected_workflow,
+                    selected_run: None,
+                    status_message,
+                    registration_error: None,
+                }
+            }
+            Err(err) => {
+                let factory = FactoryState::with_projects(Vec::new());
+                let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+                Self {
+                    factory,
+                    db: None,
+                    db_path_display: "Unavailable".to_owned(),
+                    active_view: ActiveView::RegisterProject,
+                    selected_project: None,
+                    selected_workflow,
+                    selected_run: None,
+                    status_message: Some(format!("Could not open SQLite database: {err}")),
+                    registration_error: Some(format!("Database unavailable: {err}")),
+                }
+            }
         }
     }
 }
 
 fn state() -> Signal<AppState> {
     global::<AppState>()
+}
+
+/// Initializes the per-surface store using the default SQLite DB in the user config folder.
+pub(crate) fn init_default() {
+    let _ = state();
+}
+
+/// Initializes the per-surface store against an explicit SQLite DB path.
+pub(crate) fn init_with_database_path(path: &Path) {
+    let loaded = AppState::from_database_result(ProjectDatabase::open(path));
+    state().set(loaded);
+}
+
+pub(crate) fn active_view() -> ActiveView {
+    state().with(|s| s.active_view)
+}
+
+pub(crate) fn open_register_project() {
+    state().update(|s| {
+        s.active_view = ActiveView::RegisterProject;
+        s.registration_error = None;
+    });
+}
+
+pub(crate) fn open_workspace() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        s.active_view = ActiveView::Workspace;
+    });
+}
+
+pub(crate) fn db_path_display() -> String {
+    state().with(|s| s.db_path_display.clone())
+}
+
+pub(crate) fn registration_error() -> Option<String> {
+    state().with(|s| s.registration_error.clone())
 }
 
 pub(crate) fn project_ids() -> Vec<ProjectId> {
@@ -57,35 +155,79 @@ pub(crate) fn selected_project() -> Option<Project> {
 pub(crate) fn select_project(id: ProjectId) {
     state().update(|s| {
         s.selected_project = Some(id);
-        s.selected_run = s
-            .factory
-            .runs_for_project(id)
-            .first()
-            .map(|run| run.id);
+        s.active_view = ActiveView::Workspace;
+        s.selected_run = s.factory.runs_for_project(id).first().map(|run| run.id);
         s.status_message = None;
     });
 }
 
-pub(crate) fn add_project(name: &str, path: &str, branch: &str) -> bool {
+/// Persists a new project in SQLite and adds it to the reactive factory state.
+pub(crate) fn register_project(name: &str, path: &str) -> bool {
     let mut created = false;
     state().update(|s| {
-        match s
-            .factory
-            .add_project(name, PathBuf::from(path.trim()), branch, "")
-        {
+        let Some(db_arc) = s.db.as_ref() else {
+            s.registration_error = Some("SQLite database is not available.".to_owned());
+            return;
+        };
+
+        let result = match db_arc.lock() {
+            Ok(db) => db.register_project(name, path, "main", ""),
+            Err(_) => {
+                s.registration_error = Some("SQLite database lock poisoned.".to_owned());
+                return;
+            }
+        };
+
+        match result {
             Ok(project) => {
                 let id = project.id;
+                let saved_name = project.name.clone();
+                s.factory.insert_project(project);
                 s.selected_project = Some(id);
                 s.selected_run = None;
-                s.status_message = Some(format!("Added project '{}'", project.name));
+                s.registration_error = None;
+                s.status_message = Some(format!("Registered project '{saved_name}'"));
                 created = true;
             }
             Err(err) => {
-                s.status_message = Some(err.to_string());
+                let message = err.to_string();
+                s.registration_error = Some(message.clone());
+                s.status_message = Some(message);
             }
         }
     });
     created
+}
+
+/// Deletes a tracked project from SQLite and removes it from the reactive state.
+pub(crate) fn remove_project(id: ProjectId) {
+    state().update(|s| {
+        let project_name = s.factory.project(id).map(|p| p.name.clone());
+        if let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+            && let Err(err) = db.delete_project(id)
+        {
+            let message = format!("Failed to remove project: {err}");
+            s.registration_error = Some(message.clone());
+            s.status_message = Some(message);
+            return;
+        }
+
+        s.factory.remove_project(id);
+        if s.selected_project == Some(id) {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+            s.selected_run = s
+                .selected_project
+                .and_then(|pid| s.factory.runs_for_project(pid).first().map(|r| r.id));
+        }
+        if s.factory.projects().is_empty() {
+            s.active_view = ActiveView::RegisterProject;
+        }
+        s.registration_error = None;
+        if let Some(name) = project_name {
+            s.status_message = Some(format!("Removed project '{name}'"));
+        }
+    });
 }
 
 pub(crate) fn workflow_ids() -> Vec<WorkflowId> {
@@ -175,11 +317,7 @@ pub(crate) fn advance_selected_run() {
         };
         match s.factory.advance_run(run_id, &DryRunExecutor) {
             Ok(run) => {
-                s.status_message = Some(format!(
-                    "Run #{} is now {}",
-                    run.id,
-                    run.status.label()
-                ));
+                s.status_message = Some(format!("Run #{} is now {}", run.id, run.status.label()));
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
