@@ -976,16 +976,14 @@ fn resolve_selected_workflow(overview: &ProjectWorkflowsOverview) -> Option<Work
 
 fn inspector_header(
     workflow: &WorkflowOverviewEntry,
-    editing: bool,
+    _editing: bool,
     ad_hoc_open: bool,
     more_open: bool,
-    edit_name: Signal<String>,
-    edit_desc: Signal<String>,
-    edit_is_draft: Signal<bool>,
+    _edit_name: Signal<String>,
+    _edit_desc: Signal<String>,
+    _edit_is_draft: Signal<bool>,
 ) -> impl IntoElement {
-    let wf_name = workflow.name.clone();
-    let wf_desc = workflow.description.clone();
-    let wf_draft = workflow.is_draft;
+    let wf_id_for_editor = workflow.id.clone();
 
     view()
         .gap(px(4.0))
@@ -1011,14 +1009,7 @@ fn inspector_header(
                         .test_id("wfo-inspector-edit")
                         .accessibility_label("Edit")
                         .on_press(move || {
-                            if editing {
-                                store::set_workflows_editing_selected(false);
-                            } else {
-                                edit_name.set(wf_name.clone());
-                                edit_desc.set(wf_desc.clone());
-                                edit_is_draft.set(wf_draft);
-                                store::set_workflows_editing_selected(true);
-                            }
+                            store::open_workflow_editor_from_overview(&wf_id_for_editor);
                         })
                         .h(px(29.0))
                         .px(px(12.0))

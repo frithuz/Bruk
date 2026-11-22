@@ -1066,6 +1066,10 @@ impl ProjectWorkflowsOverview {
         self.workflows.iter().find(|w| w.id == id)
     }
 
+    pub fn workflow_mut(&mut self, id: &str) -> Option<&mut WorkflowOverviewEntry> {
+        self.workflows.iter_mut().find(|w| w.id == id)
+    }
+
     pub fn filtered_and_sorted(
         &self,
         filter: WorkflowsFilter,

@@ -9,6 +9,7 @@ pub(crate) mod preferences;
 pub(crate) mod project_settings;
 mod register_project;
 mod work_queue;
+mod workflow_editor;
 mod workflow_run;
 mod workflows;
 mod workspace;
@@ -29,13 +30,26 @@ pub(crate) fn shell() -> impl IntoElement {
     view()
         .flex_1()
         .bg(palette::canvas_bg())
-        .child(top_header_bar())
+        .child(when(
+            || store::active_view() == ActiveView::WorkflowEditor,
+            workflow_editor::workflow_editor_header,
+        ))
+        .child(when(
+            || store::active_view() != ActiveView::WorkflowEditor,
+            top_header_bar,
+        ))
         .child(
             view()
                 .flex_1()
                 .min_h(px(0.0))
                 .flex_row()
-                .child(when(store::sidebar_visible, sidebar))
+                .child(when(
+                    || {
+                        store::sidebar_visible()
+                            && store::active_view() != ActiveView::WorkflowEditor
+                    },
+                    sidebar,
+                ))
                 .child(content_pane()),
         )
         .child(when(
@@ -119,6 +133,7 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::Machines => "Machines".to_owned(),
                 ActiveView::WorkQueue => "Work queue".to_owned(),
                 ActiveView::Workflows => "Workflows".to_owned(),
+                ActiveView::WorkflowEditor => store::active_workflow_editor().workflow_name,
                 ActiveView::WorkflowRun => store::active_workflow_run().workflow_name,
                 ActiveView::RegisterProject => "Register Project".to_owned(),
                 ActiveView::Workspace => store::selected_project()
@@ -163,6 +178,10 @@ fn header_title_block() -> impl IntoElement {
                     )
                 }
                 ActiveView::Workflows => store::active_workflows_overview().header_subtitle(),
+                ActiveView::WorkflowEditor => {
+                    let doc = store::active_workflow_editor();
+                    format!("{} › Workflows", doc.project_name)
+                }
                 ActiveView::WorkflowRun => {
                     let run = store::active_workflow_run();
                     format!("{} · Run #{}", run.project_name, run.run_number)
@@ -1521,6 +1540,10 @@ fn content_pane() -> impl IntoElement {
                 .child(when(
                     || store::active_view() == ActiveView::Workflows,
                     workflows::workflows_view,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::WorkflowEditor,
+                    workflow_editor::workflow_editor_view,
                 ))
                 .child(when(
                     || store::active_view() == ActiveView::WorkflowRun,

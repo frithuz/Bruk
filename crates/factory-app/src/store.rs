@@ -8,11 +8,13 @@ use std::{
 
 use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
-    DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, FactoryState,
-    InboxItem, IntakeRule, IssueSourceKind, MachineNode, MachineStatus, PreferencesTab, Project,
-    ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab,
-    ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState,
-    RunId, RunStatus, WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun, WorkflowRunViewData,
+    DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, EditorSelection,
+    ExitField, ExitOperator, FactoryState, InboxItem, IntakeRule, IssueSourceKind,
+    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineNode, MachineStatus,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
+    RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
+    Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
     WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
 };
 use nsh_core::{platform::Appearance, prelude::*};
@@ -25,6 +27,7 @@ pub(crate) enum ActiveView {
     Machines,
     WorkQueue,
     Workflows,
+    WorkflowEditor,
     WorkflowRun,
     Workspace,
     RegisterProject,
@@ -59,6 +62,14 @@ struct AppState {
     workflows_editing_selected: bool,
     workflows_ad_hoc_open: bool,
     workflows_more_menu_open: bool,
+    workflow_editors: BTreeMap<(String, String), WorkflowEditorDocument>,
+    active_workflow_editor_key: (String, String),
+    workflow_editor_return_view: ActiveView,
+    workflow_editor_palette_search: String,
+    workflow_editor_inspector_visible: bool,
+    workflow_editor_history_open: bool,
+    workflow_editor_ad_hoc_open: bool,
+    workflow_editor_validation: Option<ValidationReport>,
     workflow_runs_detail: BTreeMap<(String, String), WorkflowRunViewData>,
     active_workflow_run_key: (String, String),
     workflow_run_selected_step: usize,
@@ -202,6 +213,17 @@ impl AppState {
                     workflows_editing_selected: false,
                     workflows_ad_hoc_open: false,
                     workflows_more_menu_open: false,
+                    workflow_editors: BTreeMap::from([(
+                        ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                        WorkflowEditorDocument::sample_fix_issue("api-gateway"),
+                    )]),
+                    active_workflow_editor_key: ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                    workflow_editor_return_view: ActiveView::Workflows,
+                    workflow_editor_palette_search: String::new(),
+                    workflow_editor_inspector_visible: true,
+                    workflow_editor_history_open: false,
+                    workflow_editor_ad_hoc_open: false,
+                    workflow_editor_validation: None,
                     workflow_runs_detail,
                     active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
                     workflow_run_selected_step: default_step,
@@ -308,6 +330,17 @@ impl AppState {
                     workflows_editing_selected: false,
                     workflows_ad_hoc_open: false,
                     workflows_more_menu_open: false,
+                    workflow_editors: BTreeMap::from([(
+                        ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                        WorkflowEditorDocument::sample_fix_issue("api-gateway"),
+                    )]),
+                    active_workflow_editor_key: ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                    workflow_editor_return_view: ActiveView::Workflows,
+                    workflow_editor_palette_search: String::new(),
+                    workflow_editor_inspector_visible: true,
+                    workflow_editor_history_open: false,
+                    workflow_editor_ad_hoc_open: false,
+                    workflow_editor_validation: None,
                     workflow_runs_detail,
                     active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
                     workflow_run_selected_step: default_step,
@@ -472,6 +505,21 @@ impl AppState {
             .get(&self.active_workflow_run_key)
             .cloned()
             .unwrap_or_else(|| WorkflowRunViewData::for_workflow(project, workflow))
+    }
+
+    fn ensure_workflow_editor_mut(&mut self) -> &mut WorkflowEditorDocument {
+        let key = self.active_workflow_editor_key.clone();
+        self.workflow_editors
+            .entry(key.clone())
+            .or_insert_with(|| WorkflowEditorDocument::for_workflow_name(&key.0, &key.1))
+    }
+
+    fn active_workflow_editor_clone(&self) -> WorkflowEditorDocument {
+        let (ref project, ref wf_id) = self.active_workflow_editor_key;
+        self.workflow_editors
+            .get(&self.active_workflow_editor_key)
+            .cloned()
+            .unwrap_or_else(|| WorkflowEditorDocument::for_workflow_name(project, wf_id))
     }
 
     fn sync_selected_issue_for_active_project(&mut self) {
@@ -860,8 +908,33 @@ pub(crate) fn approve_workflow_run_review_gate() {
 
 pub(crate) fn edit_active_workflow() {
     state().update(|s| {
-        let (_, workflow) = s.active_workflow_run_key.clone();
-        s.status_message = Some(format!("Opened '{workflow}' workflow definition"));
+        let (project, workflow_name) = s.active_workflow_run_key.clone();
+        let overview_entry = s
+            .workflows_overview_for_name(&project)
+            .workflows
+            .into_iter()
+            .find(|w| w.name.eq_ignore_ascii_case(&workflow_name));
+        let key = if let Some(entry) = overview_entry {
+            let wf_id = entry.id.clone();
+            let key = (project.clone(), wf_id);
+            s.workflow_editors
+                .entry(key.clone())
+                .or_insert_with(|| WorkflowEditorDocument::from_overview_entry(&project, &entry));
+            key
+        } else {
+            let doc = WorkflowEditorDocument::for_workflow_name(&project, &workflow_name);
+            let key = (project.clone(), doc.workflow_id.clone());
+            s.workflow_editors.entry(key.clone()).or_insert(doc);
+            key
+        };
+        s.active_workflow_editor_key = key;
+        s.workflow_editor_return_view = s.active_view;
+        s.workflow_editor_inspector_visible = true;
+        s.workflow_editor_history_open = false;
+        s.workflow_editor_ad_hoc_open = false;
+        s.workflow_editor_validation = None;
+        s.active_view = ActiveView::WorkflowEditor;
+        s.status_message = None;
     });
 }
 
@@ -2903,4 +2976,369 @@ pub(crate) fn open_workflow_run_from_overview(workflow_name: &str) {
     if let Some(pid) = project_id {
         open_project_workflow(pid, workflow_name);
     }
+}
+
+// --- Visual Workflow Editor state -------------------------------------------------------
+
+pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
+    let target_id = workflow_id.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let entry = s
+            .workflows_overview_for_name(&project)
+            .workflow(&target_id)
+            .cloned();
+        let key = (project.clone(), target_id.clone());
+        s.workflow_editors.entry(key.clone()).or_insert_with(|| {
+            if let Some(entry) = entry {
+                WorkflowEditorDocument::from_overview_entry(&project, &entry)
+            } else {
+                WorkflowEditorDocument::for_workflow_name(&project, &target_id)
+            }
+        });
+        s.active_workflow_editor_key = key;
+        s.workflow_editor_return_view = ActiveView::Workflows;
+        s.workflow_editor_palette_search.clear();
+        s.workflow_editor_inspector_visible = true;
+        s.workflow_editor_history_open = false;
+        s.workflow_editor_ad_hoc_open = false;
+        s.workflow_editor_validation = None;
+        s.active_view = ActiveView::WorkflowEditor;
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_workflow_editor_for_selected_overview() {
+    let selected = state().with_untracked(|s| {
+        let name = s.selected_project_name();
+        let overview = s.workflows_overview_for_name(&name);
+        s.workflows_selected_id
+            .clone()
+            .filter(|id| overview.workflow(id).is_some())
+            .or_else(|| overview.default_selected_id())
+    });
+    if let Some(id) = selected {
+        open_workflow_editor_from_overview(&id);
+    }
+}
+
+pub(crate) fn close_workflow_editor() {
+    state().update(|s| {
+        let target = match s.workflow_editor_return_view {
+            ActiveView::WorkflowEditor => ActiveView::Workflows,
+            other => other,
+        };
+        s.active_view = target;
+        s.workflow_editor_history_open = false;
+        s.workflow_editor_ad_hoc_open = false;
+        s.workflow_editor_validation = None;
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_workflows_from_editor() {
+    state().update(|s| {
+        s.active_view = ActiveView::Workflows;
+        s.workflow_editor_history_open = false;
+        s.workflow_editor_ad_hoc_open = false;
+        s.workflow_editor_validation = None;
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn active_workflow_editor() -> WorkflowEditorDocument {
+    state().with(AppState::active_workflow_editor_clone)
+}
+
+pub(crate) fn workflow_editor_palette_search() -> String {
+    state().with(|s| s.workflow_editor_palette_search.clone())
+}
+
+pub(crate) fn set_workflow_editor_palette_search(query: &str) {
+    let query = query.to_owned();
+    state().update(|s| {
+        s.workflow_editor_palette_search = query;
+    });
+}
+
+pub(crate) fn workflow_editor_inspector_visible() -> bool {
+    state().with(|s| s.workflow_editor_inspector_visible)
+}
+
+pub(crate) fn toggle_workflow_editor_inspector() {
+    state().update(|s| {
+        s.workflow_editor_inspector_visible = !s.workflow_editor_inspector_visible;
+    });
+}
+
+pub(crate) fn workflow_editor_history_open() -> bool {
+    state().with(|s| s.workflow_editor_history_open)
+}
+
+pub(crate) fn toggle_workflow_editor_history() {
+    state().update(|s| {
+        s.workflow_editor_history_open = !s.workflow_editor_history_open;
+        if s.workflow_editor_history_open {
+            s.workflow_editor_ad_hoc_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflow_editor_ad_hoc_open() -> bool {
+    state().with(|s| s.workflow_editor_ad_hoc_open)
+}
+
+pub(crate) fn set_workflow_editor_ad_hoc_open(open: bool) {
+    state().update(|s| {
+        s.workflow_editor_ad_hoc_open = open;
+        if open {
+            s.workflow_editor_history_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflow_editor_validation() -> Option<ValidationReport> {
+    state().with(|s| s.workflow_editor_validation.clone())
+}
+
+pub(crate) fn dismiss_workflow_editor_validation() {
+    state().update(|s| {
+        s.workflow_editor_validation = None;
+    });
+}
+
+pub(crate) fn select_workflow_editor_node(selection: EditorSelection) {
+    state().update(|s| {
+        s.ensure_workflow_editor_mut().selected = selection;
+        s.workflow_editor_inspector_visible = true;
+    });
+}
+
+pub(crate) fn add_workflow_editor_step(kind: StepTypeKind) {
+    state().update(|s| {
+        let doc = s.ensure_workflow_editor_mut();
+        doc.add_from_palette(kind);
+        let title = kind.title();
+        s.workflow_editor_inspector_visible = true;
+        s.workflow_editor_validation = None;
+        s.status_message = Some(format!("Added '{title}' step to workflow"));
+    });
+}
+
+pub(crate) fn remove_workflow_editor_step(step_id: &str) {
+    let step_id = step_id.to_owned();
+    state().update(|s| {
+        let doc = s.ensure_workflow_editor_mut();
+        if doc.remove_step(&step_id) {
+            s.workflow_editor_validation = None;
+            s.status_message = Some("Removed step from workflow".to_owned());
+        } else {
+            s.status_message = Some("A workflow must keep at least one step.".to_owned());
+        }
+    });
+}
+
+pub(crate) fn set_workflow_editor_loop_name(loop_id: &str, name: &str) {
+    let loop_id = loop_id.to_owned();
+    let name = name.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .set_loop_name(&loop_id, &name);
+    });
+}
+
+pub(crate) fn set_workflow_editor_loop_repeat(loop_id: &str, mode: LoopRepeatMode) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .set_loop_repeat_mode(&loop_id, mode);
+    });
+}
+
+pub(crate) fn set_workflow_editor_loop_max_attempts(loop_id: &str, raw: &str) {
+    let loop_id = loop_id.to_owned();
+    let parsed = raw.trim().parse::<u32>().ok();
+    if let Some(value) = parsed {
+        state().update(|s| {
+            s.ensure_workflow_editor_mut()
+                .set_loop_max_attempts(&loop_id, value);
+        });
+    }
+}
+
+pub(crate) fn set_workflow_editor_loop_wait(loop_id: &str, wait: LoopWaitBetween) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .set_loop_wait_between(&loop_id, wait);
+    });
+}
+
+pub(crate) fn toggle_workflow_editor_loop_pass_previous(loop_id: &str) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .toggle_loop_pass_previous(&loop_id);
+    });
+}
+
+pub(crate) fn toggle_workflow_editor_loop_discard_changes(loop_id: &str) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .toggle_loop_discard_changes(&loop_id);
+    });
+}
+
+pub(crate) fn set_workflow_editor_loop_on_exhausted(loop_id: &str, action: LoopExhaustedAction) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .set_loop_on_exhausted(&loop_id, action);
+    });
+}
+
+pub(crate) fn add_workflow_editor_exit_condition(loop_id: &str) {
+    let loop_id = loop_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .add_loop_exit_condition(&loop_id);
+    });
+}
+
+pub(crate) fn remove_workflow_editor_exit_condition(loop_id: &str, condition_id: &str) {
+    let loop_id = loop_id.to_owned();
+    let condition_id = condition_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .remove_loop_exit_condition(&loop_id, &condition_id);
+    });
+}
+
+pub(crate) fn update_workflow_editor_exit_condition(
+    loop_id: &str,
+    condition_id: &str,
+    step_id: Option<String>,
+    field: Option<ExitField>,
+    operator: Option<ExitOperator>,
+    expected: Option<String>,
+) {
+    let loop_id = loop_id.to_owned();
+    let condition_id = condition_id.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut().update_loop_exit_condition(
+            &loop_id,
+            &condition_id,
+            step_id,
+            field,
+            operator,
+            expected,
+        );
+    });
+}
+
+pub(crate) fn update_workflow_editor_step_name(step_id: &str, name: &str) {
+    let step_id = step_id.to_owned();
+    let name = name.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .update_step_name(&step_id, &name);
+    });
+}
+
+pub(crate) fn update_workflow_editor_step_detail(step_id: &str, detail: &str) {
+    let step_id = step_id.to_owned();
+    let detail = detail.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .update_step_detail(&step_id, &detail);
+    });
+}
+
+pub(crate) fn update_workflow_editor_fallback_name(loop_id: &str, name: &str) {
+    let loop_id = loop_id.to_owned();
+    let name = name.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .update_fallback_name(&loop_id, &name);
+    });
+}
+
+pub(crate) fn toggle_workflow_editor_trigger_work_queue() {
+    state().update(|s| {
+        s.ensure_workflow_editor_mut().toggle_trigger_work_queue();
+    });
+}
+
+pub(crate) fn toggle_workflow_editor_trigger_ad_hoc() {
+    state().update(|s| {
+        s.ensure_workflow_editor_mut().toggle_trigger_ad_hoc();
+    });
+}
+
+pub(crate) fn validate_workflow_editor() {
+    state().update(|s| {
+        let report = s.active_workflow_editor_clone().validate();
+        let summary = report.summary.clone();
+        s.workflow_editor_validation = Some(report);
+        s.status_message = Some(summary);
+    });
+}
+
+pub(crate) fn save_workflow_editor() {
+    state().update(|s| {
+        let (project, workflow_id) = s.active_workflow_editor_key.clone();
+        let (wf_name, step_groups, ad_hoc_allowed) = {
+            let doc = s.ensure_workflow_editor_mut();
+            doc.mark_saved();
+            (
+                doc.workflow_name.clone(),
+                doc.to_step_groups(),
+                doc.trigger.ad_hoc_allowed,
+            )
+        };
+        let overview = s.ensure_workflows_overview_mut(&project);
+        if let Some(entry) = overview.workflow_mut(&workflow_id) {
+            entry.step_groups = step_groups;
+            entry.ad_hoc_allowed = ad_hoc_allowed;
+            entry.ad_hoc_label = if ad_hoc_allowed {
+                "Allowed".to_owned()
+            } else {
+                "Disabled".to_owned()
+            };
+            entry.edited_label = "Just now by you".to_owned();
+        }
+        s.workflow_editor_validation = None;
+        s.status_message = Some(format!("Saved workflow '{wf_name}'"));
+    });
+}
+
+pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
+    let prompt = summary.to_owned();
+    let mut launched = false;
+    state().update(|s| {
+        let (project, workflow_id) = s.active_workflow_editor_key.clone();
+        let wf_name = s.active_workflow_editor_clone().workflow_name;
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.launch_ad_hoc_run(&workflow_id, &prompt) {
+            Ok(run_no) => {
+                s.workflow_editor_ad_hoc_open = false;
+                s.status_message = Some(format!("Started ad-hoc run #{run_no} ({wf_name})"));
+                launched = true;
+            }
+            Err(_) => {
+                // If the workflow doesn't exist in overview (e.g. ad-hoc fallback), still accept non-empty prompt.
+                if prompt.trim().is_empty() {
+                    s.status_message =
+                        Some("Enter a task or issue reference for the ad-hoc run.".to_owned());
+                } else {
+                    s.workflow_editor_ad_hoc_open = false;
+                    s.status_message =
+                        Some(format!("Started ad-hoc run ({wf_name}): {}", prompt.trim()));
+                    launched = true;
+                }
+            }
+        }
+    });
+    launched
 }

@@ -904,3 +904,164 @@ fn workflows_overview_renders_reference_table_inspector_templates_and_flows() {
     app.press("id:wfo-recent-run-44").unwrap();
     app.wait_for("Edit Workflow").unwrap();
 }
+
+#[test]
+fn workflow_editor_renders_reference_layout_and_interactive_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Navigate to api-gateway's Workflows overview and open Fix issue in the visual editor.
+    app.press("id:sidebar-workflows-1").unwrap();
+    app.wait_for("id:wfo-inspector-edit").unwrap();
+    app.press("id:wfo-inspector-edit").unwrap();
+    app.wait_for("Unsaved changes").unwrap();
+
+    // Verify top header breadcrumb and action buttons.
+    assert!(app.screen().shows("api-gateway"));
+    assert!(app.screen().shows("Workflows"));
+    assert!(app.screen().shows("Fix issue"));
+    assert!(app.screen().shows("Unsaved changes"));
+    assert!(app.screen().shows("Validate"));
+    assert!(app.screen().shows("Save"));
+    assert!(app.screen().shows("Ad-hoc Run..."));
+
+    // Verify left step types palette categories and entries.
+    assert!(app.screen().shows("Agents"));
+    assert!(app.screen().shows("Claude task"));
+    assert!(app.screen().shows("Claude Code in the project"));
+    assert!(app.screen().shows("Codex task"));
+    assert!(app.screen().shows("Codex CLI in the project"));
+    assert!(app.screen().shows("Model call"));
+    assert!(app.screen().shows("One OpenRouter request"));
+    assert!(app.screen().shows("Control"));
+    assert!(app.screen().shows("Loop"));
+    assert!(app.screen().shows("Repeat steps until a check passes"));
+    assert!(app.screen().shows("Condition"));
+    assert!(app.screen().shows("Approval gate"));
+    assert!(app.screen().shows("Shell command"));
+    assert!(app.screen().shows("Composites"));
+    assert!(app.screen().shows("Review and open PR"));
+    assert!(app.screen().shows("Two-model review"));
+    assert!(app.screen().shows("Issues"));
+    assert!(app.screen().shows("Set issue status"));
+    assert!(app.screen().shows("From extensions"));
+    assert!(app.screen().shows("Post update"));
+    assert!(app.screen().shows("Chat Notifier"));
+
+    // Verify center visual workflow canvas matches 13 WorkflowEditor.png.
+    assert!(app.screen().shows("Starts from"));
+    assert!(app.screen().shows("Work queue · intake rules"));
+    assert!(app.screen().shows("Ad-hoc runs allowed"));
+    assert!(
+        app.screen()
+            .shows("inputs: issue (optional for ad-hoc) · branch")
+    );
+    assert!(app.screen().shows("Read issue & plan"));
+    assert!(app.screen().shows("Fix until tests pass"));
+    assert!(app.screen().shows("Repeat until · max 5"));
+    assert!(app.screen().shows("Implement fix"));
+    assert!(app.screen().shows("reads $loop.previous on attempt 2+"));
+    assert!(app.screen().shows("Run tests"));
+    assert!(app.screen().shows("Shell · npm test"));
+    assert!(app.screen().shows("steps.run_tests.exit_code = 0"));
+    assert!(app.screen().shows("Out of attempts"));
+    assert!(app.screen().shows("If out of attempts"));
+    assert!(app.screen().shows("Report failure"));
+    assert!(app.screen().shows("Comment on issue · stop run"));
+    assert!(app.screen().shows("Review gate"));
+    assert!(app.screen().shows("Open pull request"));
+    assert!(app.screen().shows("Comment on issue"));
+    assert!(app.screen().shows("Add step"));
+
+    // Verify right-hand Loop inspector controls for the default selected Loop.
+    assert!(app.screen().shows("Loop · wraps steps 2–3"));
+    assert!(app.screen().shows("Repeat"));
+    assert!(app.screen().shows("Until a check passes"));
+    assert!(app.screen().shows("retry loop"));
+    assert!(app.screen().shows("For each item in a list"));
+    assert!(app.screen().shows("e.g. each failing test"));
+    assert!(app.screen().shows("A fixed number of times"));
+    assert!(app.screen().shows("Exit when"));
+    assert!(app.screen().shows("3 · Run tests"));
+    assert!(app.screen().shows("exit code"));
+    assert!(app.screen().shows("+ Add condition (all must pass)"));
+    assert!(app.screen().shows("Max attempts"));
+    assert!(app.screen().shows("Wait between"));
+    assert!(app.screen().shows("None"));
+    assert!(app.screen().shows("Between attempts"));
+    assert!(
+        app.screen()
+            .shows("Pass the last attempt's outputs to the next one as")
+    );
+    assert!(app.screen().shows("$loop.previous"));
+    assert!(
+        app.screen()
+            .shows("Discard file changes before each attempt")
+    );
+    assert!(app.screen().shows("If attempts run out"));
+    assert!(app.screen().shows("Go to step: Report failure"));
+
+    // Filter the step palette and clear it back.
+    app.type_text("id:wfe-palette-search", "Chat Notifier")
+        .unwrap();
+    assert!(app.screen().shows("Post update"));
+    assert!(!app.screen().shows("Claude Code in the project"));
+    app.clear("id:wfe-palette-search").unwrap();
+    app.wait_for("Claude Code in the project").unwrap();
+
+    // Update loop settings in the inspector and verify canvas updates live.
+    app.press("id:wfe-repeat-fixed").unwrap();
+    app.wait_for("Repeat · 5 times").unwrap();
+    app.press("id:wfe-repeat-until").unwrap();
+    app.wait_for("Repeat until · max 5").unwrap();
+
+    app.press("id:wfe-exit-add-condition").unwrap();
+    app.wait_for("steps.run_tests.exit_code = 0 && steps.run_tests.status = ok")
+        .unwrap();
+
+    app.press("id:wfe-loop-pass-prev").unwrap();
+    assert!(!app.screen().shows("reads $loop.previous on attempt 2+"));
+    app.press("id:wfe-loop-pass-prev").unwrap();
+    app.wait_for("reads $loop.previous on attempt 2+").unwrap();
+
+    // Validate the workflow and dismiss the validation banner.
+    app.press("id:wfe-header-validate").unwrap();
+    app.wait_for("Valid workflow — 6 steps, 1 loop, all exit conditions resolved.")
+        .unwrap();
+    app.press("id:wfe-validation-dismiss").unwrap();
+
+    // Save clears the Unsaved changes badge.
+    app.press("id:wfe-header-save").unwrap();
+    assert!(!app.screen().shows("Unsaved changes"));
+
+    // Adding a step from the palette marks unsaved changes again and switches the inspector.
+    app.press("id:wfe-palette-post-update").unwrap();
+    app.wait_for("Unsaved changes").unwrap();
+    assert!(app.screen().shows("Step 7 · Post update"));
+
+    // Select the fallback card to inspect it, then return to Workflows via the back button.
+    app.press("id:wfe-node-fallback").unwrap();
+    app.wait_for("Fallback · If out of attempts").unwrap();
+
+    // Toggle inspector visibility via View › Hide Inspector (⌥⌘I).
+    app.press_key("alt+mod+i").unwrap();
+    assert!(!app.screen().shows("Fallback · If out of attempts"));
+    app.press_key("alt+mod+i").unwrap();
+    app.wait_for("Fallback · If out of attempts").unwrap();
+
+    // Navigate back to Workflows overview.
+    app.press("id:wfe-header-back").unwrap();
+    app.wait_for("api-gateway · 6 workflows · 2 running")
+        .unwrap();
+
+    // Also verify opening the editor from WorkflowRun's `Edit Workflow` header button.
+    app.press("id:wfo-row-fix-issue").unwrap();
+    app.wait_for("id:wfo-recent-run-44").unwrap();
+    app.press("id:wfo-recent-run-44").unwrap();
+    app.wait_for("id:wf-header-edit").unwrap();
+    app.press("id:wf-header-edit").unwrap();
+    app.wait_for("Starts from").unwrap();
+    assert!(app.screen().shows("Fix issue"));
+}

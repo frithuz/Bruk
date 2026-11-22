@@ -407,3 +407,32 @@ pub(crate) fn run_dot_ellipsis(color: impl IntoReactive<AdaptiveColor>) -> impl 
     )
     .text_color(color)
 }
+
+/// Three vertical stacked module bars for Composite entries in the workflow editor palette.
+pub(crate) fn composite_grid(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"><rect x="2.4" y="3.2" width="11.2" height="9.6" rx="1.6"/><path d="M6.2 3.2v9.6M9.8 3.2v9.6"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Vertical blue return-arrow rail connecting the bottom step of a loop back to the first step.
+pub(crate) fn loop_return_arrow(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    svg(ImageSrc::svg_markup(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 108" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M18 89H10a4 4 0 0 1-4-4V21a4 4 0 0 1 4-4h8"/><path d="M14.2 13.2 18.2 17l-4 3.8"/></svg>"#,
+    ))
+    .w(px(22.0))
+    .h(px(108.0))
+    .flex_shrink_0()
+    .text_color(color)
+}
+
+/// Crisp small close `×` icon for removing optional exit conditions or closing drawers.
+pub(crate) fn close_x(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M3.8 3.8 10.2 10.2M10.2 3.8 3.8 10.2"/></svg>"#,
+        11.5,
+    )
+    .text_color(color)
+}

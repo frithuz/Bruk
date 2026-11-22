@@ -231,6 +231,46 @@ pub(crate) fn workflow_now_amber() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xC45B13), rgb(0xF09A49))
 }
 
+pub(crate) fn editor_unsaved_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF3E2), rgb(0x302313))
+}
+
+pub(crate) fn editor_unsaved_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xE8C088), rgb(0x7A5321))
+}
+
+pub(crate) fn editor_unsaved_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xB46312), rgb(0xF0A84B))
+}
+
+pub(crate) fn editor_loop_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xEEF5FE), rgb(0x132238))
+}
+
+pub(crate) fn editor_loop_divider() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD3E3FA), rgb(0x213A5E))
+}
+
+pub(crate) fn editor_loop_pill_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xDCEBFC), rgb(0x193458))
+}
+
+pub(crate) fn editor_fallback_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xFEF7EB), rgb(0x231D15))
+}
+
+pub(crate) fn editor_fallback_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xDFB775), rgb(0x8C6429))
+}
+
+pub(crate) fn editor_connector_color() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xCBD2DC), rgb(0x3B4250))
+}
+
+pub(crate) fn editor_palette_badge_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xECEDF1), rgb(0x272C35))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),

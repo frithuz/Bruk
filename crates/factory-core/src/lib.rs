@@ -11,6 +11,7 @@ pub mod preferences;
 pub mod project_settings;
 pub mod storage;
 pub mod work_queue;
+pub mod workflow_editor;
 pub mod workflow_run;
 pub mod workflows_overview;
 
@@ -39,6 +40,12 @@ pub use storage::{ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{
     IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue, WorkQueueError,
     WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+};
+pub use workflow_editor::{
+    EditorFallbackStep, EditorLoopBlock, EditorNode, EditorRevision, EditorSelection, EditorStep,
+    EditorTriggerConfig, ExitField, ExitOperator, LoopExhaustedAction, LoopExitCondition,
+    LoopRepeatMode, LoopWaitBetween, PaletteCategory, StepTypeKind, ValidationReport,
+    WorkflowEditorDocument,
 };
 pub use workflow_run::{
     AttemptBanner, BudgetGuardState, CoverageFileRow, DeployWatchEntry, DiffFileChange, DiffLine,

@@ -7,6 +7,7 @@
 
 use factory_core::{
     PreferencesTab, ProjectId, ProjectSettingsTab, RunDetailTab, RunExecutionState, RunStatus,
+    StepTypeKind,
 };
 use nsh_core::{
     desktop::{MenuRole, WindowMode},
@@ -32,6 +33,7 @@ struct MenuSnapshot {
     has_selected_project: bool,
     on_work_queue: bool,
     on_workflows: bool,
+    on_workflow_editor: bool,
     on_workflow_run: bool,
     inspector_visible: bool,
     has_queued_issues: bool,
@@ -53,9 +55,12 @@ fn current_menu_snapshot() -> MenuSnapshot {
     let active_view = store::active_view();
     let on_work_queue = active_view == store::ActiveView::WorkQueue;
     let on_workflows = active_view == store::ActiveView::Workflows;
+    let on_workflow_editor = active_view == store::ActiveView::WorkflowEditor;
     let on_workflow_run = active_view == store::ActiveView::WorkflowRun;
     let inspector_visible = if on_workflow_run {
         store::workflow_run_inspector_visible()
+    } else if on_workflow_editor {
+        store::workflow_editor_inspector_visible()
     } else if on_workflows {
         store::workflows_inspector_visible()
     } else {
@@ -90,6 +95,7 @@ fn current_menu_snapshot() -> MenuSnapshot {
         has_selected_project,
         on_work_queue,
         on_workflows,
+        on_workflow_editor,
         on_workflow_run,
         inspector_visible,
         has_queued_issues,
@@ -233,7 +239,10 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
     };
     let is_full_screen = snapshot.is_full_screen;
 
-    let has_inspector = snapshot.on_work_queue || snapshot.on_workflows || snapshot.on_workflow_run;
+    let has_inspector = snapshot.on_work_queue
+        || snapshot.on_workflows
+        || snapshot.on_workflow_editor
+        || snapshot.on_workflow_run;
     let inspector_label = if has_inspector && snapshot.inspector_visible {
         "Hide Inspector"
     } else {
@@ -323,15 +332,19 @@ fn workflow_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(edit_active_workflow),
             MenuItem::new("Add Step…")
                 .shortcut("alt+mod+n")
-                .disabled(true),
+                .disabled(!snapshot.on_workflow_editor)
+                .on_select(|| store::add_workflow_editor_step(StepTypeKind::ClaudeTask)),
             MenuItem::new("Validate")
                 .shortcut("mod+shift+v")
-                .disabled(true),
+                .disabled(!snapshot.on_workflow_editor)
+                .on_select(store::validate_workflow_editor),
             MenuItem::separator(),
             MenuItem::new("Duplicate")
                 .disabled(!snapshot.on_workflows)
                 .on_select(store::duplicate_selected_overview_workflow),
-            MenuItem::new("Version History…").disabled(true),
+            MenuItem::new("Version History…")
+                .disabled(!snapshot.on_workflow_editor)
+                .on_select(store::toggle_workflow_editor_history),
             MenuItem::separator(),
             from_extensions_header(),
             MenuItem::new("Post Update to Chat").disabled(true),
@@ -530,7 +543,11 @@ fn open_intake_rules() {
 }
 
 fn open_ad_hoc_run() {
-    store::open_work_queue_ad_hoc();
+    if store::active_view() == store::ActiveView::WorkflowEditor {
+        store::set_workflow_editor_ad_hoc_open(true);
+    } else {
+        store::open_work_queue_ad_hoc();
+    }
     main_window().focus();
 }
 
@@ -546,7 +563,7 @@ fn open_import_workflow() {
 
 fn edit_active_workflow() {
     if store::active_view() == store::ActiveView::Workflows {
-        store::set_workflows_editing_selected(true);
+        store::open_workflow_editor_for_selected_overview();
     } else {
         store::edit_active_workflow();
     }
@@ -555,6 +572,7 @@ fn edit_active_workflow() {
 fn toggle_active_inspector() {
     match store::active_view() {
         store::ActiveView::WorkflowRun => store::toggle_workflow_run_inspector(),
+        store::ActiveView::WorkflowEditor => store::toggle_workflow_editor_inspector(),
         store::ActiveView::Workflows => store::toggle_workflows_inspector(),
         store::ActiveView::WorkQueue => store::toggle_work_queue_inspector(),
         _ => {}
@@ -589,6 +607,7 @@ mod tests {
             has_selected_project: true,
             on_work_queue: true,
             on_workflows: false,
+            on_workflow_editor: false,
             on_workflow_run: false,
             inspector_visible: true,
             has_queued_issues: true,
