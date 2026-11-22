@@ -31,21 +31,27 @@ Registered projects are persisted in SQLite at:
 
 ## Development Commands
 
-Run the native macOS app directly via Cargo:
+Common tasks are orchestrated with [Task](https://taskfile.dev/) via [Taskfile.yml](Taskfile.yml):
+
+```sh
+task                 # List all tasks
+task run             # Run the native macOS app via Cargo (alias: task dev)
+task test            # Run all unit + headless Native Shell UI tests
+task test:core       # Run factory-core unit & SQLite tests
+task test:ui         # Run factory-app headless UI tests
+task fmt             # Format Rust code
+task lint            # Run Clippy with -D warnings
+task ci              # Run fmt:check, lint, test, and build
+task db:path         # Show the active SQLite database path
+task run:nsh         # Run with Native Shell CLI (requires nsh)
+task package         # Package a macOS .app bundle (requires nsh)
+```
+
+Direct Cargo / Native Shell commands also work:
 
 ```sh
 cargo run
-```
-
-Run all unit tests and headless Native Shell UI tests:
-
-```sh
 cargo test --workspace
-```
-
-Run or package with the Native Shell CLI (once `nsh` is installed):
-
-```sh
 nsh run --target macos
 nsh package --target macos
 ```

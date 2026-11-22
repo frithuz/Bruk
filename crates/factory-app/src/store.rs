@@ -38,9 +38,7 @@ impl Default for AppState {
 }
 
 impl AppState {
-    fn from_database_result(
-        result: Result<ProjectDatabase, factory_core::StorageError>,
-    ) -> Self {
+    fn from_database_result(result: Result<ProjectDatabase, factory_core::StorageError>) -> Self {
         match result {
             Ok(db) => {
                 let db_path_display = db

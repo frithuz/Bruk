@@ -93,16 +93,11 @@ fn sidebar() -> impl IntoElement {
                                 |id, _| project_row(id.get_untracked()),
                             )),
                     )
-                    .child(
-                        view()
-                            .gap_2()
-                            .child(section_label("WORKFLOWS"))
-                            .child(each(
-                                store::workflow_ids,
-                                |id: &WorkflowId| *id,
-                                |id, _| workflow_row(id.get_untracked()),
-                            )),
-                    ),
+                    .child(view().gap_2().child(section_label("WORKFLOWS")).child(each(
+                        store::workflow_ids,
+                        |id: &WorkflowId| *id,
+                        |id, _| workflow_row(id.get_untracked()),
+                    ))),
             ),
         )
 }
@@ -126,20 +121,16 @@ fn project_row(id: ProjectId) -> impl IntoElement {
         .active(|s| s.opacity(0.75))
         .gap_1()
         .child(
-            text(move || {
-                store::project_by_id(id)
-                    .map(|p| p.name)
-                    .unwrap_or_default()
-            })
-            .text_sm()
-            .font_weight(FontWeight::MEDIUM)
-            .text_color(move || {
-                if is_selected() {
-                    theme().sidebar_accent_foreground
-                } else {
-                    theme().sidebar_foreground
-                }
-            }),
+            text(move || store::project_by_id(id).map(|p| p.name).unwrap_or_default())
+                .text_sm()
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || {
+                    if is_selected() {
+                        theme().sidebar_accent_foreground
+                    } else {
+                        theme().sidebar_foreground
+                    }
+                }),
         )
         .child(
             text(move || {
@@ -456,8 +447,7 @@ fn run_inspector_panel() -> impl IntoElement {
                         .child(
                             button()
                                 .disabled(move || {
-                                    store::selected_run()
-                                        .is_none_or(|run| run.status.is_terminal())
+                                    store::selected_run().is_none_or(|run| run.status.is_terminal())
                                 })
                                 .on_press(store::advance_selected_run)
                                 .px_3()
@@ -479,8 +469,7 @@ fn run_inspector_panel() -> impl IntoElement {
                         .child(
                             button()
                                 .disabled(move || {
-                                    store::selected_run()
-                                        .is_none_or(|run| run.status.is_terminal())
+                                    store::selected_run().is_none_or(|run| run.status.is_terminal())
                                 })
                                 .on_press(store::cancel_selected_run)
                                 .px_3()

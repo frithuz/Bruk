@@ -222,13 +222,22 @@ mod tests {
     #[test]
     fn creates_nested_dir_and_persists_projects_across_reopen() {
         let temp = TempDir::new().unwrap();
-        let db_path = temp.path().join("config").join("software-factory").join("factory.db");
+        let db_path = temp
+            .path()
+            .join("config")
+            .join("software-factory")
+            .join("factory.db");
 
         {
             let db = ProjectDatabase::open(&db_path).unwrap();
             assert_eq!(db.path(), Some(db_path.as_path()));
             let created = db
-                .register_project("billing-api", "/Users/dev/billing-api", "", "Payments service")
+                .register_project(
+                    "billing-api",
+                    "/Users/dev/billing-api",
+                    "",
+                    "Payments service",
+                )
                 .unwrap();
             assert_eq!(created.id, 1);
             assert_eq!(created.name, "billing-api");
@@ -260,10 +269,11 @@ mod tests {
             Err(StorageError::EmptyProjectPath)
         ));
 
-        db.register_project("repo-a", "/repo/a", "main", "").unwrap();
+        db.register_project("repo-a", "/repo/a", "main", "")
+            .unwrap();
         assert!(matches!(
             db.register_project("repo-a-dup", "/repo/a", "main", ""),
-            Err(StorageError::DuplicateRepositoryPath(path)) if path == PathBuf::from("/repo/a")
+            Err(StorageError::DuplicateRepositoryPath(path)) if path == Path::new("/repo/a")
         ));
     }
 

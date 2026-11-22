@@ -251,14 +251,10 @@ fn tracked_project_row(id: ProjectId) -> impl IntoElement {
                 .flex_1()
                 .gap_1()
                 .child(
-                    text(move || {
-                        store::project_by_id(id)
-                            .map(|p| p.name)
-                            .unwrap_or_default()
-                    })
-                    .text_sm()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(move || theme().foreground),
+                    text(move || store::project_by_id(id).map(|p| p.name).unwrap_or_default())
+                        .text_sm()
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(move || theme().foreground),
                 )
                 .child(
                     text(move || {

@@ -37,8 +37,10 @@ fn registers_project_in_sqlite_and_reloads_on_restart() {
         app.type_text("text:Repository path", "/workspace/billing-api")
             .unwrap();
         app.press("role:button[Save Project]").unwrap();
-        app.wait_for("a project is already registered for repository path '/workspace/billing-api'")
-            .unwrap();
+        app.wait_for(
+            "a project is already registered for repository path '/workspace/billing-api'",
+        )
+        .unwrap();
     }
 
     // Reopen the app against the same SQLite DB and verify persistence.

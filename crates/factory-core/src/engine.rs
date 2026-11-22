@@ -37,12 +37,7 @@ pub enum StepOutcome {
 
 /// Pluggable execution strategy for running a workflow step against a project.
 pub trait StepExecutor {
-    fn execute_step(
-        &self,
-        project: &Project,
-        run: &WorkflowRun,
-        step: &StepRun,
-    ) -> StepOutcome;
+    fn execute_step(&self, project: &Project, run: &WorkflowRun, step: &StepRun) -> StepOutcome;
 }
 
 /// Deterministic executor useful for local simulation, UI prototyping, and tests.
@@ -50,12 +45,7 @@ pub trait StepExecutor {
 pub struct DryRunExecutor;
 
 impl StepExecutor for DryRunExecutor {
-    fn execute_step(
-        &self,
-        project: &Project,
-        run: &WorkflowRun,
-        step: &StepRun,
-    ) -> StepOutcome {
+    fn execute_step(&self, project: &Project, run: &WorkflowRun, step: &StepRun) -> StepOutcome {
         match &step.kind {
             StepKind::AiAgent { model, .. } => StepOutcome::Succeeded {
                 output: format!(
@@ -64,10 +54,7 @@ impl StepExecutor for DryRunExecutor {
                 ),
             },
             StepKind::ShellCommand { command } => StepOutcome::Succeeded {
-                output: format!(
-                    "$ {command} (in {}) -> ok",
-                    project.root_path.display()
-                ),
+                output: format!("$ {command} (in {}) -> ok", project.root_path.display()),
             },
             StepKind::HumanGate { prompt } => StepOutcome::WaitingForApproval {
                 message: prompt.clone(),
@@ -110,12 +97,7 @@ impl FactoryState {
     pub fn with_projects(projects: Vec<Project>) -> Self {
         let mut state = Self::empty();
         state.seed_starter_workflows();
-        let next_id = projects
-            .iter()
-            .map(|project| project.id)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let next_id = projects.iter().map(|project| project.id).max().unwrap_or(0) + 1;
         state.projects = projects;
         state.next_project_id = next_id;
         state
@@ -145,7 +127,9 @@ impl FactoryState {
                     name: "Plan Architecture".to_owned(),
                     kind: StepKind::AiAgent {
                         model: "reasoning-agent".to_owned(),
-                        prompt_template: "Inspect the repository and draft an implementation plan for: {{task}}".to_owned(),
+                        prompt_template:
+                            "Inspect the repository and draft an implementation plan for: {{task}}"
+                                .to_owned(),
                     },
                 },
                 WorkflowStep {
@@ -153,7 +137,8 @@ impl FactoryState {
                     name: "Implement Changes".to_owned(),
                     kind: StepKind::AiAgent {
                         model: "coding-agent".to_owned(),
-                        prompt_template: "Implement the approved plan with tests for: {{task}}".to_owned(),
+                        prompt_template: "Implement the approved plan with tests for: {{task}}"
+                            .to_owned(),
                     },
                 },
                 WorkflowStep {
@@ -219,7 +204,9 @@ impl FactoryState {
                     name: "Generate Findings Report".to_owned(),
                     kind: StepKind::AiAgent {
                         model: "review-agent".to_owned(),
-                        prompt_template: "Summarize findings and prioritized recommendations for: {{task}}".to_owned(),
+                        prompt_template:
+                            "Summarize findings and prioritized recommendations for: {{task}}"
+                                .to_owned(),
                     },
                 },
             ],

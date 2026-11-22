@@ -1,0 +1,107 @@
+# https://taskfile.dev
+
+version: '3'
+
+vars:
+  MACOS_DB_DEFAULT: '{{.HOME}}/Library/Application Support/software-factory/factory.db'
+
+tasks:
+  default:
+    desc: List all available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  run:
+    desc: Run the native macOS app via Cargo
+    aliases: [dev]
+    cmds:
+      - cargo run {{.CLI_ARGS}}
+
+  run:nsh:
+    desc: Run the macOS app with Native Shell CLI (auto-rebuilds on Rust changes)
+    preconditions:
+      - sh: command -v nsh >/dev/null 2>&1
+        msg: "nsh CLI not found. Install it with: curl -fsSL https://nsh.dev/install.sh | sh"
+    cmds:
+      - nsh run --target macos {{.CLI_ARGS}}
+
+  build:
+    desc: Build all workspace crates (debug)
+    cmds:
+      - cargo build --workspace {{.CLI_ARGS}}
+
+  build:release:
+    desc: Build all workspace crates (release)
+    cmds:
+      - cargo build --workspace --release {{.CLI_ARGS}}
+
+  package:
+    desc: Package a standalone macOS .app bundle with Native Shell
+    preconditions:
+      - sh: command -v nsh >/dev/null 2>&1
+        msg: "nsh CLI not found. Install it with: curl -fsSL https://nsh.dev/install.sh | sh"
+    cmds:
+      - nsh package --target macos {{.CLI_ARGS}}
+
+  test:
+    desc: Run all unit tests and headless Native Shell UI tests
+    cmds:
+      - cargo test --workspace {{.CLI_ARGS}}
+
+  test:core:
+    desc: Run factory-core unit and SQLite storage tests
+    cmds:
+      - cargo test -p factory-core {{.CLI_ARGS}}
+
+  test:ui:
+    desc: Run factory-app headless Native Shell UI flow tests
+    cmds:
+      - cargo test -p factory-app --test app_flows {{.CLI_ARGS}}
+
+  check:
+    desc: Type-check all workspace targets without linking
+    cmds:
+      - cargo check --workspace --all-targets
+
+  fmt:
+    desc: Format all Rust code with rustfmt
+    cmds:
+      - cargo fmt --all
+
+  fmt:check:
+    desc: Check Rust formatting without modifying files
+    cmds:
+      - cargo fmt --all -- --check
+
+  lint:
+    desc: Run Clippy across all workspace targets (warnings as errors)
+    cmds:
+      - cargo clippy --workspace --all-targets -- -D warnings
+
+  ci:
+    desc: Run full verification pipeline (fmt:check, lint, test, build)
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+      - task: build
+
+  db:path:
+    desc: Print the active SQLite database path
+    silent: true
+    cmds:
+      - |
+        if [ -n "${SOFTWARE_FACTORY_DB_PATH:-}" ]; then
+          echo "$SOFTWARE_FACTORY_DB_PATH"
+        elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+          echo "$XDG_CONFIG_HOME/software-factory/factory.db"
+        else
+          echo "{{.MACOS_DB_DEFAULT}}"
+        fi
+
+  clean:
+    desc: Remove Cargo target and Native Shell .nsh build directories
+    cmds:
+      - cargo clean
+      - rm -rf .nsh
