@@ -755,7 +755,6 @@ fn sidebar() -> impl IntoElement {
         .child(
             view()
                 .pt(px(8.0))
-                .gap(px(8.0))
                 .border_t_1()
                 .border_color(palette::divider_color())
                 .child(when(
@@ -765,8 +764,7 @@ fn sidebar() -> impl IntoElement {
                 .child(when(
                     || store::active_view() != ActiveView::WorkQueue,
                     sidebar_providers_section,
-                ))
-                .child(sidebar_preferences_item()),
+                )),
         )
 }
 
@@ -934,42 +932,6 @@ fn sidebar_agent_slots_summary() -> impl IntoElement {
                 .text_size(px(11.5))
                 .tabular_nums()
                 .text_color(palette::text_muted()),
-        )
-}
-
-fn sidebar_preferences_item() -> impl IntoElement {
-    button()
-        .accessibility_label("Preferences")
-        .on_press(store::open_preferences)
-        .rounded(px(7.0))
-        .hover(|s| s.bg(palette::sidebar_hover_bg()))
-        .active(|s| s.opacity(0.85))
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .justify_between()
-                .px(px(10.0))
-                .py(px(7.0))
-                .rounded(px(7.0))
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(9.0))
-                        .child(icons::settings_gear(15.0, palette::text_secondary()))
-                        .child(
-                            text("Preferences")
-                                .text_size(px(13.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(palette::text_primary()),
-                        ),
-                )
-                .child(
-                    text("⌘,")
-                        .text_size(px(11.0))
-                        .text_color(palette::text_muted()),
-                ),
         )
 }
 

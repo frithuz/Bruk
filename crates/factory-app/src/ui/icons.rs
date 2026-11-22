@@ -81,7 +81,7 @@ pub(crate) fn alert_circle(color: impl IntoReactive<AdaptiveColor>) -> impl Into
     .text_color(color)
 }
 
-/// Gear / cog icon for Preferences General tab and sidebar Settings entry.
+/// Gear / cog icon for Preferences General tab and project settings entry.
 pub(crate) fn settings_gear(
     size_px: f32,
     color: impl IntoReactive<AdaptiveColor>,

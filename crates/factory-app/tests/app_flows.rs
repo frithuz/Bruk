@@ -217,8 +217,9 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
         let mut app = start_with_demo_db(db_path.clone());
         assert!(app.window_state("preferences").unwrap().is_none());
 
-        // Open Preferences window from the sidebar entry.
-        app.press("role:button[Preferences]").unwrap();
+        // Sidebar does not expose a Preferences button; open via the app menu shortcut (⌘,).
+        assert!(!app.screen().matches("role:button[Preferences]").unwrap());
+        app.press_key("mod+,").unwrap();
         app.wait_for("sk-or-••••••••••••81c0").unwrap();
         assert!(app.window_state("preferences").unwrap().is_some());
 
@@ -284,7 +285,7 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
     let real_db_path = real_temp.path().join("factory.db");
     {
         let mut real_app = start_with_db(real_db_path.clone());
-        real_app.press("role:button[Preferences]").unwrap();
+        real_app.press_key("mod+,").unwrap();
         real_app.wait_for("No OpenRouter keys configured").unwrap();
         assert!(!real_app.screen().shows("Acme team"));
 
@@ -313,7 +314,7 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
     }
 
     let mut reopened = start_with_db(real_db_path);
-    reopened.press("role:button[Preferences]").unwrap();
+    reopened.press_key("mod+,").unwrap();
     reopened.wait_for("CI Runner").unwrap();
     assert!(reopened.screen().shows("$350.00 · $0.00 used"));
     assert!(!reopened.screen().shows("Acme team"));
@@ -1281,8 +1282,8 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
 
     let mut app = start_with_demo_db(db_path);
 
-    // Open Preferences and navigate to the Machines tab.
-    app.press("role:button[Preferences]").unwrap();
+    // Open Preferences via shortcut (⌘,) and navigate to the Machines tab.
+    app.press_key("mod+,").unwrap();
     app.wait_for("id:prefs-tab-machines").unwrap();
     app.press("id:prefs-tab-machines").unwrap();
     app.wait_for("Ubuntu 24.04.1 LTS").unwrap();
