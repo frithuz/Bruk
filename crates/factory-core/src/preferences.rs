@@ -3,8 +3,11 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::claude_cli::{
-    ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
+use crate::{
+    claude_cli::{
+        ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
+    },
+    codex_cli::{CODEX_BINARY_NAME, CodexCliDetails, CodexCliProbe},
 };
 
 /// Top-level toolbar tabs inside the macOS Preferences window.
@@ -231,6 +234,10 @@ impl CliAccount {
             }
         } else if self.provider == ProviderKind::Claude {
             for fallback in ["Opus", "Sonnet", "Haiku"] {
+                push_unique(fallback.to_owned());
+            }
+        } else if self.provider == ProviderKind::Codex {
+            for fallback in ["Codex", "o-series"] {
                 push_unique(fallback.to_owned());
             }
         }
@@ -638,13 +645,58 @@ impl AppPreferences {
                 cli_binary: "codex".to_owned(),
                 custom_cli_path: None,
                 binary_found: true,
-                uses_system_login: false,
-                config_dir: "~/Library/Application Support/software-factory/providers/codex"
-                    .to_owned(),
+                uses_system_login: true,
+                config_dir: "~/.codex".to_owned(),
                 default_model: "gpt-5.3-codex".to_owned(),
                 hidden_model_families: Vec::new(),
-                available_models: Vec::new(),
-                usage: None,
+                available_models: vec![
+                    ClaudeModelOption {
+                        value: "gpt-6.2-sol".to_owned(),
+                        resolved_model: "gpt-6.2-sol".to_owned(),
+                        display_name: "GPT-6.2-Sol".to_owned(),
+                        description: "Fast, go-to model for coding and everyday work.".to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "gpt-6.2-astra".to_owned(),
+                        resolved_model: "gpt-6.2-astra".to_owned(),
+                        display_name: "GPT-6.2-Astra".to_owned(),
+                        description: "Most capable model for complex coding and professional work."
+                            .to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "gpt-6.1-terra".to_owned(),
+                        resolved_model: "gpt-6.1-terra".to_owned(),
+                        display_name: "GPT-6.1 Terra".to_owned(),
+                        description: "Efficient model for visual understanding and computer use."
+                            .to_owned(),
+                    },
+                    ClaudeModelOption {
+                        value: "gpt-6-luna".to_owned(),
+                        resolved_model: "gpt-6-luna".to_owned(),
+                        display_name: "GPT-6-Luna".to_owned(),
+                        description: "Fast and affordable model for easier tasks.".to_owned(),
+                    },
+                ],
+                usage: Some(ClaudeUsageSummary {
+                    rate_limits_available: true,
+                    windows: vec![
+                        ClaudeUsageWindow {
+                            label: "Current session (5h)".to_owned(),
+                            used_percent: 12,
+                            remaining_percent: 88,
+                            resets_at: Some("2026-11-23T01:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                        ClaudeUsageWindow {
+                            label: "Weekly (all models)".to_owned(),
+                            used_percent: 6,
+                            remaining_percent: 94,
+                            resets_at: Some("2026-11-29T00:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                    ],
+                    extra_usage_note: None,
+                }),
                 usage_warning: None,
                 test_state: ConnectionTestState::Works,
                 used_by_projects: vec!["api-gateway".to_owned(), "mobile-app".to_owned()],
@@ -740,10 +792,17 @@ impl AppPreferences {
         default_model: &str,
     ) -> Result<String, PreferencesError> {
         let binary = cli_binary.trim();
-        let cli_binary = if binary.is_empty() {
+        let is_default_binary =
+            binary.is_empty() || binary == "codex" || binary == CODEX_BINARY_NAME;
+        let cli_binary = if is_default_binary {
             "codex".to_owned()
         } else {
             binary.to_owned()
+        };
+        let custom_cli_path = if is_default_binary {
+            None
+        } else {
+            Some(binary.to_owned())
         };
         let model = default_model.trim();
         let default_model = if model.is_empty() {
@@ -760,10 +819,10 @@ impl AppPreferences {
             plan: String::new(),
             connected: false,
             cli_binary,
-            custom_cli_path: None,
-            binary_found: true,
-            uses_system_login: false,
-            config_dir: "~/Library/Application Support/software-factory/providers/codex".to_owned(),
+            custom_cli_path,
+            binary_found: false,
+            uses_system_login: true,
+            config_dir: "~/.codex".to_owned(),
             default_model,
             hidden_model_families: Vec::new(),
             available_models: Vec::new(),
@@ -1101,22 +1160,118 @@ impl AppPreferences {
     ///
     /// Returns `true` if the family is now visible (checked), or `false` if hidden (unchecked).
     pub fn toggle_claude_model_family(&mut self, family: &str) -> bool {
-        let trimmed = family.trim();
-        if trimmed.is_empty() {
+        toggle_account_model_family(&mut self.claude, family)
+    }
+
+    /// Sets or clears the optional custom binary path override for the Codex CLI.
+    ///
+    /// Empty or whitespace-only input clears the override and reverts to default `PATH` lookup.
+    pub fn set_codex_custom_path(&mut self, custom_path: Option<&str>) {
+        let Some(codex) = &mut self.codex else {
+            return;
+        };
+        let normalized = custom_path
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        codex.custom_cli_path = normalized;
+    }
+
+    /// Applies the outcome of probing the local `codex` CLI onto `self.codex` (if registered).
+    pub fn apply_codex_probe(&mut self, probe: &CodexCliProbe, explicit_test: bool) {
+        let Some(codex) = &mut self.codex else {
+            return;
+        };
+        codex.uses_system_login = true;
+        match probe {
+            CodexCliProbe::Authenticated {
+                binary_path,
+                email,
+                plan,
+                config_dir,
+                ..
+            } => {
+                codex.binary_found = true;
+                codex.connected = true;
+                codex.cli_binary = binary_path.display().to_string();
+                codex.email = email.clone();
+                codex.plan = plan.clone();
+                codex.config_dir = config_dir.clone();
+                codex.test_state = ConnectionTestState::Works;
+            }
+            CodexCliProbe::NotAuthenticated {
+                binary_path,
+                config_dir,
+            } => {
+                codex.binary_found = true;
+                codex.connected = false;
+                codex.cli_binary = binary_path.display().to_string();
+                codex.email.clear();
+                codex.plan.clear();
+                codex.available_models.clear();
+                codex.usage = None;
+                codex.usage_warning = None;
+                codex.config_dir = config_dir.clone();
+                codex.test_state = if explicit_test {
+                    ConnectionTestState::Failed("Sign in to the Codex CLI first".to_owned())
+                } else {
+                    ConnectionTestState::Untested
+                };
+            }
+            CodexCliProbe::BinaryNotFound { error } => {
+                codex.binary_found = false;
+                codex.connected = false;
+                codex.cli_binary = codex
+                    .custom_cli_path
+                    .clone()
+                    .unwrap_or_else(|| "codex".to_owned());
+                codex.email.clear();
+                codex.plan.clear();
+                codex.available_models.clear();
+                codex.usage = None;
+                codex.usage_warning = None;
+                codex.config_dir = "~/.codex".to_owned();
+                codex.test_state = ConnectionTestState::Failed(error.short_status());
+            }
+            CodexCliProbe::ProbeFailed {
+                binary_path,
+                message,
+            } => {
+                codex.binary_found = true;
+                codex.connected = false;
+                codex.cli_binary = binary_path.display().to_string();
+                codex.email.clear();
+                codex.plan.clear();
+                codex.available_models.clear();
+                codex.usage = None;
+                codex.usage_warning = None;
+                codex.test_state = ConnectionTestState::Failed(message.clone());
+            }
+        }
+    }
+
+    /// Applies live model options and usage limits fetched from the Codex CLI.
+    pub fn apply_codex_details(&mut self, details: CodexCliDetails) {
+        let Some(codex) = &mut self.codex else {
+            return;
+        };
+        if !details.models.is_empty() {
+            codex.available_models = details.models;
+        }
+        if details.usage.is_some() {
+            codex.usage = details.usage;
+        }
+        codex.usage_warning = details.warning;
+    }
+
+    /// Toggles visibility of a Codex model family (e.g. `"Luna"`) in the model selection view.
+    ///
+    /// Returns `true` if the family is now visible (checked), or `false` if hidden (unchecked).
+    pub fn toggle_codex_model_family(&mut self, family: &str) -> bool {
+        let Some(codex) = &mut self.codex else {
             return true;
-        }
-        if let Some(idx) = self
-            .claude
-            .hidden_model_families
-            .iter()
-            .position(|existing| existing.eq_ignore_ascii_case(trimmed))
-        {
-            self.claude.hidden_model_families.remove(idx);
-            true
-        } else {
-            self.claude.hidden_model_families.push(trimmed.to_owned());
-            false
-        }
+        };
+        toggle_account_model_family(codex, family)
     }
 
     /// Toggles an extension entry by id.
@@ -1124,6 +1279,24 @@ impl AppPreferences {
         if let Some(entry) = self.extensions.entries.iter_mut().find(|e| e.id == id) {
             entry.enabled = !entry.enabled;
         }
+    }
+}
+
+fn toggle_account_model_family(account: &mut CliAccount, family: &str) -> bool {
+    let trimmed = family.trim();
+    if trimmed.is_empty() {
+        return true;
+    }
+    if let Some(idx) = account
+        .hidden_model_families
+        .iter()
+        .position(|existing| existing.eq_ignore_ascii_case(trimmed))
+    {
+        account.hidden_model_families.remove(idx);
+        true
+    } else {
+        account.hidden_model_families.push(trimmed.to_owned());
+        false
     }
 }
 
@@ -1433,5 +1606,93 @@ mod tests {
         assert_eq!(next, "claude");
         assert!(prefs.codex.is_none());
         assert!(prefs.cli_account("codex").is_none());
+    }
+
+    #[test]
+    fn codex_probe_and_model_family_filter_update_account_state() {
+        use std::path::PathBuf;
+
+        use crate::codex_cli::CodexBinaryError;
+
+        let mut prefs = AppPreferences::empty();
+        prefs.add_codex_account("", "").unwrap();
+        prefs.apply_codex_probe(
+            &CodexCliProbe::Authenticated {
+                binary_path: PathBuf::from("/Users/dev/.local/bin/codex"),
+                email: "dev@example.com".to_owned(),
+                plan: "Pro Lite".to_owned(),
+                auth_method: "chatgpt".to_owned(),
+                config_dir: "/Users/dev/.codex".to_owned(),
+            },
+            false,
+        );
+        let codex = prefs.codex.as_ref().unwrap();
+        assert!(codex.connected);
+        assert!(codex.binary_found);
+        assert!(codex.uses_system_login);
+        assert_eq!(codex.list_subtitle(), "dev@example.com · Pro Lite");
+        assert_eq!(codex.test_state, ConnectionTestState::Works);
+
+        prefs.apply_codex_details(CodexCliDetails {
+            models: vec![
+                ClaudeModelOption {
+                    value: "gpt-6.2-sol".to_owned(),
+                    resolved_model: "gpt-6.2-sol".to_owned(),
+                    display_name: "GPT-6.2-Sol".to_owned(),
+                    description: "Fast go-to".to_owned(),
+                },
+                ClaudeModelOption {
+                    value: "gpt-6-luna".to_owned(),
+                    resolved_model: "gpt-6-luna".to_owned(),
+                    display_name: "GPT-6-Luna".to_owned(),
+                    description: "Affordable".to_owned(),
+                },
+            ],
+            usage: Some(ClaudeUsageSummary {
+                rate_limits_available: true,
+                windows: vec![ClaudeUsageWindow {
+                    label: "Weekly (all models)".to_owned(),
+                    used_percent: 10,
+                    remaining_percent: 90,
+                    resets_at: Some("2026-11-29T00:00:00+00:00".to_owned()),
+                    severity: "normal".to_owned(),
+                }],
+                extra_usage_note: None,
+            }),
+            warning: None,
+        });
+
+        let codex = prefs.codex.as_ref().unwrap();
+        assert_eq!(codex.available_model_families(), vec!["Sol", "Luna"]);
+        assert_eq!(codex.visible_available_models().len(), 2);
+
+        assert!(!prefs.toggle_codex_model_family("Luna"));
+        let visible = prefs.codex.as_ref().unwrap().visible_available_models();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].value, "gpt-6.2-sol");
+
+        assert!(prefs.toggle_codex_model_family("luna"));
+        assert_eq!(
+            prefs
+                .codex
+                .as_ref()
+                .unwrap()
+                .visible_available_models()
+                .len(),
+            2
+        );
+
+        prefs.set_codex_custom_path(Some("/opt/codex/bin/codex"));
+        prefs.apply_codex_probe(
+            &CodexCliProbe::BinaryNotFound {
+                error: CodexBinaryError::CustomPathNotFound(PathBuf::from("/opt/codex/bin/codex")),
+            },
+            false,
+        );
+        let codex = prefs.codex.as_ref().unwrap();
+        assert!(!codex.binary_found);
+        assert!(!codex.connected);
+        assert!(codex.available_models.is_empty());
+        assert!(codex.usage.is_none());
     }
 }

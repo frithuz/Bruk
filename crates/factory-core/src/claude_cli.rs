@@ -107,11 +107,15 @@ impl ClaudeModelOption {
 }
 
 /// Extracts a normalized model family name from a model identifier or alias
-/// (e.g. `"claude-fable-5-2"` -> `"Fable"`, `"opus"` -> `"Opus"`).
+/// (e.g. `"claude-fable-5-2"` -> `"Fable"`, `"opus"` -> `"Opus"`,
+/// `"gpt-6.2-sol"` -> `"Sol"`, `"gpt-5.3-codex"` -> `"Codex"`, `"o4-mini"` -> `"o-series"`).
 pub fn model_family_from_id(id: &str) -> Option<String> {
     let trimmed = id.trim();
     if trimmed.is_empty() {
         return None;
+    }
+    if let Some(family) = codex_model_family_from_text(trimmed) {
+        return Some(family);
     }
     let without_prefix = trimmed
         .strip_prefix("claude-")
@@ -130,7 +134,14 @@ pub fn model_family_from_id(id: &str) -> Option<String> {
 }
 
 fn model_family_from_display_name(display_name: &str) -> Option<String> {
-    for word in display_name.split_whitespace() {
+    let trimmed = display_name.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(family) = codex_model_family_from_text(trimmed) {
+        return Some(family);
+    }
+    for word in trimmed.split_whitespace() {
         let cleaned = word.trim_matches(|c: char| !c.is_ascii_alphabetic());
         if cleaned.is_empty()
             || cleaned.eq_ignore_ascii_case("claude")
@@ -140,6 +151,51 @@ fn model_family_from_display_name(display_name: &str) -> Option<String> {
         }
         return Some(title_case_word(cleaned));
     }
+    None
+}
+
+/// Extracts a normalized family name from OpenAI/Codex model identifiers or display names
+/// (e.g. `"GPT-6.2-Sol"` -> `"Sol"`, `"GPT-6.1 Terra"` -> `"Terra"`,
+/// `"gpt-5.3-codex"` -> `"Codex"`, `"GPT-5.5"` -> `"GPT"`, `"o4-mini"` -> `"o-series"`).
+fn codex_model_family_from_text(text: &str) -> Option<String> {
+    let tokens: Vec<&str> = text
+        .split(['-', '_', ' ', '/'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let first = *tokens.first()?;
+
+    let after_provider: &[&str] = if first.eq_ignore_ascii_case("openai") {
+        &tokens[1..]
+    } else {
+        &tokens[..]
+    };
+    let head = *after_provider.first()?;
+
+    if head.eq_ignore_ascii_case("gpt") {
+        for token in &after_provider[1..] {
+            if token.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                continue;
+            }
+            if token.chars().all(|c| c.is_ascii_alphabetic()) {
+                return Some(title_case_word(token));
+            }
+        }
+        return Some("GPT".to_owned());
+    }
+
+    if head.eq_ignore_ascii_case("codex") {
+        return Some("Codex".to_owned());
+    }
+
+    let mut head_chars = head.chars();
+    if matches!(head_chars.next(), Some('o' | 'O')) {
+        let rest = head_chars.as_str();
+        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+            return Some("o-series".to_owned());
+        }
+    }
+
     None
 }
 
@@ -732,7 +788,7 @@ fn normalize_model_options(raw_models: Vec<RawClaudeModel>) -> Vec<ClaudeModelOp
     out
 }
 
-fn clamp_percent(raw: f64) -> u8 {
+pub(crate) fn clamp_percent(raw: f64) -> u8 {
     if !raw.is_finite() {
         return 0;
     }
@@ -860,7 +916,7 @@ fn format_limit_entry_label(entry: &RawLimitEntry) -> String {
     }
 }
 
-fn default_severity_for_used(used: u8) -> &'static str {
+pub(crate) fn default_severity_for_used(used: u8) -> &'static str {
     if used >= 90 {
         "critical"
     } else if used >= 75 {
@@ -1105,7 +1161,7 @@ fn validate_executable_file(path: PathBuf) -> Result<PathBuf, ClaudeBinaryError>
     Ok(path)
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(crate) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = fs::metadata(path) else {
         return false;
     };
@@ -1113,13 +1169,13 @@ fn is_executable_file(path: &Path) -> bool {
 }
 
 #[cfg(unix)]
-fn metadata_is_executable(metadata: &fs::Metadata) -> bool {
+pub(crate) fn metadata_is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn metadata_is_executable(_metadata: &fs::Metadata) -> bool {
+pub(crate) fn metadata_is_executable(_metadata: &fs::Metadata) -> bool {
     true
 }
 

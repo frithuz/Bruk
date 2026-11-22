@@ -256,7 +256,7 @@ fn providers_tab() -> impl IntoElement {
             )
             .child(
                 text(
-                    "Claude uses your existing system CLI login on PATH (or a custom binary path if it is installed elsewhere). Codex runs through its CLI with an isolated configuration folder. OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
+                    "Claude and Codex use your existing system CLI logins on PATH (or a custom binary path if installed elsewhere). OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
                 )
                 .text_size(px(12.0))
                 .text_color(palette::text_muted()),
@@ -841,7 +841,7 @@ fn add_codex_account_card(
                         )
                         .child(
                             text(
-                                "Runs through the Codex CLI with an isolated configuration folder",
+                                "Uses your existing system Codex CLI login on PATH (or a custom binary path)",
                             )
                             .text_size(px(12.0))
                             .text_color(palette::text_muted()),
@@ -1306,10 +1306,15 @@ fn cli_account_detail_pane(
     draft_cli_path: Signal<String>,
     draft_model: Signal<String>,
 ) -> impl IntoElement {
-    let is_claude = account.provider == ProviderKind::Claude;
-    let account_id = account.id.clone();
+    let provider = account.provider;
+    let is_claude = provider == ProviderKind::Claude;
+    let is_codex = provider == ProviderKind::Codex;
+    let provider_slug = match provider {
+        ProviderKind::Claude => "claude",
+        ProviderKind::Codex => "codex",
+        ProviderKind::OpenRouter => "openrouter",
+    };
     let account_id_model = account.id.clone();
-    let account_id_toggle = account.id.clone();
     let account_id_remove = account.id.clone();
     let account_id_path = account.id.clone();
     let account_id_path_cta = account.id.clone();
@@ -1346,7 +1351,7 @@ fn cli_account_detail_pane(
     let usage_summary = account.usage.clone();
     let usage_warning = account.usage_warning.clone();
 
-    let model_presets: Vec<&'static str> = match account.provider {
+    let model_presets: Vec<&'static str> = match provider {
         ProviderKind::Claude => ["claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5"]
             .into_iter()
             .filter(|id| {
@@ -1355,7 +1360,14 @@ fn cli_account_detail_pane(
                     .unwrap_or(true)
             })
             .collect(),
-        ProviderKind::Codex => vec!["gpt-5.3-codex", "gpt-5.2-codex", "o4-mini"],
+        ProviderKind::Codex => ["gpt-5.3-codex", "gpt-5.2-codex", "o4-mini"]
+            .into_iter()
+            .filter(|id| {
+                model_family_from_id(id)
+                    .map(|family| account.is_model_family_visible(&family))
+                    .unwrap_or(true)
+            })
+            .collect(),
         ProviderKind::OpenRouter => vec!["openrouter/auto"],
     };
 
@@ -1383,7 +1395,7 @@ fn cli_account_detail_pane(
         "—".to_owned()
     };
 
-    let cli_binary_row: AnyElement = if is_claude {
+    let cli_binary_row: AnyElement = {
         let binary_text = if binary_found {
             account.cli_binary.clone()
         } else if let Some(custom) = &account.custom_cli_path {
@@ -1403,6 +1415,7 @@ fn cli_account_detail_pane(
         } else {
             "Set Path..."
         };
+        let path_edit_test_id = format!("prefs-{provider_slug}-path-edit");
 
         view()
             .gap(px(8.0))
@@ -1462,7 +1475,7 @@ fn cli_account_detail_pane(
                     )
                     .child(
                         button()
-                            .test_id("prefs-claude-path-edit")
+                            .test_id(&path_edit_test_id)
                             .on_press(move || {
                                 add_menu_open.set(false);
                                 store::clear_preferences_messages();
@@ -1489,172 +1502,123 @@ fn cli_account_detail_pane(
             )
             .child(when(
                 move || is_editing_cli_path,
-                move || claude_cli_path_editor(draft_cli_path, has_custom_path, active_editor),
+                move || {
+                    cli_path_editor(provider, draft_cli_path, has_custom_path, active_editor)
+                },
             ))
             .into_element()
-    } else {
-        static_row("CLI binary", account.cli_binary.clone(), true).into_element()
     };
 
-    let bottom_actions: AnyElement = if is_claude {
+    let remove_codex_button = move || {
+        let remove_id = account_id_remove.clone();
+        button()
+            .test_id("prefs-codex-remove")
+            .on_press(move || {
+                add_menu_open.set(false);
+                store::clear_preferences_messages();
+                active_editor.set(Some(ProviderEditor::ConfirmRemove(remove_id.clone())));
+            })
+            .px(px(12.0))
+            .py(px(6.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(palette::border_color())
+            .bg(palette::control_bg())
+            .hover(|s| s.bg(palette::subtle_surface_bg()))
+            .active(|s| s.opacity(0.8))
+            .child(
+                text("Remove...")
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette::destructive_text()),
+            )
+    };
+
+    let bottom_actions: AnyElement = {
+        let mut row = view().flex_row().items_center().gap(px(8.0));
         if connected {
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    text(if uses_system_login {
-                        "Using your existing system Claude CLI login."
-                    } else {
-                        "Signed in to Claude CLI."
-                    })
+            let status_copy = if uses_system_login {
+                format!("Using your existing system {} CLI login.", provider.label())
+            } else {
+                format!("Signed in to {} CLI.", provider.label())
+            };
+            row = row.child(
+                text(status_copy)
                     .text_size(px(12.0))
                     .text_color(palette::text_muted()),
-                )
-                .into_element()
+            );
         } else if binary_found {
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    button()
-                        .test_id("prefs-claude-sign-in")
-                        .disabled(store::claude_sign_in_in_progress)
-                        .on_press(store::sign_in_claude)
-                        .px(px(12.0))
-                        .py(px(6.0))
-                        .rounded(px(7.0))
-                        .bg(palette::nav_active_bg())
-                        .active(|s| s.opacity(0.8))
-                        .disabled_style(|s| s.opacity(0.5))
-                        .child(
-                            text(move || {
-                                if store::claude_sign_in_in_progress() {
-                                    "Signing in...".to_owned()
-                                } else {
-                                    "Sign In".to_owned()
-                                }
-                            })
+            let sign_in_test_id = format!("prefs-{provider_slug}-sign-in");
+            let sign_in_busy = move || {
+                if is_claude {
+                    store::claude_sign_in_in_progress()
+                } else {
+                    store::codex_sign_in_in_progress()
+                }
+            };
+            row = row.child(
+                button()
+                    .test_id(&sign_in_test_id)
+                    .disabled(sign_in_busy)
+                    .on_press(move || {
+                        if is_claude {
+                            store::sign_in_claude();
+                        } else {
+                            store::sign_in_codex();
+                        }
+                    })
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .bg(palette::nav_active_bg())
+                    .active(|s| s.opacity(0.8))
+                    .disabled_style(|s| s.opacity(0.5))
+                    .child(
+                        text(move || {
+                            if sign_in_busy() {
+                                "Signing in...".to_owned()
+                            } else {
+                                "Sign In".to_owned()
+                            }
+                        })
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::nav_active_fg()),
+                    ),
+            );
+        } else {
+            let set_path_test_id = format!("prefs-{provider_slug}-set-path-cta");
+            let set_path_label = format!("Set {} Path...", provider.label());
+            row = row.child(
+                button()
+                    .test_id(&set_path_test_id)
+                    .on_press(move || {
+                        add_menu_open.set(false);
+                        store::clear_preferences_messages();
+                        draft_cli_path.set(current_custom_path_cta.clone());
+                        active_editor.set(Some(ProviderEditor::EditCliPath(
+                            account_id_path_cta.clone(),
+                        )));
+                    })
+                    .px(px(12.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .bg(palette::nav_active_bg())
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text(set_path_label)
                             .text_size(px(12.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(palette::nav_active_fg()),
-                        ),
-                )
-                .into_element()
-        } else {
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(8.0))
-                .child(
-                    button()
-                        .test_id("prefs-claude-set-path-cta")
-                        .on_press(move || {
-                            add_menu_open.set(false);
-                            store::clear_preferences_messages();
-                            draft_cli_path.set(current_custom_path_cta.clone());
-                            active_editor.set(Some(ProviderEditor::EditCliPath(
-                                account_id_path_cta.clone(),
-                            )));
-                        })
-                        .px(px(12.0))
-                        .py(px(6.0))
-                        .rounded(px(7.0))
-                        .bg(palette::nav_active_bg())
-                        .active(|s| s.opacity(0.8))
-                        .child(
-                            text("Set Claude Path...")
-                                .text_size(px(12.5))
-                                .font_weight(FontWeight::SEMIBOLD)
-                                .text_color(palette::nav_active_fg()),
-                        ),
-                )
-                .into_element()
+                    ),
+            );
         }
-    } else if connected {
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .child(
-                button()
-                    .on_press(move || store::set_cli_account_connected(&account_id_toggle, false))
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(7.0))
-                    .border_1()
-                    .border_color(palette::border_color())
-                    .bg(palette::control_bg())
-                    .hover(|s| s.bg(palette::subtle_surface_bg()))
-                    .active(|s| s.opacity(0.8))
-                    .child(
-                        text("Sign Out")
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(palette::destructive_text()),
-                    ),
-            )
-            .child(
-                button()
-                    .test_id("prefs-codex-remove")
-                    .on_press(move || {
-                        add_menu_open.set(false);
-                        store::clear_preferences_messages();
-                        active_editor.set(Some(ProviderEditor::ConfirmRemove(
-                            account_id_remove.clone(),
-                        )));
-                    })
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(7.0))
-                    .border_1()
-                    .border_color(palette::border_color())
-                    .bg(palette::control_bg())
-                    .hover(|s| s.bg(palette::subtle_surface_bg()))
-                    .active(|s| s.opacity(0.8))
-                    .child(
-                        text("Remove...")
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(palette::destructive_text()),
-                    ),
-            )
-            .into_element()
-    } else {
-        view()
-            .flex_row()
-            .items_center()
-            .gap(px(8.0))
-            .child(primary_button("Sign In", move || {
-                store::set_cli_account_connected(&account_id, true)
-            }))
-            .child(
-                button()
-                    .test_id("prefs-codex-remove")
-                    .on_press(move || {
-                        add_menu_open.set(false);
-                        store::clear_preferences_messages();
-                        active_editor.set(Some(ProviderEditor::ConfirmRemove(
-                            account_id_remove.clone(),
-                        )));
-                    })
-                    .px(px(12.0))
-                    .py(px(6.0))
-                    .rounded(px(7.0))
-                    .border_1()
-                    .border_color(palette::border_color())
-                    .bg(palette::control_bg())
-                    .hover(|s| s.bg(palette::subtle_surface_bg()))
-                    .active(|s| s.opacity(0.8))
-                    .child(
-                        text("Remove...")
-                            .text_size(px(12.5))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(palette::destructive_text()),
-                    ),
-            )
-            .into_element()
+
+        if is_codex {
+            row = row.child(remove_codex_button());
+        }
+
+        row.into_element()
     };
 
     view()
@@ -1682,13 +1646,14 @@ fn cli_account_detail_pane(
                 )),
         )
         .child(when(
-            move || is_claude && connected,
+            move || connected,
             move || {
-                claude_usage_card(
-                    usage_summary.clone(),
-                    usage_warning.clone(),
-                    store::claude_details_loading(),
-                )
+                let loading = if is_claude {
+                    store::claude_details_loading()
+                } else {
+                    store::codex_details_loading()
+                };
+                cli_usage_card(provider, usage_summary.clone(), usage_warning.clone(), loading)
             },
         ))
         .child(
@@ -1749,8 +1714,9 @@ fn cli_account_detail_pane(
                         .child(when(
                             move || is_changing_model,
                             move || {
-                                if is_claude && total_available_models > 0 {
-                                    claude_dynamic_model_picker(
+                                if total_available_models > 0 {
+                                    cli_dynamic_model_picker(
+                                        provider,
                                         draft_model,
                                         visible_models.clone(),
                                         total_available_models,
@@ -1766,11 +1732,11 @@ fn cli_account_detail_pane(
                         )),
                 )
                 .child(when(
-                    move || is_claude && has_model_families,
+                    move || has_model_families,
                     move || {
                         view()
                             .child(card_divider())
-                            .child(claude_model_family_filter_row(model_families.clone()))
+                            .child(cli_model_family_filter_row(provider, model_families.clone()))
                     },
                 )),
         )
@@ -1782,7 +1748,7 @@ fn cli_account_detail_pane(
         .child(preferences_error_banner())
         .child(bottom_actions)
         .child(when(
-            move || !is_claude && is_confirming_remove,
+            move || is_codex && is_confirming_remove,
             move || {
                 view()
                     .flex_row()
@@ -1832,11 +1798,18 @@ fn cli_account_detail_pane(
         .child(preferences_feedback_caption())
 }
 
-fn claude_usage_card(
+fn cli_usage_card(
+    provider: ProviderKind,
     usage: Option<ClaudeUsageSummary>,
     warning: Option<String>,
     loading: bool,
 ) -> impl IntoElement {
+    let is_claude = provider == ProviderKind::Claude;
+    let refresh_test_id = if is_claude {
+        "prefs-claude-usage-refresh"
+    } else {
+        "prefs-codex-usage-refresh"
+    };
     let mut card = view()
         .rounded(px(10.0))
         .border_1()
@@ -1857,9 +1830,15 @@ fn claude_usage_card(
                 )
                 .child(
                     button()
-                        .test_id("prefs-claude-usage-refresh")
+                        .test_id(refresh_test_id)
                         .disabled(loading)
-                        .on_press(store::refresh_claude_details_async)
+                        .on_press(move || {
+                            if is_claude {
+                                store::refresh_claude_details_async();
+                            } else {
+                                store::refresh_codex_details_async();
+                            }
+                        })
                         .px(px(9.0))
                         .py(px(3.5))
                         .rounded(px(6.0))
@@ -1883,13 +1862,13 @@ fn claude_usage_card(
             for window in &summary.windows {
                 card = card
                     .child(card_divider())
-                    .child(claude_usage_window_row(window));
+                    .child(cli_usage_window_row(window));
             }
             let resets = summary.upcoming_resets();
             if !resets.is_empty() {
                 card = card
                     .child(card_divider())
-                    .child(claude_quota_resets_section(&resets));
+                    .child(cli_quota_resets_section(&resets));
             }
             if let Some(extra) = summary.extra_usage_note {
                 card = card.child(card_divider()).child(
@@ -1913,9 +1892,12 @@ fn claude_usage_card(
         None if loading => {
             card = card.child(card_divider()).child(
                 view().px(px(16.0)).py(px(11.0)).child(
-                    text("Checking remaining usage from Claude CLI...")
-                        .text_size(px(12.0))
-                        .text_color(palette::text_muted()),
+                    text(format!(
+                        "Checking remaining usage from {} CLI...",
+                        provider.label()
+                    ))
+                    .text_size(px(12.0))
+                    .text_color(palette::text_muted()),
                 ),
             );
         }
@@ -1936,7 +1918,7 @@ fn claude_usage_card(
     card
 }
 
-fn claude_usage_window_row(window: &ClaudeUsageWindow) -> impl IntoElement {
+fn cli_usage_window_row(window: &ClaudeUsageWindow) -> impl IntoElement {
     let remaining_fraction = (window.remaining_percent as f32 / 100.0).clamp(0.0, 1.0);
     let tone_color = if window.remaining_percent <= 10 || window.severity == "critical" {
         palette::destructive_text()
@@ -2000,7 +1982,7 @@ fn claude_usage_window_row(window: &ClaudeUsageWindow) -> impl IntoElement {
         )
 }
 
-fn claude_quota_resets_section(resets: &[ClaudeQuotaReset]) -> impl IntoElement {
+fn cli_quota_resets_section(resets: &[ClaudeQuotaReset]) -> impl IntoElement {
     let mut rows = view().gap(px(5.0));
     for item in resets {
         let formatted =
@@ -2038,17 +2020,28 @@ fn claude_quota_resets_section(resets: &[ClaudeQuotaReset]) -> impl IntoElement 
         .child(rows)
 }
 
-fn claude_model_family_filter_row(families: Vec<(String, bool)>) -> impl IntoElement {
+fn cli_model_family_filter_row(
+    provider: ProviderKind,
+    families: Vec<(String, bool)>,
+) -> impl IntoElement {
+    let is_claude = provider == ProviderKind::Claude;
+    let provider_slug = if is_claude { "claude" } else { "codex" };
     let mut checkboxes = view().flex_row().flex_wrap().gap(px(8.0));
     for (family, checked) in families {
         let family_for_press = family.clone();
-        let test_id = format!("prefs-claude-family-{}", family.to_ascii_lowercase());
+        let test_id = format!("prefs-{provider_slug}-family-{}", family.to_ascii_lowercase());
         let label_for_a11y = format!("{family} model family");
         checkboxes = checkboxes.child(
             button()
                 .test_id(&test_id)
                 .accessibility_label(label_for_a11y)
-                .on_press(move || store::toggle_claude_model_family(&family_for_press))
+                .on_press(move || {
+                    if is_claude {
+                        store::toggle_claude_model_family(&family_for_press);
+                    } else {
+                        store::toggle_codex_model_family(&family_for_press);
+                    }
+                })
                 .px(px(9.0))
                 .py(px(5.0))
                 .rounded(px(7.0))
@@ -2129,19 +2122,26 @@ fn claude_model_family_filter_row(families: Vec<(String, bool)>) -> impl IntoEle
         .child(checkboxes)
 }
 
-fn claude_dynamic_model_picker(
+fn cli_dynamic_model_picker(
+    provider: ProviderKind,
     draft_model: Signal<String>,
     models: Vec<ClaudeModelOption>,
     total_count: usize,
     hidden_families: Vec<String>,
     active_editor: Signal<Option<ProviderEditor>>,
 ) -> impl IntoElement {
+    let provider_label = provider.label();
+    let provider_slug = if provider == ProviderKind::Claude {
+        "claude"
+    } else {
+        "codex"
+    };
     let visible_count = models.len();
     let caption = if hidden_families.is_empty() {
-        format!("Available from Claude CLI ({total_count} models)")
+        format!("Available from {provider_label} CLI ({total_count} models)")
     } else {
         format!(
-            "Showing {visible_count} of {total_count} models from Claude CLI ({} hidden)",
+            "Showing {visible_count} of {total_count} models from {provider_label} CLI ({} hidden)",
             hidden_families.join(", ")
         )
     };
@@ -2165,7 +2165,7 @@ fn claude_dynamic_model_picker(
         };
         let description = option.description.clone();
         let has_description = !description.is_empty();
-        let test_id = format!("prefs-claude-model-{}", option.value);
+        let test_id = format!("prefs-{provider_slug}-model-{}", option.value);
 
         list = list.child(
             button()
@@ -2254,13 +2254,32 @@ fn claude_dynamic_model_picker(
         ))
 }
 
-fn claude_cli_path_editor(
+fn cli_path_editor(
+    provider: ProviderKind,
     draft_path: Signal<String>,
     has_custom_path: bool,
     active_editor: Signal<Option<ProviderEditor>>,
 ) -> impl IntoElement {
+    let is_claude = provider == ProviderKind::Claude;
+    let provider_slug = if is_claude { "claude" } else { "codex" };
+    let bin_name = if is_claude { "claude" } else { "codex" };
+    let dialog_title = format!("Select {} CLI Binary", provider.label());
+    let helper_copy = format!(
+        "Leave blank to auto-detect '{bin_name}' on the default PATH, or enter the full path to the executable."
+    );
+    let placeholder = format!("/usr/local/bin/{bin_name} or ~/.local/bin/{bin_name}");
+    let input_test_id = format!("prefs-{provider_slug}-path-input");
+    let browse_test_id = format!("prefs-{provider_slug}-path-browse");
+    let reset_test_id = format!("prefs-{provider_slug}-path-reset");
+    let save_test_id = format!("prefs-{provider_slug}-path-save");
+
     let save_path = move || {
-        if store::update_claude_cli_path(&draft_path.get_untracked()) {
+        let ok = if is_claude {
+            store::update_claude_cli_path(&draft_path.get_untracked())
+        } else {
+            store::update_codex_cli_path(&draft_path.get_untracked())
+        };
+        if ok {
             active_editor.set(None);
         }
     };
@@ -2269,7 +2288,7 @@ fn claude_cli_path_editor(
     let browse_binary = move || {
         let answer = pick_paths(
             OpenDialog::files()
-                .title("Select Claude CLI Binary")
+                .title(dialog_title.clone())
                 .button_label("Select"),
         );
         Owner::detached().run(|| {
@@ -2287,7 +2306,7 @@ fn claude_cli_path_editor(
         .pt(px(4.0))
         .gap(px(8.0))
         .child(
-            text("Leave blank to auto-detect 'claude' on the default PATH, or enter the full path to the executable.")
+            text(helper_copy)
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
         )
@@ -2298,11 +2317,11 @@ fn claude_cli_path_editor(
                 .gap(px(8.0))
                 .child(
                     input()
-                        .test_id("prefs-claude-path-input")
+                        .test_id(&input_test_id)
                         .value(move || draft_path.get())
                         .on_change(move |v: &str| draft_path.set(v.to_owned()))
                         .on_submit(move |_: &str| on_submit())
-                        .placeholder("/usr/local/bin/claude or ~/.local/bin/claude")
+                        .placeholder(placeholder)
                         .app_class("font-mono")
                         .flex_1()
                         .px(px(10.0))
@@ -2315,7 +2334,7 @@ fn claude_cli_path_editor(
                 )
                 .child(
                     button()
-                        .test_id("prefs-claude-path-browse")
+                        .test_id(&browse_test_id)
                         .on_press(browse_binary)
                         .px(px(12.0))
                         .py(px(5.5))
@@ -2343,9 +2362,13 @@ fn claude_cli_path_editor(
                     move || has_custom_path,
                     move || {
                         button()
-                            .test_id("prefs-claude-path-reset")
+                            .test_id(&reset_test_id)
                             .on_press(move || {
-                                store::reset_claude_cli_path();
+                                if is_claude {
+                                    store::reset_claude_cli_path();
+                                } else {
+                                    store::reset_codex_cli_path();
+                                }
                                 active_editor.set(None);
                             })
                             .px(px(10.0))
@@ -2375,7 +2398,7 @@ fn claude_cli_path_editor(
                         }))
                         .child(
                             button()
-                                .test_id("prefs-claude-path-save")
+                                .test_id(&save_test_id)
                                 .on_press(save_path)
                                 .px(px(12.0))
                                 .py(px(6.0))

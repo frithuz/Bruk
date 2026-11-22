@@ -12,17 +12,18 @@ use std::{
 
 use factory_core::{
     AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, CoreUpdatePolicy, DashboardDataset,
-    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry,
-    DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, InboxFilter,
-    InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
-    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
-    RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
-    Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
-    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort, fetch_claude_details, probe_claude_cli,
-    resolve_claude_binary, run_claude_auth_login,
+    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, CodexCliProbe, CoreUpdatePolicy,
+    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
+    InboxFilter, InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
+    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
+    NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
+    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
+    RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
+    WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
+    WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
+    fetch_claude_details, fetch_codex_details, probe_claude_cli, probe_codex_cli,
+    resolve_claude_binary, resolve_codex_binary, run_claude_auth_login, run_codex_login,
 };
 use nsh_core::{
     element::desktop::main_window,
@@ -113,6 +114,8 @@ struct AppState {
     claude_path_lookup: ClaudePathLookup,
     claude_sign_in_in_progress: bool,
     claude_details_loading: bool,
+    codex_sign_in_in_progress: bool,
+    codex_details_loading: bool,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
     expanded_projects: BTreeSet<ProjectId>,
@@ -287,6 +290,11 @@ impl AppState {
             let probe =
                 probe_claude_cli(clean.claude.custom_cli_path.as_deref(), path_env.as_deref());
             clean.apply_claude_probe(&probe, false);
+            if let Some(codex) = &clean.codex {
+                let codex_probe =
+                    probe_codex_cli(codex.custom_cli_path.as_deref(), path_env.as_deref());
+                clean.apply_codex_probe(&codex_probe, false);
+            }
             (clean, None)
         };
 
@@ -409,6 +417,8 @@ impl AppState {
             claude_path_lookup,
             claude_sign_in_in_progress: false,
             claude_details_loading: false,
+            codex_sign_in_in_progress: false,
+            codex_details_loading: false,
             active_view,
             selected_project,
             expanded_projects,
@@ -775,6 +785,14 @@ impl AppState {
         self.preferences.apply_claude_probe(&probe, explicit_test);
         probe
     }
+
+    fn refresh_codex_status(&mut self, explicit_test: bool) -> Option<CodexCliProbe> {
+        let custom_path = self.preferences.codex.as_ref()?.custom_cli_path.clone();
+        let path_env = self.claude_path_lookup.resolve_path_env();
+        let probe = probe_codex_cli(custom_path.as_deref(), path_env.as_deref());
+        self.preferences.apply_codex_probe(&probe, explicit_test);
+        Some(probe)
+    }
 }
 
 fn draft_defaults_for_selection(
@@ -840,6 +858,7 @@ pub(crate) fn init_default() {
     let mode = state().with_untracked(|s| s.preferences.appearance.mode);
     apply_appearance_mode(mode);
     refresh_claude_details_async();
+    refresh_codex_details_async();
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
@@ -858,6 +877,7 @@ pub(crate) fn init_with_database_path_and_claude_path(
     state().set(loaded);
     apply_appearance_mode(mode);
     refresh_claude_details_async();
+    refresh_codex_details_async();
 }
 
 pub(crate) fn demo_mode() -> bool {
@@ -952,6 +972,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
     }
     if !enabled {
         refresh_claude_details_async();
+        refresh_codex_details_async();
     }
 }
 
@@ -2901,7 +2922,8 @@ pub(crate) fn clear_preferences_messages() {
 }
 
 pub(crate) fn test_selected_provider() {
-    let mut should_refresh_details = false;
+    let mut should_refresh_claude = false;
+    let mut should_refresh_codex = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
         if !s.demo_mode && id == s.preferences.claude.id {
@@ -2914,7 +2936,7 @@ pub(crate) fn test_selected_provider() {
                         "Verified Claude CLI at {} ({email}).",
                         binary_path.display()
                     ));
-                    should_refresh_details = true;
+                    should_refresh_claude = true;
                 }
                 ClaudeCliProbe::NotAuthenticated { binary_path, .. } => {
                     s.preferences_error = None;
@@ -2935,6 +2957,44 @@ pub(crate) fn test_selected_provider() {
             s.persist_preferences();
             return;
         }
+        if !s.demo_mode
+            && s.preferences
+                .codex
+                .as_ref()
+                .is_some_and(|codex| codex.id == id)
+        {
+            if let Some(probe) = s.refresh_codex_status(true) {
+                match probe {
+                    CodexCliProbe::Authenticated {
+                        binary_path, email, ..
+                    } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Verified Codex CLI at {} ({email}).",
+                            binary_path.display()
+                        ));
+                        should_refresh_codex = true;
+                    }
+                    CodexCliProbe::NotAuthenticated { binary_path, .. } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Found Codex CLI at {}, but no active system login was detected.",
+                            binary_path.display()
+                        ));
+                    }
+                    CodexCliProbe::BinaryNotFound { error } => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(error.to_string());
+                    }
+                    CodexCliProbe::ProbeFailed { message, .. } => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(message);
+                    }
+                }
+            }
+            s.persist_preferences();
+            return;
+        }
         match s.preferences.test_provider(&id) {
             Ok(_) => {
                 s.preferences_error = None;
@@ -2946,8 +3006,11 @@ pub(crate) fn test_selected_provider() {
             }
         }
     });
-    if should_refresh_details {
+    if should_refresh_claude {
         refresh_claude_details_async();
+    }
+    if should_refresh_codex {
+        refresh_codex_details_async();
     }
 }
 
@@ -3092,10 +3155,16 @@ pub(crate) fn remove_selected_openrouter_key() {
 
 pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
     let mut added = false;
+    let mut should_refresh_details = false;
     state().update(
         |s| match s.preferences.add_codex_account(cli_binary, default_model) {
             Ok(id) => {
                 s.selected_provider_id = id;
+                if !s.demo_mode
+                    && let Some(CodexCliProbe::Authenticated { .. }) = s.refresh_codex_status(false)
+                {
+                    should_refresh_details = true;
+                }
                 s.preferences_error = None;
                 s.preferences_feedback = Some("Added Codex CLI account.".to_owned());
                 s.persist_preferences();
@@ -3106,32 +3175,20 @@ pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
             }
         },
     );
+    if should_refresh_details {
+        refresh_codex_details_async();
+    }
     added
 }
 
 pub(crate) fn remove_codex_account() {
     state().update(|s| match s.preferences.remove_codex_account() {
         Ok(next_selected) => {
+            s.codex_details_loading = false;
+            s.codex_sign_in_in_progress = false;
             s.selected_provider_id = next_selected;
             s.preferences_error = None;
             s.preferences_feedback = Some("Removed Codex CLI account.".to_owned());
-            s.persist_preferences();
-        }
-        Err(err) => {
-            s.preferences_error = Some(err.to_string());
-        }
-    });
-}
-
-pub(crate) fn set_cli_account_connected(id: &str, connected: bool) {
-    state().update(|s| match s.preferences.set_cli_connected(id, connected) {
-        Ok(()) => {
-            s.preferences_error = None;
-            s.preferences_feedback = Some(if connected {
-                "Signed in to CLI account.".to_owned()
-            } else {
-                "Signed out of CLI account.".to_owned()
-            });
             s.persist_preferences();
         }
         Err(err) => {
@@ -3146,6 +3203,59 @@ pub(crate) fn claude_sign_in_in_progress() -> bool {
 
 pub(crate) fn claude_details_loading() -> bool {
     state().with(|s| s.claude_details_loading)
+}
+
+pub(crate) fn codex_sign_in_in_progress() -> bool {
+    state().with(|s| s.codex_sign_in_in_progress)
+}
+
+pub(crate) fn codex_details_loading() -> bool {
+    state().with(|s| s.codex_details_loading)
+}
+
+/// Fetches the live model catalog and remaining plan usage from the authenticated `codex` CLI
+/// on a background thread without blocking the UI.
+pub(crate) fn refresh_codex_details_async() {
+    let mut binary_to_query = None;
+    state().update(|s| {
+        if s.demo_mode || s.codex_details_loading {
+            return;
+        }
+        let Some(codex) = &mut s.preferences.codex else {
+            return;
+        };
+        if !codex.connected {
+            return;
+        }
+        let binary = codex.cli_binary.trim();
+        if binary.is_empty() {
+            return;
+        }
+        s.codex_details_loading = true;
+        codex.usage_warning = None;
+        binary_to_query = Some(std::path::PathBuf::from(binary));
+    });
+
+    if let Some(binary_path) = binary_to_query {
+        let expected_binary = binary_path.display().to_string();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let details = spawn_blocking_task(move || fetch_codex_details(&binary_path)).await;
+                state().update(|s| {
+                    s.codex_details_loading = false;
+                    let still_matching = !s.demo_mode
+                        && s.preferences
+                            .codex
+                            .as_ref()
+                            .is_some_and(|c| c.connected && c.cli_binary == expected_binary);
+                    if !still_matching {
+                        return;
+                    }
+                    s.preferences.apply_codex_details(details);
+                });
+            });
+        });
+    }
 }
 
 /// Fetches the live model catalog and remaining plan usage from the authenticated `claude` CLI
@@ -3383,6 +3493,223 @@ pub(crate) fn sign_in_claude() {
                 });
                 if should_refresh_details {
                     refresh_claude_details_async();
+                }
+            });
+        });
+    }
+}
+
+/// Updates or clears the custom Codex CLI binary path and re-probes system authentication.
+///
+/// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
+/// entered path could not be resolved to an executable binary.
+pub(crate) fn update_codex_cli_path(raw_path: &str) -> bool {
+    let mut updated = false;
+    let mut should_refresh_details = false;
+    state().update(|s| {
+        if s.preferences.codex.is_none() {
+            return;
+        }
+        let trimmed = raw_path.trim();
+        if trimmed.is_empty() {
+            s.preferences.set_codex_custom_path(None);
+            if s.demo_mode {
+                if let Some(codex) = &mut s.preferences.codex {
+                    codex.cli_binary = "codex".to_owned();
+                }
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Using Codex CLI from default PATH.".to_owned());
+            } else if let Some(probe) = s.refresh_codex_status(false) {
+                match probe {
+                    CodexCliProbe::Authenticated { binary_path, .. } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Using default PATH — verified Codex CLI at {}.",
+                            binary_path.display()
+                        ));
+                        should_refresh_details = true;
+                    }
+                    CodexCliProbe::NotAuthenticated { binary_path, .. } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Using default PATH ({}) — sign in to verify authentication.",
+                            binary_path.display()
+                        ));
+                    }
+                    CodexCliProbe::BinaryNotFound { error } => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!("Cleared custom path. {error}"));
+                    }
+                    CodexCliProbe::ProbeFailed { message, .. } => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(message);
+                    }
+                }
+            }
+            s.persist_preferences();
+            updated = true;
+            return;
+        }
+
+        if s.demo_mode {
+            s.preferences.set_codex_custom_path(Some(trimmed));
+            if let Some(codex) = &mut s.preferences.codex {
+                codex.cli_binary = trimmed.to_owned();
+            }
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Codex CLI path set to {trimmed}."));
+            s.persist_preferences();
+            updated = true;
+            return;
+        }
+
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        if let Err(err) = resolve_codex_binary(Some(trimmed), path_env.as_deref()) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+
+        s.preferences.set_codex_custom_path(Some(trimmed));
+        if let Some(probe) = s.refresh_codex_status(false) {
+            match probe {
+                CodexCliProbe::Authenticated {
+                    binary_path, email, ..
+                } => {
+                    s.preferences_error = None;
+                    s.preferences_feedback = Some(format!(
+                        "Codex CLI verified at {} ({email}).",
+                        binary_path.display()
+                    ));
+                    should_refresh_details = true;
+                }
+                CodexCliProbe::NotAuthenticated { binary_path, .. } => {
+                    s.preferences_error = None;
+                    s.preferences_feedback = Some(format!(
+                        "Found Codex CLI at {}. Sign in to verify authentication.",
+                        binary_path.display()
+                    ));
+                }
+                CodexCliProbe::BinaryNotFound { error } => {
+                    s.preferences_feedback = None;
+                    s.preferences_error = Some(error.to_string());
+                }
+                CodexCliProbe::ProbeFailed { message, .. } => {
+                    s.preferences_feedback = None;
+                    s.preferences_error = Some(message);
+                }
+            }
+        }
+        s.persist_preferences();
+        updated = true;
+    });
+    if should_refresh_details {
+        refresh_codex_details_async();
+    }
+    updated
+}
+
+/// Clears any custom Codex CLI binary path override and reverts to default `PATH` discovery.
+pub(crate) fn reset_codex_cli_path() {
+    let _ = update_codex_cli_path("");
+}
+
+/// Toggles visibility of a Codex model family (e.g. `"Luna"`) in the model selection view.
+pub(crate) fn toggle_codex_model_family(family: &str) {
+    state().update(|s| {
+        let now_visible = s.preferences.toggle_codex_model_family(family);
+        s.preferences_error = None;
+        s.preferences_feedback = Some(if now_visible {
+            format!("Showing {family} models in selection.")
+        } else {
+            format!("Hiding {family} models from selection.")
+        });
+        s.persist_preferences();
+    });
+}
+
+/// Launches `codex login` on a background thread and refreshes system login status when done.
+pub(crate) fn sign_in_codex() {
+    let mut binary_to_run = None;
+    state().update(|s| {
+        if s.demo_mode {
+            let _ = s.preferences.set_cli_connected("codex", true);
+            s.preferences_error = None;
+            s.preferences_feedback = Some("Signed in to Codex CLI.".to_owned());
+            return;
+        }
+        if s.codex_sign_in_in_progress {
+            return;
+        }
+        let Some(codex) = &s.preferences.codex else {
+            return;
+        };
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        match resolve_codex_binary(codex.custom_cli_path.as_deref(), path_env.as_deref()) {
+            Ok(binary_path) => {
+                s.codex_sign_in_in_progress = true;
+                s.preferences_error = None;
+                s.preferences_feedback = Some(
+                    "Opening Codex sign-in in your browser... Bruk will update when login finishes."
+                        .to_owned(),
+                );
+                binary_to_run = Some(binary_path);
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+
+    if let Some(binary_path) = binary_to_run {
+        Owner::detached().run(|| {
+            spawn(async move {
+                let login_result =
+                    spawn_blocking_task(move || run_codex_login(&binary_path)).await;
+                let mut should_refresh_details = false;
+                state().update(|s| {
+                    s.codex_sign_in_in_progress = false;
+                    if s.demo_mode || s.preferences.codex.is_none() {
+                        return;
+                    }
+                    match login_result {
+                        Ok(()) => {
+                            if let Some(probe) = s.refresh_codex_status(false) {
+                                match probe {
+                                    CodexCliProbe::Authenticated { email, .. } => {
+                                        s.preferences_error = None;
+                                        s.preferences_feedback =
+                                            Some(format!("Signed in to Codex CLI as {email}."));
+                                        should_refresh_details = true;
+                                    }
+                                    CodexCliProbe::NotAuthenticated { .. } => {
+                                        s.preferences_feedback = None;
+                                        s.preferences_error = Some(
+                                            "Codex sign-in finished, but no active login was detected."
+                                                .to_owned(),
+                                        );
+                                    }
+                                    CodexCliProbe::BinaryNotFound { error } => {
+                                        s.preferences_feedback = None;
+                                        s.preferences_error = Some(error.to_string());
+                                    }
+                                    CodexCliProbe::ProbeFailed { message, .. } => {
+                                        s.preferences_feedback = None;
+                                        s.preferences_error = Some(message);
+                                    }
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            s.preferences_feedback = None;
+                            s.preferences_error = Some(err);
+                        }
+                    }
+                    s.persist_preferences();
+                });
+                if should_refresh_details {
+                    refresh_codex_details_async();
                 }
             });
         });
@@ -3803,6 +4130,7 @@ pub(crate) fn reset_preferences_to_defaults() {
     });
     apply_appearance_mode(AppearanceMode::System);
     refresh_claude_details_async();
+    refresh_codex_details_async();
 }
 
 // --- Project Settings -------------------------------------------------------------------

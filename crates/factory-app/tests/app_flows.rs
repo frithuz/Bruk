@@ -2129,3 +2129,202 @@ fn codex_provider_is_unregistered_by_default_and_can_be_added_and_removed() {
         .unwrap();
     assert!(!after_remove.screen().matches("role:button[Codex]").unwrap());
 }
+
+#[cfg(unix)]
+#[test]
+fn codex_cli_queries_available_models_usage_resets_and_persists_family_filter() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    let usage_counter = temp.path().join("codex_usage_count");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    // Put a minimal fake `claude` alongside `codex` so Claude stays deterministic on this PATH.
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":false,"authMethod":"none","configDirectory":"/tmp/.claude"}'
+exit 1
+"#,
+    );
+
+    let codex_script = format!(
+        r#"#!/bin/sh
+COUNT_FILE="{counter}"
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{{"id":1,"result":{{"userAgent":"bruk/0.171.0","codexHome":"/Users/live/.codex"}}}}'
+      ;;
+    *'"method":"account/read"'*)
+      echo '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"codex-live@example.com","planType":"prolite","workspaceName":null}},"requiresOpenaiAuth":true}}}}'
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      if [ -f "$COUNT_FILE" ]; then
+        SESSION_PCT=24
+      else
+        touch "$COUNT_FILE"
+        SESSION_PCT=10
+      fi
+      echo '{{"id":2,"result":{{"ordinaryUsageAllowed":true,"rateLimits":{{"limitId":"codex","limitName":null,"primary":{{"usedPercent":'"$SESSION_PCT"',"windowDurationMins":300,"resetsAt":4099075199}},"secondary":{{"usedPercent":15,"windowDurationMins":10080,"resetsAt":4099665600}}}},"rateLimitsByLimitId":{{"codex":{{"limitId":"codex","limitName":null,"primary":{{"usedPercent":'"$SESSION_PCT"',"windowDurationMins":300,"resetsAt":4099075199}},"secondary":{{"usedPercent":15,"windowDurationMins":10080,"resetsAt":4099665600}}}},"codex_spark":{{"limitId":"codex_spark","limitName":"GPT-5.3-Codex-Spark","primary":{{"usedPercent":5,"windowDurationMins":10080,"resetsAt":4099665600}}}}}},"rateLimitResetCredits":{{"availableCount":2}}}}}}'
+      ;;
+    *'"method":"model/list"'*)
+      echo '{{"id":3,"result":{{"data":[{{"id":"gpt-6.2-sol","model":"gpt-6.2-sol","displayName":"GPT-6.2-Sol","description":"Fast go-to model","hidden":false}},{{"id":"gpt-6.2-astra","model":"gpt-6.2-astra","displayName":"GPT-6.2-Astra","description":"Most capable model","hidden":false}},{{"id":"gpt-6-luna","model":"gpt-6-luna","displayName":"GPT-6-Luna","description":"Fast and affordable","hidden":false}},{{"id":"hidden-model","model":"hidden-model","displayName":"Hidden","description":"Skipped","hidden":true}}]}}}}'
+      ;;
+  esac
+done
+"#,
+        counter = usage_counter.display()
+    );
+    write_fake_claude(&bin_dir, "codex", &codex_script);
+
+    let mut app =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    app.press_key("mod+,").unwrap();
+    app.wait_for("No Codex account configured").unwrap();
+
+    // Register Codex explicitly through Add Account.
+    app.press("role:button[Add Account]").unwrap();
+    app.wait_for("Add Codex CLI account...").unwrap();
+    app.press("role:button[Add Codex CLI account...]").unwrap();
+    app.wait_for("Add Codex CLI account").unwrap();
+    app.press("id:prefs-new-codex-submit").unwrap();
+
+    // Codex probes system auth and queries live usage, resets, and models.
+    app.wait_for("90% remaining").unwrap();
+    assert!(app.screen().shows("codex-live@example.com"));
+    assert!(app.screen().shows("Pro Lite"));
+    assert!(app.screen().shows("/Users/live/.codex"));
+    assert!(app.screen().shows("Usage remaining"));
+    assert!(app.screen().shows("Quota resets"));
+    assert!(app.screen().shows("Current session (5h)"));
+    assert!(app.screen().shows("Weekly (all models)"));
+    assert!(app.screen().shows("85% remaining"));
+    assert!(app.screen().shows("Weekly (GPT-5.3-Codex-Spark)"));
+    assert!(app.screen().shows("95% remaining"));
+    assert!(app.screen().shows("2 rate limit reset credits available."));
+    assert!(!app.screen().matches("id:prefs-codex-sign-in").unwrap());
+
+    // Refresh re-queries the CLI and updates remaining usage live.
+    app.press("id:prefs-codex-usage-refresh").unwrap();
+    app.wait_for("76% remaining").unwrap();
+
+    // Opening the Model editor shows the live Codex models queried from the CLI.
+    app.press("id:prefs-cli-model-change").unwrap();
+    app.wait_for("Available from Codex CLI (3 models)").unwrap();
+    assert!(app.screen().shows("Model Family Filter"));
+    assert!(app.screen().shows("GPT-6.2-Sol"));
+    assert!(app.screen().shows("GPT-6.2-Astra"));
+    assert!(app.screen().shows("GPT-6-Luna"));
+    assert!(!app.screen().shows("Hidden"));
+
+    // Unchecking Luna in the Model Family Filter hides it from the model selection view.
+    app.press("id:prefs-codex-family-luna").unwrap();
+    app.wait_for("Showing 2 of 3 models from Codex CLI (Luna hidden)")
+        .unwrap();
+    assert!(!app.screen().shows("GPT-6-Luna"));
+    assert!(app.screen().shows("GPT-6.2-Sol"));
+    assert!(app.screen().shows("GPT-6.2-Astra"));
+
+    // Re-checking Luna restores it immediately.
+    app.press("id:prefs-codex-family-luna").unwrap();
+    app.wait_for("Available from Codex CLI (3 models)").unwrap();
+    assert!(app.screen().shows("GPT-6-Luna"));
+
+    // Uncheck Luna again, select GPT-6.2-Sol, and verify the filter persists across app restarts.
+    app.press("id:prefs-codex-family-luna").unwrap();
+    app.wait_for("Showing 2 of 3 models from Codex CLI (Luna hidden)")
+        .unwrap();
+    app.press("id:prefs-codex-model-gpt-6.2-sol").unwrap();
+    app.press("role:button[Save Model]").unwrap();
+    app.wait_for("Default model set to gpt-6.2-sol.").unwrap();
+    app.press_window_close("preferences").unwrap();
+
+    // Reopen against the same SQLite DB and verify Luna stays hidden and usage reloads.
+    let mut reopened = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("role:button[Codex]").unwrap();
+    reopened.press("role:button[Codex]").unwrap();
+    reopened.wait_for("Usage remaining").unwrap();
+    reopened.wait_for("76% remaining").unwrap();
+    reopened.press("id:prefs-cli-model-change").unwrap();
+    reopened
+        .wait_for("Showing 2 of 3 models from Codex CLI (Luna hidden)")
+        .unwrap();
+    assert!(!reopened.screen().shows("GPT-6-Luna"));
+    assert!(reopened.screen().shows("GPT-6.2-Sol"));
+    assert!(reopened.screen().shows("GPT-6.2-Astra"));
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_cli_custom_path_and_sign_in_flow() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let custom_dir = temp.path().join("opt-codex");
+    let state_file = temp.path().join("codex_logged_in");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    let codex_script = format!(
+        r#"#!/bin/sh
+STATE_FILE="{state}"
+if [ "$1" = "login" ]; then
+  touch "$STATE_FILE"
+  exit 0
+fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{{"id":1,"result":{{"codexHome":"/Users/custom/.codex"}}}}'
+      ;;
+    *'"method":"account/read"'*)
+      if [ -f "$STATE_FILE" ]; then
+        echo '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"fresh-codex@example.com","planType":"pro"}},"requiresOpenaiAuth":true}}}}'
+      else
+        echo '{{"id":2,"result":{{"account":null,"requiresOpenaiAuth":true}}}}'
+      fi
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      echo '{{"id":2,"result":{{"ordinaryUsageAllowed":true,"rateLimits":{{"limitId":"codex","primary":{{"usedPercent":12,"windowDurationMins":10080,"resetsAt":4099665600}}}}}}}}'
+      ;;
+    *'"method":"model/list"'*)
+      echo '{{"id":3,"result":{{"data":[{{"id":"gpt-6.2-sol","model":"gpt-6.2-sol","displayName":"GPT-6.2-Sol","description":"Fast go-to","hidden":false}}]}}}}'
+      ;;
+  esac
+done
+"#,
+        state = state_file.display()
+    );
+    let custom_codex = write_fake_claude(&custom_dir, "codex", &codex_script);
+    let custom_codex_str = custom_codex.display().to_string();
+
+    let mut app = start_with_db_and_claude_path(db_path, OsString::new());
+    app.press_key("mod+,").unwrap();
+    app.wait_for("No Codex account configured").unwrap();
+
+    // Register Codex when not on PATH -> shows CLI not found and Set Codex Path CTA.
+    app.press("role:button[Add Account]").unwrap();
+    app.wait_for("Add Codex CLI account...").unwrap();
+    app.press("role:button[Add Codex CLI account...]").unwrap();
+    app.wait_for("Add Codex CLI account").unwrap();
+    app.press("id:prefs-new-codex-submit").unwrap();
+    app.wait_for("Not found on default PATH").unwrap();
+    assert!(!app.screen().matches("id:prefs-codex-sign-in").unwrap());
+
+    // Set the custom Codex binary path; it is found but logged out, so Sign In appears.
+    app.press("id:prefs-codex-path-edit").unwrap();
+    app.wait_for("id:prefs-codex-path-input").unwrap();
+    app.type_text("id:prefs-codex-path-input", &custom_codex_str)
+        .unwrap();
+    app.press("id:prefs-codex-path-save").unwrap();
+    app.wait_for("id:prefs-codex-sign-in").unwrap();
+    assert!(app.screen().shows("Not signed in"));
+
+    // Pressing Sign In runs `codex login` and refreshes into authenticated + live usage state.
+    app.press("id:prefs-codex-sign-in").unwrap();
+    app.wait_for("fresh-codex@example.com").unwrap();
+    app.wait_for("88% remaining").unwrap();
+    assert!(app.screen().shows("CLI works"));
+    assert!(!app.screen().matches("id:prefs-codex-sign-in").unwrap());
+}
