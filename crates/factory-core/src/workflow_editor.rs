@@ -688,7 +688,19 @@ impl WorkflowEditorDocument {
     /// Builds an editable workflow document from an overview entry, using the rich
     /// `Fix issue` reference fixture whenever the entry is `Fix issue`.
     pub fn from_overview_entry(project_name: &str, entry: &WorkflowOverviewEntry) -> Self {
-        if entry.id == "fix-issue" || entry.name.eq_ignore_ascii_case("Fix issue") {
+        Self::from_overview_entry_with_demo(project_name, entry, true)
+    }
+
+    /// Builds an editable workflow document from an overview entry, optionally using
+    /// the mocked `Fix issue` demo fixture when `use_demo_fixture` is enabled.
+    pub fn from_overview_entry_with_demo(
+        project_name: &str,
+        entry: &WorkflowOverviewEntry,
+        use_demo_fixture: bool,
+    ) -> Self {
+        if use_demo_fixture
+            && (entry.id == "fix-issue" || entry.name.eq_ignore_ascii_case("Fix issue"))
+        {
             let mut doc = Self::sample_fix_issue(project_name);
             doc.workflow_id = entry.id.clone();
             doc.workflow_name = entry.name.clone();
@@ -801,6 +813,31 @@ impl WorkflowEditorDocument {
                 timestamp: entry.edited_label.clone(),
             }],
             next_id_counter: counter + 10,
+        }
+    }
+
+    /// Clean blank workflow document with no demo steps or fake revision history.
+    pub fn empty(project_name: &str, workflow_name: &str) -> Self {
+        let name = if workflow_name.trim().is_empty() {
+            "Untitled workflow"
+        } else {
+            workflow_name.trim()
+        };
+        Self {
+            project_name: project_name.to_owned(),
+            workflow_id: slugify_kebab(name),
+            workflow_name: name.to_owned(),
+            has_unsaved_changes: false,
+            trigger: EditorTriggerConfig {
+                work_queue_enabled: false,
+                work_queue_label: "Work queue disabled".to_owned(),
+                ad_hoc_allowed: true,
+                inputs_summary: "inputs: branch".to_owned(),
+            },
+            nodes: Vec::new(),
+            selected: EditorSelection::Trigger,
+            revisions: Vec::new(),
+            next_id_counter: 1,
         }
     }
 

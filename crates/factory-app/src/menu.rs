@@ -1,4 +1,4 @@
-//! Native macOS application menu bar (`Software Factory`, `File`, `Edit`, `View`,
+//! Native macOS application menu bar (`Bruk`, `File`, `Edit`, `View`,
 //! `Project`, `Workflow`, `Run`, `Window`, `Help`).
 //!
 //! Implemented commands are wired to live application state and native AppKit
@@ -27,6 +27,7 @@ const EXTENSIONS_ICON_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR
 /// Minimal reactive slice of application state that affects the menu bar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MenuSnapshot {
+    demo_mode: bool,
     sidebar_visible: bool,
     is_full_screen: bool,
     recent_projects: Vec<(ProjectId, String)>,
@@ -45,6 +46,7 @@ struct MenuSnapshot {
 }
 
 fn current_menu_snapshot() -> MenuSnapshot {
+    let demo_mode = store::demo_mode();
     let sidebar_visible = store::sidebar_visible();
     let is_full_screen = main_window()
         .state()
@@ -90,6 +92,7 @@ fn current_menu_snapshot() -> MenuSnapshot {
     };
 
     MenuSnapshot {
+        demo_mode,
         sidebar_visible,
         is_full_screen,
         recent_projects,
@@ -119,7 +122,7 @@ pub(crate) fn install_application_menu() {
 
 fn build_application_menu(snapshot: &MenuSnapshot) -> Vec<MenuItem> {
     vec![
-        app_menu(),
+        app_menu(snapshot),
         file_menu(snapshot),
         edit_menu(),
         view_menu(snapshot),
@@ -133,9 +136,9 @@ fn build_application_menu(snapshot: &MenuSnapshot) -> Vec<MenuItem> {
 
 // --- Top-Level Menus --------------------------------------------------------------------
 
-fn app_menu() -> MenuItem {
+fn app_menu(snapshot: &MenuSnapshot) -> MenuItem {
     MenuItem::submenu(
-        "Software Factory",
+        "Bruk",
         [
             MenuItem::role(MenuRole::About),
             MenuItem::new("Check for Updates…").disabled(true),
@@ -145,6 +148,10 @@ fn app_menu() -> MenuItem {
                 .on_select(store::open_preferences),
             MenuItem::new("Extensions…")
                 .on_select(|| store::open_preferences_tab(PreferencesTab::Extensions)),
+            MenuItem::separator(),
+            MenuItem::new("Demo Mode")
+                .checked(snapshot.demo_mode)
+                .on_select(store::toggle_demo_mode),
             MenuItem::separator(),
             MenuItem::submenu("Services", []).disabled(true),
             MenuItem::separator(),
@@ -434,7 +441,7 @@ fn help_menu() -> MenuItem {
     MenuItem::submenu(
         "Help",
         [
-            MenuItem::new("Software Factory Help").disabled(true),
+            MenuItem::new("Bruk Help").disabled(true),
             MenuItem::new("Workflow Reference").disabled(true),
             MenuItem::new("Extension API").disabled(true),
             MenuItem::separator(),
@@ -601,6 +608,7 @@ mod tests {
 
     fn sample_snapshot() -> MenuSnapshot {
         MenuSnapshot {
+            demo_mode: false,
             sidebar_visible: true,
             is_full_screen: false,
             recent_projects: vec![(1, "api-gateway".to_owned()), (2, "mobile-app".to_owned())],
@@ -625,7 +633,8 @@ mod tests {
         assert_eq!(menu.len(), 9);
         let debug = format!("{menu:?}");
         for expected in [
-            "Software Factory",
+            "Bruk",
+            "Demo Mode",
             "File",
             "Edit",
             "View",
@@ -640,6 +649,25 @@ mod tests {
                 "expected top-level menu '{expected}' in {debug}"
             );
         }
+        assert!(
+            !debug.contains("Software Factory"),
+            "did not expect legacy 'Software Factory' label in {debug}"
+        );
+    }
+
+    #[test]
+    fn demo_mode_menu_item_appears_under_bruk_menu() {
+        let mut snap = sample_snapshot();
+        snap.demo_mode = false;
+        let off = format!("{:?}", app_menu(&snap));
+        assert!(off.contains("Bruk"));
+        assert!(off.contains("Demo Mode"));
+        assert!(!off.contains("Software Factory"));
+
+        snap.demo_mode = true;
+        let on = format!("{:?}", app_menu(&snap));
+        assert!(on.contains("Bruk"));
+        assert!(on.contains("Demo Mode"));
     }
 
     #[test]

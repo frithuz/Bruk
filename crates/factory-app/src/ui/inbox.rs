@@ -259,7 +259,11 @@ fn inbox_master_list() -> impl IntoElement {
                         )
                         .child(
                             text(if inbox.pending_count() == 0 {
-                                "Agents are running autonomously."
+                                if inbox.active_agents_count == 0 {
+                                    "Permissions, questions, and review gates will appear here when workflows need your input."
+                                } else {
+                                    "Agents are running autonomously."
+                                }
                             } else {
                                 "Switch to All to see other waiting agents."
                             })
@@ -276,38 +280,40 @@ fn inbox_master_list() -> impl IntoElement {
 
             // Collapsible "Answered today · N" disclosure section.
             let answered_count = inbox.answered_today.len();
-            col = col.child(
-                view().pt(px(8.0)).gap(px(4.0)).child(
-                    button()
-                        .test_id("inbox-answered-toggle")
-                        .accessibility_label("Toggle Answered today")
-                        .on_press(store::toggle_inbox_answered_expanded)
-                        .px(px(6.0))
-                        .py(px(5.0))
-                        .rounded(px(6.0))
-                        .flex_row()
-                        .items_center()
-                        .gap(px(5.0))
-                        .hover(|s| s.bg(palette::sidebar_hover_bg()))
-                        .child(if answered_expanded {
-                            icons::chevron_down(palette::text_muted()).into_element()
-                        } else {
-                            icons::chevron_right(palette::text_muted()).into_element()
-                        })
-                        .child(
-                            text(format!("Answered today · {answered_count}"))
-                                .text_size(px(12.0))
-                                .font_weight(FontWeight::MEDIUM)
-                                .tabular_nums()
-                                .text_color(palette::text_muted()),
-                        ),
-                ),
-            );
+            if answered_count > 0 {
+                col = col.child(
+                    view().pt(px(8.0)).gap(px(4.0)).child(
+                        button()
+                            .test_id("inbox-answered-toggle")
+                            .accessibility_label("Toggle Answered today")
+                            .on_press(store::toggle_inbox_answered_expanded)
+                            .px(px(6.0))
+                            .py(px(5.0))
+                            .rounded(px(6.0))
+                            .flex_row()
+                            .items_center()
+                            .gap(px(5.0))
+                            .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                            .child(if answered_expanded {
+                                icons::chevron_down(palette::text_muted()).into_element()
+                            } else {
+                                icons::chevron_right(palette::text_muted()).into_element()
+                            })
+                            .child(
+                                text(format!("Answered today · {answered_count}"))
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .tabular_nums()
+                                    .text_color(palette::text_muted()),
+                            ),
+                    ),
+                );
 
-            if answered_expanded {
-                for ans in &inbox.answered_today {
-                    let is_selected = selected_id.as_deref() == Some(ans.id.as_str());
-                    col = col.child(answered_list_row(ans, is_selected));
+                if answered_expanded {
+                    for ans in &inbox.answered_today {
+                        let is_selected = selected_id.as_deref() == Some(ans.id.as_str());
+                        col = col.child(answered_list_row(ans, is_selected));
+                    }
                 }
             }
 
@@ -548,7 +554,15 @@ fn inbox_detail_pane() -> impl IntoElement {
 }
 
 fn empty_detail_surface() -> impl IntoElement {
+    let active_agents = store::inbox_state().active_agents_count;
+    let subtitle = if active_agents == 0 {
+        "No agents are waiting for your input right now. Blocking permission requests, questions, and review gates will appear here when workflows run."
+    } else {
+        "No agents are waiting for your input right now. Other runs keep going in the background."
+    };
+
     view()
+        .test_id("inbox-empty-state")
         .flex_1()
         .items_center()
         .justify_center()
@@ -571,7 +585,8 @@ fn empty_detail_surface() -> impl IntoElement {
                 .text_color(palette::text_primary()),
         )
         .child(
-            text("No agents are waiting for your input right now. Other runs keep going in the background.")
+            text(subtitle)
+                .text_center()
                 .text_size(px(13.0))
                 .text_color(palette::text_muted()),
         )

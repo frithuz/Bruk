@@ -372,11 +372,20 @@ pub struct MachinesFleet {
 
 impl Default for MachinesFleet {
     fn default() -> Self {
-        Self::sample()
+        Self::empty()
     }
 }
 
 impl MachinesFleet {
+    /// Clean empty fleet with no configured machines.
+    pub fn empty() -> Self {
+        Self {
+            bruk_version: BRUK_APP_VERSION.to_owned(),
+            bruk_schema: BRUK_DATA_SCHEMA,
+            machines: Vec::new(),
+        }
+    }
+
     /// Seeds the 5-machine fleet matching `21 Machines.png`.
     pub fn sample() -> Self {
         Self {
@@ -780,6 +789,12 @@ impl MachinesFleet {
     /// `5 machines · 10 sessions · Bruk 0.9.0 (data schema 7) · 1 core update suggested · 1 machine needs a newer Bruk`
     pub fn header_subtitle(&self) -> String {
         let machine_count = self.machines.len();
+        if machine_count == 0 {
+            return format!(
+                "No machines configured · Bruk {} (data schema {})",
+                self.bruk_version, self.bruk_schema
+            );
+        }
         let machine_word = if machine_count == 1 {
             "machine"
         } else {
@@ -980,15 +995,7 @@ impl MachinesFleet {
             draft.address.trim().to_owned()
         };
 
-        let allowed_projects = if draft.allowed_projects.is_empty() {
-            vec![
-                "api-gateway".to_owned(),
-                "marketing-site".to_owned(),
-                "mobile-app".to_owned(),
-            ]
-        } else {
-            draft.allowed_projects
-        };
+        let allowed_projects = draft.allowed_projects;
 
         let (ipv4, ssh_port) = if let Some((host, port_str)) = address_primary.rsplit_once(':')
             && let Ok(port) = port_str.parse::<u16>()

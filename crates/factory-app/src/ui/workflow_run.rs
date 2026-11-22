@@ -41,6 +41,9 @@ pub(crate) fn workflow_run_view() -> impl IntoElement {
                 }))
                 .child(scroll().flex_1().min_h(px(0.0)).child(dynamic(move || {
                     let run = store::active_workflow_run();
+                    if run.is_empty() {
+                        return workflow_run_empty_state(&run).into_element();
+                    }
                     let selected_idx =
                         store::workflow_run_selected_step().min(run.steps.len().saturating_sub(1));
                     let active_tab = store::workflow_run_tab();
@@ -77,14 +80,88 @@ pub(crate) fn workflow_run_view() -> impl IntoElement {
                         RunDetailTab::Coverage => canvas.child(coverage_tab_view(&run)),
                     };
 
-                    canvas
+                    canvas.into_element()
                 })))
-                .child(steering_composer_bar(steer_draft)),
+                .child(when(
+                    || !store::active_workflow_run().is_empty(),
+                    move || steering_composer_bar(steer_draft),
+                )),
         )
         .child(when(
-            store::workflow_run_inspector_visible,
+            || store::workflow_run_inspector_visible() && !store::active_workflow_run().is_empty(),
             step_inspector_panel,
         ))
+}
+
+fn workflow_run_empty_state(run: &WorkflowRunViewData) -> impl IntoElement {
+    let title = if run.workflow_name.trim().is_empty() {
+        "No workflow runs yet".to_owned()
+    } else {
+        format!("No runs for '{}' yet", run.workflow_name)
+    };
+    view()
+        .test_id("wf-run-empty-state")
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .py(px(72.0))
+        .px(px(24.0))
+        .gap(px(10.0))
+        .child(
+            text(title)
+                .text_size(px(17.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            text("Start an ad-hoc run or queue an issue to see live step output, diffs, and execution progress here.")
+                .text_center()
+                .w(px(420.0))
+                .text_size(px(13.0))
+                .text_color(palette::text_muted()),
+        )
+        .child(
+            view()
+                .pt(px(4.0))
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    button()
+                        .on_press(store::edit_active_workflow)
+                        .h(px(32.0))
+                        .px(px(14.0))
+                        .rounded(px(8.0))
+                        .bg(palette::nav_active_bg())
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text("Edit Workflow")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::nav_active_fg()),
+                        ),
+                )
+                .child(
+                    button()
+                        .on_press(store::open_work_queue)
+                        .h(px(32.0))
+                        .px(px(12.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text("Open Work Queue")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
+        )
 }
 
 // --- Command Palette Inline Sheet -------------------------------------------------------
@@ -900,8 +977,25 @@ fn diff_tab_view(run: &WorkflowRunViewData) -> impl IntoElement {
             ),
     );
 
-    for file in &run.diffs {
-        list = list.child(diff_file_card(file));
+    if run.diffs.is_empty() {
+        list = list.child(
+            view()
+                .p(px(20.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_bg())
+                .items_center()
+                .child(
+                    text("No file changes recorded for this run yet.")
+                        .text_size(px(12.5))
+                        .text_color(palette::text_muted()),
+                ),
+        );
+    } else {
+        for file in &run.diffs {
+            list = list.child(diff_file_card(file));
+        }
     }
 
     list
@@ -1015,15 +1109,38 @@ fn coverage_tab_view(run: &WorkflowRunViewData) -> impl IntoElement {
                         .child(extension_pill()),
                 )
                 .child(
-                    text("Overall 93.4% statements · +0.6% vs main")
-                        .text_size(px(11.5))
-                        .tabular_nums()
-                        .text_color(palette::success_text()),
+                    text(if run.coverage.is_empty() {
+                        "No coverage data yet"
+                    } else {
+                        "Overall 93.4% statements · +0.6% vs main"
+                    })
+                    .text_size(px(11.5))
+                    .tabular_nums()
+                    .text_color(if run.coverage.is_empty() {
+                        palette::text_muted()
+                    } else {
+                        palette::success_text()
+                    }),
                 ),
         );
 
-    for row in &run.coverage {
-        table = table.child(coverage_row(row));
+    if run.coverage.is_empty() {
+        table = table.child(
+            view()
+                .p(px(20.0))
+                .border_t_1()
+                .border_color(palette::divider_color())
+                .items_center()
+                .child(
+                    text("No coverage report recorded for this run yet.")
+                        .text_size(px(12.5))
+                        .text_color(palette::text_muted()),
+                ),
+        );
+    } else {
+        for row in &run.coverage {
+            table = table.child(coverage_row(row));
+        }
     }
 
     table

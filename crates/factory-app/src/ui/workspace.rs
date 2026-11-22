@@ -17,19 +17,68 @@ pub(crate) fn workflow_workspace() -> impl IntoElement {
 
     view()
         .flex_1()
-        .p(px(18.0))
-        .gap(px(14.0))
         .bg(palette::canvas_bg())
-        .child(workflow_selector_card())
-        .child(launch_bar(task_prompt, submit_run))
-        .child(
-            view()
-                .flex_1()
-                .flex_row()
-                .gap(px(14.0))
-                .child(runs_list_panel())
-                .child(run_inspector_panel()),
-        )
+        .child(when(
+            || store::selected_project().is_none(),
+            || {
+                view()
+                    .test_id("workspace-empty-state")
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .p(px(32.0))
+                    .gap(px(10.0))
+                    .child(
+                        text("No project selected")
+                            .text_size(px(17.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::text_primary()),
+                    )
+                    .child(
+                        text(
+                            "Register a local repository to run workflows and inspect run history.",
+                        )
+                        .text_size(px(13.0))
+                        .text_color(palette::text_muted()),
+                    )
+                    .child(
+                        button()
+                            .on_press(store::open_register_project)
+                            .mt(px(4.0))
+                            .h(px(34.0))
+                            .px(px(15.0))
+                            .rounded(px(8.0))
+                            .bg(palette::nav_active_bg())
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                text("Register a Project")
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette::nav_active_fg()),
+                            ),
+                    )
+            },
+        ))
+        .child(when(
+            || store::selected_project().is_some(),
+            move || {
+                view()
+                    .flex_1()
+                    .p(px(18.0))
+                    .gap(px(14.0))
+                    .child(workflow_selector_card())
+                    .child(launch_bar(task_prompt, submit_run))
+                    .child(
+                        view()
+                            .flex_1()
+                            .flex_row()
+                            .gap(px(14.0))
+                            .child(runs_list_panel())
+                            .child(run_inspector_panel()),
+                    )
+            },
+        ))
 }
 
 fn workflow_selector_card() -> impl IntoElement {

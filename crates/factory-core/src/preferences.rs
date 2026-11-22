@@ -295,6 +295,21 @@ pub struct ExtensionsSettings {
 
 impl Default for ExtensionsSettings {
     fn default() -> Self {
+        Self::empty()
+    }
+}
+
+impl ExtensionsSettings {
+    /// Clean default with no mock extensions installed.
+    pub fn empty() -> Self {
+        Self {
+            allow_project_mcp_servers: true,
+            entries: Vec::new(),
+        }
+    }
+
+    /// Sample extensions populated in Demo Mode.
+    pub fn sample() -> Self {
         Self {
             allow_project_mcp_servers: true,
             entries: vec![
@@ -372,9 +387,20 @@ pub enum PreferencesError {
     ProviderNotFound(String),
 }
 
+/// Current persisted preferences schema version.
+///
+/// Version 2 separates real user preferences from Demo Mode fixtures; older
+/// pre-Demo-Mode rows (`schema_version < 2`) were pre-seeded with mock provider
+/// accounts and extensions and are automatically cleaned on load.
+pub const PREFERENCES_SCHEMA_VERSION: u32 = 2;
+
 /// Complete persisted application preferences aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppPreferences {
+    #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
+    pub demo_mode: bool,
     pub general: GeneralSettings,
     pub appearance: AppearanceSettings,
     pub claude: CliAccount,
@@ -393,14 +419,59 @@ fn default_next_key_seq() -> u64 {
 
 impl Default for AppPreferences {
     fn default() -> Self {
-        Self::sample()
+        Self::empty()
     }
 }
 
 impl AppPreferences {
-    /// Default preferences pre-populated to match the reference macOS Preferences design.
+    /// Clean initial preferences with no fake accounts, keys, or demo data.
+    pub fn empty() -> Self {
+        Self {
+            schema_version: PREFERENCES_SCHEMA_VERSION,
+            demo_mode: false,
+            general: GeneralSettings::default(),
+            appearance: AppearanceSettings::default(),
+            claude: CliAccount {
+                id: "claude".to_owned(),
+                provider: ProviderKind::Claude,
+                display_name: "Claude".to_owned(),
+                email: String::new(),
+                plan: String::new(),
+                connected: false,
+                cli_binary: "claude".to_owned(),
+                config_dir: "~/Library/Application Support/software-factory/providers/claude"
+                    .to_owned(),
+                default_model: "claude-sonnet-4-6".to_owned(),
+                test_state: ConnectionTestState::Untested,
+                used_by_projects: Vec::new(),
+            },
+            codex: CliAccount {
+                id: "codex".to_owned(),
+                provider: ProviderKind::Codex,
+                display_name: "Codex".to_owned(),
+                email: String::new(),
+                plan: String::new(),
+                connected: false,
+                cli_binary: "codex".to_owned(),
+                config_dir: "~/Library/Application Support/software-factory/providers/codex"
+                    .to_owned(),
+                default_model: "gpt-5.3-codex".to_owned(),
+                test_state: ConnectionTestState::Untested,
+                used_by_projects: Vec::new(),
+            },
+            openrouter_keys: Vec::new(),
+            machines: MachinesSettings::default(),
+            extensions: ExtensionsSettings::empty(),
+            advanced: AdvancedSettings::default(),
+            next_key_seq: 1,
+        }
+    }
+
+    /// Sample preferences pre-populated to match the reference macOS Preferences design in Demo Mode.
     pub fn sample() -> Self {
         Self {
+            schema_version: PREFERENCES_SCHEMA_VERSION,
+            demo_mode: false,
             general: GeneralSettings::default(),
             appearance: AppearanceSettings::default(),
             claude: CliAccount {
@@ -443,7 +514,7 @@ impl AppPreferences {
                     key_last4: "3f9a".to_owned(),
                     monthly_cap_cents: Some(2_500),
                     monthly_used_cents: 890,
-                    cap_note: "Configured on your personal OpenRouter account. Software Factory stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
+                    cap_note: "Configured on your personal OpenRouter account. Bruk stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
                     default_model: "openrouter/auto".to_owned(),
                     is_default: true,
                     used_by_projects: vec!["mobile-app".to_owned()],
@@ -456,7 +527,7 @@ impl AppPreferences {
                     key_last4: "81c0".to_owned(),
                     monthly_cap_cents: Some(20_000),
                     monthly_used_cents: 4_120,
-                    cap_note: "Set by the Acme team admin on OpenRouter. Software Factory stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
+                    cap_note: "Set by the Acme team admin on OpenRouter. Bruk stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
                     default_model: "openrouter/auto".to_owned(),
                     is_default: false,
                     used_by_projects: vec!["api-gateway".to_owned(), "marketing-site".to_owned()],
@@ -464,10 +535,27 @@ impl AppPreferences {
                 },
             ],
             machines: MachinesSettings::default(),
-            extensions: ExtensionsSettings::default(),
+            extensions: ExtensionsSettings::sample(),
             advanced: AdvancedSettings::default(),
             next_key_seq: 3,
         }
+    }
+
+    /// Migrates pre-Demo-Mode persisted preferences by clearing legacy pre-seeded
+    /// sample providers and extensions while preserving general/appearance settings.
+    /// Returns `true` if a migration was applied.
+    pub fn migrate_legacy_sample_defaults(&mut self) -> bool {
+        if self.schema_version >= PREFERENCES_SCHEMA_VERSION {
+            return false;
+        }
+        let clean = Self::empty();
+        self.claude = clean.claude;
+        self.codex = clean.codex;
+        self.openrouter_keys = clean.openrouter_keys;
+        self.extensions = clean.extensions;
+        self.next_key_seq = clean.next_key_seq;
+        self.schema_version = PREFERENCES_SCHEMA_VERSION;
+        true
     }
 
     /// Looks up an OpenRouter key by id.
@@ -526,7 +614,7 @@ impl AppPreferences {
             key_last4,
             monthly_cap_cents,
             monthly_used_cents: 0,
-            cap_note: "Stored in the macOS Keychain. Software Factory stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
+            cap_note: "Stored in the macOS Keychain. Bruk stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
             default_model,
             is_default,
             used_by_projects: Vec::new(),

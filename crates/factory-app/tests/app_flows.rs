@@ -16,6 +16,26 @@ fn start_with_db(db_path: PathBuf) -> Headless {
     config.environment.os = Os::MacOs;
     config.viewport = Size::new(px(1360.0), px(920.0));
     let mut app = Headless::start(config).unwrap();
+    app.wait_for("Dashboard").unwrap();
+    app
+}
+
+fn enable_demo_mode_in_db(db_path: &std::path::Path) {
+    let db = factory_core::ProjectDatabase::open(db_path).unwrap();
+    let mut prefs = db
+        .load_preferences()
+        .unwrap()
+        .unwrap_or_else(factory_core::AppPreferences::empty);
+    prefs.demo_mode = true;
+    db.save_preferences(&prefs).unwrap();
+}
+
+fn start_with_demo_db(db_path: PathBuf) -> Headless {
+    enable_demo_mode_in_db(&db_path);
+    let mut config = EngineConfig::new(factory_app::root_with_db_path(db_path));
+    config.environment.os = Os::MacOs;
+    config.viewport = Size::new(px(1360.0), px(920.0));
+    let mut app = Headless::start(config).unwrap();
     app.wait_for("Issues resolved").unwrap();
     app
 }
@@ -25,7 +45,7 @@ fn dashboard_landing_page_renders_reference_metrics_and_interactive_controls() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Header and top-level KPI cards.
     assert!(app.screen().shows("Dashboard"));
@@ -91,7 +111,7 @@ fn inbox_and_machines_views_update_sidebar_badges() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Navigate to Inbox inside the primary window and answer a waiting request.
     app.press("id:sidebar-inbox-btn").unwrap();
@@ -194,7 +214,7 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
     let db_path = temp.path().join("factory.db");
 
     {
-        let mut app = start_with_db(db_path.clone());
+        let mut app = start_with_demo_db(db_path.clone());
         assert!(app.window_state("preferences").unwrap().is_none());
 
         // Open Preferences window from the sidebar entry.
@@ -258,11 +278,45 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
         assert!(app.window_state("preferences").unwrap().is_none());
     }
 
-    // Reopen app against the same SQLite database and verify preferences persisted.
-    let mut reopened = start_with_db(db_path);
+    // Reopen app against a real (non-demo) SQLite database and verify real preferences persist
+    // cleanly without any Demo Mode fixtures leaking in.
+    let real_temp = TempDir::new().unwrap();
+    let real_db_path = real_temp.path().join("factory.db");
+    {
+        let mut real_app = start_with_db(real_db_path.clone());
+        real_app.press("role:button[Preferences]").unwrap();
+        real_app.wait_for("No OpenRouter keys configured").unwrap();
+        assert!(!real_app.screen().shows("Acme team"));
+
+        real_app.press("role:button[Add Account]").unwrap();
+        real_app.wait_for("Add OpenRouter key...").unwrap();
+        real_app
+            .press("role:button[Add OpenRouter key...]")
+            .unwrap();
+        real_app.wait_for("Add OpenRouter API key").unwrap();
+        real_app
+            .type_text("id:prefs-new-key-name", "CI Runner")
+            .unwrap();
+        real_app
+            .type_text("id:prefs-new-key-secret", "sk-or-v1-testsecret99ef")
+            .unwrap();
+        real_app.press("role:button[Add Key]").unwrap();
+        real_app.wait_for("sk-or-••••••••••••99ef").unwrap();
+
+        real_app.press("role:button[Edit...]").unwrap();
+        let cap_selector = "id:prefs-inline-input";
+        real_app.clear(cap_selector).unwrap();
+        real_app.type_text(cap_selector, "350").unwrap();
+        real_app.press("role:button[Save Cap]").unwrap();
+        real_app.wait_for("$350.00 · $0.00 used").unwrap();
+        real_app.press_window_close("preferences").unwrap();
+    }
+
+    let mut reopened = start_with_db(real_db_path);
     reopened.press("role:button[Preferences]").unwrap();
     reopened.wait_for("CI Runner").unwrap();
-    assert!(reopened.screen().shows("$350.00 · $41.20 used"));
+    assert!(reopened.screen().shows("$350.00 · $0.00 used"));
+    assert!(!reopened.screen().shows("Acme team"));
 }
 
 #[test]
@@ -270,7 +324,7 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Window menu shortcuts switch top-level views inside the primary window.
     app.press_key("mod+i").unwrap();
@@ -350,7 +404,7 @@ fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Open api-gateway's Work queue from the expanded sidebar tree.
     app.press("id:sidebar-work-queue-1").unwrap();
@@ -386,7 +440,7 @@ fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
     assert!(app.screen().shows("label bug → Fix issue"));
     assert!(app.screen().shows("1 of 3"));
     assert!(app.screen().shows("When an agent slot frees"));
-    assert!(app.screen().shows("Software Factory will update the issue"));
+    assert!(app.screen().shows("Bruk will update the issue"));
     assert!(
         app.screen()
             .shows("9 open issues don't match the intake rules")
@@ -450,12 +504,11 @@ fn work_queue_renders_reference_board_inspector_and_interactive_flows() {
     .unwrap();
 
     // Hide and restore the inspector via View › Hide Inspector (⌥⌘I).
-    assert!(app.screen().shows("Software Factory will update the issue"));
+    assert!(app.screen().shows("Bruk will update the issue"));
     app.press_key("alt+mod+i").unwrap();
-    assert!(!app.screen().shows("Software Factory will update the issue"));
+    assert!(!app.screen().shows("Bruk will update the issue"));
     app.press_key("alt+mod+i").unwrap();
-    app.wait_for("Software Factory will update the issue")
-        .unwrap();
+    app.wait_for("Bruk will update the issue").unwrap();
 }
 
 #[test]
@@ -463,7 +516,7 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Open api-gateway's Release prep workflow run from the sidebar tree.
     app.press("id:sidebar-workflow-1-release-prep").unwrap();
@@ -584,7 +637,7 @@ fn project_settings_window_renders_issues_intake_and_interactive_tabs() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
     assert!(app.window_state("project-settings").unwrap().is_none());
 
     // Open api-gateway Project Settings from the expanded sidebar tree.
@@ -742,7 +795,7 @@ fn workflows_overview_renders_reference_table_inspector_templates_and_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Open api-gateway's Workflows overview from the expanded sidebar tree.
     app.press("id:sidebar-workflows-1").unwrap();
@@ -920,7 +973,7 @@ fn workflow_editor_renders_reference_layout_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Navigate to api-gateway's Workflows overview and open Fix issue in the visual editor.
     app.press("id:sidebar-workflows-1").unwrap();
@@ -1081,7 +1134,7 @@ fn machines_page_renders_reference_layout_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Navigate to Machines from the sidebar.
     app.press("Machines").unwrap();
@@ -1221,7 +1274,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Open Preferences and navigate to the Machines tab.
     app.press("role:button[Preferences]").unwrap();
@@ -1424,6 +1477,7 @@ fn preferences_machines_tab_renders_reference_mockup_and_interactive_flows() {
 fn menubar_popover_handles_quick_answers_and_opens_inbox_in_primary_window() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
+    enable_demo_mode_in_db(&db_path);
 
     let mut config = EngineConfig::new(factory_app::root_with_db_path_and_menubar_popover(db_path));
     config.environment.os = Os::MacOs;
@@ -1480,7 +1534,7 @@ fn inbox_view_renders_reference_layout_and_interactive_flows() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
 
-    let mut app = start_with_db(db_path);
+    let mut app = start_with_demo_db(db_path);
 
     // Open Inbox inside the primary window via ⌘I.
     app.press_key("mod+i").unwrap();
@@ -1584,4 +1638,133 @@ fn inbox_view_renders_reference_layout_and_interactive_flows() {
     app.wait_for("Edit Workflow").unwrap();
     app.press_key("mod+i").unwrap();
     app.wait_for("Blocking a run · oldest first").unwrap();
+}
+
+#[test]
+fn fresh_launch_without_demo_mode_shows_proper_empty_states_across_views() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path.clone());
+
+    // Dashboard starts in a clean empty onboarding state with no fake sample data.
+    assert!(app.screen().shows("Welcome to Bruk"));
+    assert!(app.screen().shows("Register a Project"));
+    assert!(app.screen().shows("Configure Providers…"));
+    assert!(
+        app.screen()
+            .shows("Want to preview visuals with sample data? Enable Demo Mode in the Bruk menu.")
+    );
+    assert!(app.screen().shows("No projects yet"));
+    assert!(app.screen().shows("None connected"));
+    assert!(!app.screen().shows("api-gateway"));
+    assert!(!app.screen().shows("18.4M"));
+    assert!(!app.screen().shows("$63.20"));
+
+    // Inbox shows an empty caught-up state with no fake requests or answered history.
+    app.press_key("mod+i").unwrap();
+    app.wait_for("No waiting requests · Idle").unwrap();
+    assert!(app.screen().shows("All caught up"));
+    assert!(app.screen().shows("No waiting requests"));
+    assert!(!app.screen().shows("Answered today · 6"));
+    assert!(!app.screen().shows("@vitest/coverage-v8"));
+
+    // Machines shows an empty fleet state with an Add Machine call to action.
+    app.press_key("alt+mod+m").unwrap();
+    app.wait_for("No machines configured · Bruk 0.9.0 (data schema 7)")
+        .unwrap();
+    assert!(app.screen().shows("No machines configured"));
+    assert!(app.screen().shows("No machines yet"));
+    assert!(!app.screen().shows("build-box-01"));
+
+    // Preferences shows unconfigured providers, no machines, and no fake extensions.
+    app.press_key("mod+,").unwrap();
+    app.wait_for("Not signed in").unwrap();
+    assert!(app.screen().shows("No OpenRouter keys configured"));
+    assert!(!app.screen().shows("jonathan@garbee.me"));
+    assert!(!app.screen().shows("Acme team"));
+
+    app.press("id:prefs-tab-machines").unwrap();
+    app.wait_for("No machines configured").unwrap();
+    assert!(!app.screen().shows("Ubuntu 24.04.1 LTS"));
+
+    app.press("id:prefs-tab-extensions").unwrap();
+    app.wait_for("No extensions installed").unwrap();
+    assert!(!app.screen().shows("GitHub Issues & Pull Requests  v1.2.0"));
+
+    app.press_window_close("preferences").unwrap();
+
+    // Menu bar popover also shows a clean empty state when Demo Mode is disabled.
+    let mut config = EngineConfig::new(factory_app::root_with_db_path_and_menubar_popover(db_path));
+    config.environment.os = Os::MacOs;
+    config.viewport = Size::new(px(1360.0), px(920.0));
+    let mut popover_app = Headless::start(config).unwrap();
+    popover_app
+        .wait_for("No agents are waiting on you")
+        .unwrap();
+    assert!(popover_app.screen().shows("All caught up"));
+    assert!(popover_app.screen().shows("No active agents"));
+}
+
+#[test]
+fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Register a real local project without Demo Mode enabled.
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Register a local repository").unwrap();
+    app.type_text("text:Project name", "my-service").unwrap();
+    app.type_text("text:Repository path", "/workspace/my-service")
+        .unwrap();
+    app.press("role:button[Save Project]").unwrap();
+    app.wait_for("Registered project 'my-service'").unwrap();
+
+    // Dashboard now shows empty card states for the tracked project without fake telemetry.
+    app.press_key("mod+shift+d").unwrap();
+    app.wait_for("No token usage recorded yet").unwrap();
+    assert!(app.screen().shows("my-service"));
+    assert!(app.screen().shows("No provider usage recorded yet."));
+    assert!(!app.screen().shows("api-gateway"));
+
+    // Work queue for the real project shows a proper empty state with no fake issues.
+    app.press("id:sidebar-work-queue-1").unwrap();
+    app.wait_for("my-service · No issue source connected")
+        .unwrap();
+    assert!(app.screen().shows("Work queue is empty"));
+    assert!(app.screen().shows("Configure Issue Source…"));
+    assert!(!app.screen().shows("acme/my-service"));
+    assert!(!app.screen().shows("Add health-check telemetry"));
+
+    // Workflows overview shows an empty table with template cards ready to start.
+    app.press("id:sidebar-workflows-1").unwrap();
+    app.wait_for("my-service · No workflows yet").unwrap();
+    assert!(app.screen().shows("No workflows yet"));
+    assert!(app.screen().shows("Start from a template"));
+    assert!(!app.screen().shows("Fix issue"));
+
+    // Project Settings for the real project has no fake repo, rules, workflows, or secrets.
+    app.press("id:sidebar-project-settings-1").unwrap();
+    app.wait_for("my-service — Project Settings").unwrap();
+    assert!(app.screen().shows(
+        "No intake rules configured yet. Add a rule to route labeled issues to a workflow."
+    ));
+    assert!(!app.screen().shows("acme/my-service"));
+
+    app.press("id:ps-tab-workflows").unwrap();
+    app.wait_for(
+        "No workflow files discovered yet. Add definitions in .factory/workflows/ or create one from Workflows.",
+    )
+    .unwrap();
+    assert!(!app.screen().shows(".factory/workflows/fix-issue.yaml"));
+
+    app.press("id:ps-tab-environment").unwrap();
+    app.wait_for("No project environment variables configured.")
+        .unwrap();
+    assert!(!app.screen().shows("STAGING_API_TOKEN"));
+
+    app.press("id:ps-tab-providers").unwrap();
+    app.wait_for("No OpenRouter keys configured").unwrap();
 }

@@ -124,6 +124,25 @@ pub struct ProjectWorkQueue {
 }
 
 impl ProjectWorkQueue {
+    /// Clean empty work queue for a real project with no fake issues or rules.
+    pub fn empty(project_name: &str) -> Self {
+        Self {
+            project_name: project_name.to_owned(),
+            tracker_name: String::new(),
+            repo_slug: String::new(),
+            required_label: String::new(),
+            intake_rules: Vec::new(),
+            fallback_workflow: String::new(),
+            workflows: Vec::new(),
+            items: Vec::new(),
+            unmatched_issues: Vec::new(),
+            max_agent_slots: 2,
+            next_run_number: 1,
+            next_ad_hoc_issue_number: 1,
+            sync_backlog: Vec::new(),
+        }
+    }
+
     /// Builds a mocked work queue tailored to `project_name`.
     ///
     /// `"api-gateway"` matches the `04 WorkQueue.png` reference mockup verbatim;
@@ -668,10 +687,14 @@ impl ProjectWorkQueue {
             + self.stage_count(WorkQueueStage::InProgress)
     }
 
-    /// Short tracker label for sidebar badge (`GitHub` or `Linear`).
+    /// Short tracker label for sidebar badge (`GitHub`, `Linear`, `itsaplan`, or empty when unconfigured).
     pub fn tracker_short_label(&self) -> &'static str {
-        if self.tracker_name.contains("Linear") {
+        if self.tracker_name.trim().is_empty() {
+            ""
+        } else if self.tracker_name.contains("Linear") {
             "Linear"
+        } else if self.tracker_name.contains("itsaplan") {
+            "itsaplan"
         } else {
             "GitHub"
         }
@@ -679,6 +702,9 @@ impl ProjectWorkQueue {
 
     /// Total historical run count shown beside the sidebar `Run history` entry.
     pub fn total_run_count(&self) -> u32 {
+        if self.items.is_empty() && self.next_run_number <= 1 {
+            return 0;
+        }
         match self.project_name.as_str() {
             "api-gateway" => 42,
             "marketing-site" => 21,
@@ -778,6 +804,12 @@ impl ProjectWorkQueue {
 
     /// Plain-text intake rule summary sentence for accessibility and non-rich contexts.
     pub fn intake_summary_sentence(&self) -> String {
+        if self.required_label.trim().is_empty()
+            && self.intake_rules.is_empty()
+            && self.fallback_workflow.trim().is_empty()
+        {
+            return "No issue source or intake rules configured yet. Connect an issue source in Project Settings or add intake rules.".to_owned();
+        }
         let mut parts = Vec::new();
         for (idx, rule) in self.intake_rules.iter().enumerate() {
             let subject = match rule.label.as_str() {
@@ -789,10 +821,17 @@ impl ProjectWorkQueue {
             parts.push(format!("{subject} {}", rule.workflow_name));
         }
         if parts.is_empty() {
-            format!(
-                "Open issues labeled {} become work. Everything goes to {}.",
-                self.required_label, self.fallback_workflow
-            )
+            let label = if self.required_label.trim().is_empty() {
+                "any"
+            } else {
+                self.required_label.as_str()
+            };
+            let fallback = if self.fallback_workflow.trim().is_empty() {
+                "your default workflow"
+            } else {
+                self.fallback_workflow.as_str()
+            };
+            format!("Open issues labeled {label} become work. Everything goes to {fallback}.")
         } else {
             format!(
                 "Open issues labeled {} become work. {}, everything else to {}.",

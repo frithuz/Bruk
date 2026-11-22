@@ -27,6 +27,7 @@ pub(crate) fn machines_header_controls() -> impl IntoElement {
             button()
                 .test_id("machines-header-update-cores")
                 .accessibility_label("Update Cores...")
+                .disabled(|| store::machines().is_empty())
                 .on_press(|| {
                     let open = store::machines_update_cores_open();
                     store::set_machines_update_cores_open(!open);
@@ -42,6 +43,7 @@ pub(crate) fn machines_header_controls() -> impl IntoElement {
                 .gap(px(6.0))
                 .hover(|s| s.bg(palette::subtle_surface_bg()))
                 .active(|s| s.opacity(0.8))
+                .disabled_style(|s| s.opacity(0.4))
                 .child(icons::download_tray(palette::text_secondary()))
                 .child(
                     text("Update Cores...")
@@ -115,9 +117,32 @@ fn machine_list_pane() -> impl IntoElement {
             let selected_id = store::selected_machine_id();
 
             let mut list = view().flex_1().p(px(14.0)).gap(px(10.0));
-            for machine in &fleet.machines {
-                let is_selected = selected_id == Some(machine.id);
-                list = list.child(machine_list_card(machine, fleet.bruk_schema, is_selected));
+            if fleet.machines.is_empty() {
+                list = list.child(
+                    view()
+                        .p(px(14.0))
+                        .rounded(px(10.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::card_bg())
+                        .gap(px(4.0))
+                        .child(
+                            text("No machines yet")
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text("Add a local or remote SSH machine to run workflow sessions.")
+                                .text_size(px(12.0))
+                                .text_color(palette::text_muted()),
+                        ),
+                );
+            } else {
+                for machine in &fleet.machines {
+                    let is_selected = selected_id == Some(machine.id);
+                    list = list.child(machine_list_card(machine, fleet.bruk_schema, is_selected));
+                }
             }
 
             list = list.child(
@@ -363,17 +388,64 @@ fn machine_detail_pane(
                 if settings_open {
                     container = container.child(machine_settings_drawer(&machine));
                 }
-            } else {
+            } else if !add_open {
                 container = container.child(
                     view()
-                        .p(px(24.0))
-                        .rounded(px(12.0))
-                        .border_1()
-                        .border_color(palette::border_color())
+                        .test_id("machines-empty-state")
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .py(px(64.0))
+                        .px(px(24.0))
+                        .gap(px(12.0))
                         .child(
-                            text("No machines configured yet. Add an SSH host to run sessions remotely.")
-                                .text_size(px(13.0))
-                                .text_color(palette::text_muted()),
+                            view()
+                                .w(px(44.0))
+                                .h(px(44.0))
+                                .rounded(px(11.0))
+                                .bg(palette::subtle_surface_bg())
+                                .border_1()
+                                .border_color(palette::divider_color())
+                                .items_center()
+                                .justify_center()
+                                .child(icons::machines(palette::text_secondary())),
+                        )
+                        .child(
+                            text("No machines configured")
+                                .text_size(px(17.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text(
+                                "Connect remote Linux, macOS, or Windows hosts over SSH with a key to run and resume workflow sessions across machines.",
+                            )
+                            .text_center()
+                            .w(px(420.0))
+                            .text_size(px(13.0))
+                            .text_color(palette::text_muted()),
+                        )
+                        .child(
+                            button()
+                                .test_id("machines-empty-add")
+                                .accessibility_label("Add Machine")
+                                .on_press(|| store::set_machines_add_drawer_open(true))
+                                .mt(px(4.0))
+                                .h(px(34.0))
+                                .px(px(15.0))
+                                .rounded(px(8.0))
+                                .bg(palette::nav_active_bg())
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .active(|s| s.opacity(0.85))
+                                .child(icons::plus(palette::nav_active_fg()))
+                                .child(
+                                    text("Add Machine...")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette::nav_active_fg()),
+                                ),
                         ),
                 );
             }
@@ -1487,11 +1559,7 @@ fn add_machine_drawer(
                                 arch: String::new(),
                                 address: draft_address.get(),
                                 ssh_target: draft_ssh.get(),
-                                allowed_projects: vec![
-                                    "api-gateway".to_owned(),
-                                    "marketing-site".to_owned(),
-                                    "mobile-app".to_owned(),
-                                ],
+                                allowed_projects: store::available_machine_project_names(),
                             };
                             match store::add_machine(draft) {
                                 Ok(()) => {
@@ -1570,17 +1638,25 @@ fn platform_chip(
 
 fn machine_settings_drawer(machine: &MachineRecord) -> impl IntoElement {
     let id = machine.id;
-    let available_projects = ["api-gateway", "marketing-site", "mobile-app"];
+    let available_projects = store::available_machine_project_names();
 
     let mut chips = view().flex_row().items_center().gap(px(8.0));
+    if available_projects.is_empty() {
+        chips = chips.child(
+            text("No registered projects yet.")
+                .text_size(px(12.0))
+                .text_color(palette::text_muted()),
+        );
+    }
     for project in available_projects {
-        let allowed = machine.allowed_projects.iter().any(|p| p == project);
-        let project_owned = project.to_owned();
-        let slug = slugify(project);
+        let allowed = machine.allowed_projects.iter().any(|p| p == &project);
+        let slug = slugify(&project);
+        let project_label = project.clone();
+        let project_owned = project;
         chips = chips.child(
             button()
                 .test_id(&format!("machine-setting-project-{slug}"))
-                .accessibility_label(format!("Toggle project {project}"))
+                .accessibility_label(format!("Toggle project {project_label}"))
                 .on_press(move || store::toggle_machine_project_access(id, &project_owned))
                 .h(px(28.0))
                 .px(px(10.0))
@@ -1610,7 +1686,7 @@ fn machine_settings_drawer(machine: &MachineRecord) -> impl IntoElement {
                         }),
                 )
                 .child(
-                    text(project)
+                    text(project_label)
                         .text_size(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(if allowed {

@@ -54,7 +54,10 @@ pub(crate) fn shell() -> impl IntoElement {
                 .child(content_pane()),
         )
         .child(when(
-            || store::active_view() == ActiveView::WorkflowRun,
+            || {
+                store::active_view() == ActiveView::WorkflowRun
+                    && !store::active_workflow_run().is_empty()
+            },
             workflow_run_footer_bar,
         ))
 }
@@ -157,25 +160,46 @@ fn header_title_block() -> impl IntoElement {
             text(move || match store::active_view() {
                 ActiveView::Dashboard => {
                     let snap = store::dashboard_snapshot();
-                    format!("{} · {}", snap.filter_label, snap.date_range_label)
+                    if snap.is_empty() {
+                        "No activity yet".to_owned()
+                    } else {
+                        format!("{} · {}", snap.filter_label, snap.date_range_label)
+                    }
                 }
                 ActiveView::Inbox => store::inbox_state().header_subtitle(),
                 ActiveView::Machines => store::machines_fleet().header_subtitle(),
                 ActiveView::WorkQueue => {
                     let queue = store::active_work_queue();
-                    format!(
-                        "{} · {} · {}",
-                        queue.project_name, queue.tracker_name, queue.repo_slug
-                    )
+                    if queue.project_name.is_empty() {
+                        "No project selected".to_owned()
+                    } else if queue.repo_slug.is_empty() {
+                        format!("{} · No issue source connected", queue.project_name)
+                    } else {
+                        format!(
+                            "{} · {} · {}",
+                            queue.project_name, queue.tracker_name, queue.repo_slug
+                        )
+                    }
                 }
-                ActiveView::Workflows => store::active_workflows_overview().header_subtitle(),
+                ActiveView::Workflows => {
+                    let overview = store::active_workflows_overview();
+                    if overview.project_name.is_empty() {
+                        "No project selected".to_owned()
+                    } else {
+                        overview.header_subtitle()
+                    }
+                }
                 ActiveView::WorkflowEditor => {
                     let doc = store::active_workflow_editor();
                     format!("{} › Workflows", doc.project_name)
                 }
                 ActiveView::WorkflowRun => {
                     let run = store::active_workflow_run();
-                    format!("{} · Run #{}", run.project_name, run.run_number)
+                    if run.is_empty() {
+                        format!("{} · No runs yet", run.project_name)
+                    } else {
+                        format!("{} · Run #{}", run.project_name, run.run_number)
+                    }
                 }
                 ActiveView::RegisterProject => "Track local repositories in SQLite".to_owned(),
                 ActiveView::Workspace => store::selected_project()
@@ -669,10 +693,49 @@ fn sidebar() -> impl IntoElement {
                     .child(when(
                         || store::project_ids().is_empty(),
                         || {
-                            text("No projects tracked yet")
-                                .px(px(8.0))
-                                .text_size(px(12.0))
-                                .text_color(palette::text_muted())
+                            view()
+                                .mx(px(4.0))
+                                .mt(px(4.0))
+                                .p(px(10.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(palette::divider_color())
+                                .bg(palette::card_bg())
+                                .gap(px(6.0))
+                                .child(
+                                    text("No projects yet")
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::text_secondary()),
+                                )
+                                .child(
+                                    text("Register a local repository to get started.")
+                                        .text_size(px(11.0))
+                                        .text_color(palette::text_muted()),
+                                )
+                                .child(
+                                    button()
+                                        .test_id("sidebar-empty-register-project")
+                                        .accessibility_label("Register a Project")
+                                        .on_press(store::open_register_project)
+                                        .mt(px(2.0))
+                                        .px(px(8.0))
+                                        .py(px(4.5))
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::control_bg())
+                                        .items_center()
+                                        .justify_center()
+                                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                        .active(|s| s.opacity(0.8))
+                                        .child(
+                                            text("Register Project")
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(palette::text_primary()),
+                                        ),
+                                )
                         },
                     ))
                     .child(each(
@@ -681,7 +744,10 @@ fn sidebar() -> impl IntoElement {
                         |id, _| sidebar_project_row(id.get_untracked()),
                     ))
                     .child(when(
-                        || store::active_view() == ActiveView::WorkflowRun,
+                        || {
+                            store::active_view() == ActiveView::WorkflowRun
+                                && !store::deploy_watch_entries().is_empty()
+                        },
                         sidebar_deploy_watch_section,
                     )),
             ),
@@ -785,8 +851,36 @@ fn sidebar_providers_section() -> impl IntoElement {
                 .text_color(palette::text_muted()),
         )
         .child(dynamic(|| {
+            let statuses = store::sidebar_provider_statuses();
+            if statuses.is_empty() {
+                return view()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(6.0))
+                    .child(
+                        text("None connected")
+                            .text_size(px(11.5))
+                            .text_color(palette::text_muted()),
+                    )
+                    .child(
+                        button()
+                            .test_id("sidebar-configure-providers")
+                            .accessibility_label("Configure Providers")
+                            .on_press(|| store::open_preferences_tab(PreferencesTab::Providers))
+                            .hover(|s| s.opacity(0.8))
+                            .child(
+                                text("Configure…")
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::link_blue()),
+                            ),
+                    )
+                    .into_element();
+            }
+
             let mut rows = view().gap(px(4.5));
-            for (name, status, is_running) in store::sidebar_provider_statuses() {
+            for (name, status, is_running) in statuses {
                 rows = rows.child(
                     view()
                         .flex_row()
@@ -821,7 +915,7 @@ fn sidebar_providers_section() -> impl IntoElement {
                         ),
                 );
             }
-            rows
+            rows.into_element()
         }))
 }
 
@@ -1221,7 +1315,12 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                         .child(
                             text(move || {
                                 let q = store::work_queue_for_project(id);
-                                format!("{} · {}", q.tracker_short_label(), q.active_queue_count())
+                                let tracker = q.tracker_short_label();
+                                if tracker.is_empty() {
+                                    q.active_queue_count().to_string()
+                                } else {
+                                    format!("{tracker} · {}", q.active_queue_count())
+                                }
                             })
                             .text_size(px(11.0))
                             .font_weight(FontWeight::MEDIUM)

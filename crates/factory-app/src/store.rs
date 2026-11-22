@@ -45,7 +45,9 @@ struct AppState {
     factory: FactoryState,
     db: Option<Arc<Mutex<ProjectDatabase>>>,
     db_path_display: String,
+    demo_mode: bool,
     using_sample_projects: bool,
+    saved_real_preferences: Option<AppPreferences>,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
     expanded_projects: BTreeSet<ProjectId>,
@@ -136,311 +138,279 @@ impl Default for AppState {
 
 impl AppState {
     fn from_database_result(result: Result<ProjectDatabase, factory_core::StorageError>) -> Self {
-        let dashboard_dataset = DashboardDataset::sample();
-        let inbox = InboxState::sample();
+        let (db, db_path_display, persisted_projects, persisted_prefs, status_message, reg_error) =
+            match result {
+                Ok(db) => {
+                    let db_path_display = db
+                        .path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| ":memory:".to_owned());
+                    let (projects, mut status_message) = match db.list_projects() {
+                        Ok(projects) => (projects, None),
+                        Err(err) => (Vec::new(), Some(format!("Failed to load projects: {err}"))),
+                    };
+                    let preferences = match db.load_preferences() {
+                        Ok(Some(prefs)) => prefs,
+                        Ok(None) => AppPreferences::empty(),
+                        Err(err) => {
+                            if status_message.is_none() {
+                                status_message = Some(format!("Failed to load preferences: {err}"));
+                            }
+                            AppPreferences::empty()
+                        }
+                    };
+                    (
+                        Some(Arc::new(Mutex::new(db))),
+                        db_path_display,
+                        projects,
+                        preferences,
+                        status_message,
+                        None,
+                    )
+                }
+                Err(err) => (
+                    None,
+                    "Unavailable".to_owned(),
+                    Vec::new(),
+                    AppPreferences::empty(),
+                    Some(format!("Could not open SQLite database: {err}")),
+                    Some(format!("Database unavailable: {err}")),
+                ),
+            };
+
+        let demo_mode = persisted_prefs.demo_mode;
+        Self::build_for_mode(
+            db,
+            db_path_display,
+            persisted_projects,
+            persisted_prefs,
+            demo_mode,
+            status_message,
+            reg_error,
+        )
+    }
+
+    fn build_for_mode(
+        db: Option<Arc<Mutex<ProjectDatabase>>>,
+        db_path_display: String,
+        persisted_projects: Vec<Project>,
+        persisted_prefs: AppPreferences,
+        demo_mode: bool,
+        status_message: Option<String>,
+        registration_error: Option<String>,
+    ) -> Self {
+        let (preferences, saved_real_preferences) = if demo_mode {
+            let mut real_copy = persisted_prefs.clone();
+            real_copy.demo_mode = false;
+            let mut sample = AppPreferences::sample();
+            sample.demo_mode = true;
+            sample.general = persisted_prefs.general;
+            sample.appearance = persisted_prefs.appearance;
+            sample.machines = persisted_prefs.machines;
+            sample.advanced = persisted_prefs.advanced;
+            (sample, Some(real_copy))
+        } else {
+            let mut clean = persisted_prefs;
+            clean.demo_mode = false;
+            (clean, None)
+        };
+
+        let selected_provider_id = default_selected_provider_id(&preferences);
+        let active_view = landing_to_active_view(preferences.general.default_landing_view);
+
+        let using_sample_projects = demo_mode && persisted_projects.is_empty();
+        let projects = if using_sample_projects {
+            DashboardDataset::sample_projects()
+        } else {
+            persisted_projects
+        };
+
+        let factory = FactoryState::with_projects(projects);
+        let selected_project = factory.projects().first().map(|project| project.id);
+        let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+        let mut expanded_projects = BTreeSet::new();
+        if let Some(pid) = selected_project {
+            expanded_projects.insert(pid);
+        }
+
+        let mut work_queues = BTreeMap::new();
+        let mut workflows_overviews = BTreeMap::new();
+        let mut project_settings = BTreeMap::new();
+        for project in factory.projects() {
+            let path_str = project.root_path.display().to_string();
+            if demo_mode {
+                work_queues.insert(
+                    project.name.clone(),
+                    ProjectWorkQueue::for_project(&project.name),
+                );
+                workflows_overviews.insert(
+                    project.name.clone(),
+                    ProjectWorkflowsOverview::for_project(&project.name),
+                );
+                project_settings.insert(
+                    project.name.clone(),
+                    ProjectSettings::for_project(&project.name, &path_str, &project.default_branch),
+                );
+            } else {
+                work_queues.insert(project.name.clone(), ProjectWorkQueue::empty(&project.name));
+                workflows_overviews.insert(
+                    project.name.clone(),
+                    ProjectWorkflowsOverview::empty(&project.name),
+                );
+                project_settings.insert(
+                    project.name.clone(),
+                    ProjectSettings::empty(&project.name, &path_str, &project.default_branch),
+                );
+            }
+        }
+
+        let work_queue_selected_issue = selected_project
+            .and_then(|pid| factory.project(pid))
+            .and_then(|project| work_queues.get(&project.name))
+            .and_then(ProjectWorkQueue::default_selected_issue);
+        let workflows_selected_id = selected_project
+            .and_then(|pid| factory.project(pid))
+            .and_then(|project| workflows_overviews.get(&project.name))
+            .and_then(ProjectWorkflowsOverview::default_selected_id);
+
+        let (
+            dashboard_dataset,
+            inbox,
+            machines_fleet,
+            workflow_runs_detail,
+            active_workflow_run_key,
+            workflow_run_selected_step,
+            workflow_editors,
+            active_workflow_editor_key,
+            deploy_watch_entries,
+        ) = if demo_mode {
+            let mut runs_detail = BTreeMap::new();
+            let default_run = WorkflowRunViewData::sample_release_prep();
+            let default_step = default_run.active_step_index;
+            runs_detail.insert(
+                ("api-gateway".to_owned(), "Release prep".to_owned()),
+                default_run,
+            );
+            (
+                DashboardDataset::sample(),
+                InboxState::sample(),
+                MachinesFleet::sample(),
+                runs_detail,
+                ("api-gateway".to_owned(), "Release prep".to_owned()),
+                default_step,
+                BTreeMap::from([(
+                    ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                    WorkflowEditorDocument::sample_fix_issue("api-gateway"),
+                )]),
+                ("api-gateway".to_owned(), "fix-issue".to_owned()),
+                WorkflowRunViewData::sample_deploy_watch(),
+            )
+        } else {
+            (
+                DashboardDataset::empty(),
+                InboxState::empty(),
+                MachinesFleet::empty(),
+                BTreeMap::new(),
+                (String::new(), String::new()),
+                0,
+                BTreeMap::new(),
+                (String::new(), String::new()),
+                Vec::new(),
+            )
+        };
+
         let inbox_selected_id = inbox.default_selected_id();
         let (inbox_edited_command, inbox_always_allow_pattern, inbox_question_choice) =
             draft_defaults_for_selection(&inbox, inbox_selected_id.as_deref());
-        let machines_fleet = MachinesFleet::sample();
         let selected_machine_id = machines_fleet.default_selected_id();
 
-        match result {
-            Ok(db) => {
-                let db_path_display = db
-                    .path()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|| ":memory:".to_owned());
-                let (persisted_projects, mut status_message) = match db.list_projects() {
-                    Ok(projects) => (projects, None),
-                    Err(err) => (Vec::new(), Some(format!("Failed to load projects: {err}"))),
-                };
-                let preferences = match db.load_preferences() {
-                    Ok(Some(prefs)) => prefs,
-                    Ok(None) => AppPreferences::sample(),
-                    Err(err) => {
-                        if status_message.is_none() {
-                            status_message = Some(format!("Failed to load preferences: {err}"));
-                        }
-                        AppPreferences::sample()
-                    }
-                };
-                let selected_provider_id = default_selected_provider_id(&preferences);
-                let active_view = landing_to_active_view(preferences.general.default_landing_view);
-                let using_sample_projects = persisted_projects.is_empty();
-                let projects = if using_sample_projects {
-                    DashboardDataset::sample_projects()
-                } else {
-                    persisted_projects
-                };
-                let factory = FactoryState::with_projects(projects);
-                let selected_project = factory.projects().first().map(|project| project.id);
-                let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
-                let mut expanded_projects = BTreeSet::new();
-                if let Some(pid) = selected_project {
-                    expanded_projects.insert(pid);
-                }
-                let mut work_queues = BTreeMap::new();
-                let mut workflows_overviews = BTreeMap::new();
-                let mut project_settings = BTreeMap::new();
-                for project in factory.projects() {
-                    work_queues.insert(
-                        project.name.clone(),
-                        ProjectWorkQueue::for_project(&project.name),
-                    );
-                    workflows_overviews.insert(
-                        project.name.clone(),
-                        ProjectWorkflowsOverview::for_project(&project.name),
-                    );
-                    project_settings.insert(
-                        project.name.clone(),
-                        ProjectSettings::for_project(
-                            &project.name,
-                            &project.root_path.display().to_string(),
-                            &project.default_branch,
-                        ),
-                    );
-                }
-                let work_queue_selected_issue = selected_project
-                    .and_then(|pid| factory.project(pid))
-                    .and_then(|project| work_queues.get(&project.name))
-                    .and_then(ProjectWorkQueue::default_selected_issue);
-                let workflows_selected_id = selected_project
-                    .and_then(|pid| factory.project(pid))
-                    .and_then(|project| workflows_overviews.get(&project.name))
-                    .and_then(ProjectWorkflowsOverview::default_selected_id);
-                let mut workflow_runs_detail = BTreeMap::new();
-                let default_run = WorkflowRunViewData::sample_release_prep();
-                let default_step = default_run.active_step_index;
-                workflow_runs_detail.insert(
-                    ("api-gateway".to_owned(), "Release prep".to_owned()),
-                    default_run,
-                );
-                Self {
-                    factory,
-                    db: Some(Arc::new(Mutex::new(db))),
-                    db_path_display,
-                    using_sample_projects,
-                    active_view,
-                    selected_project,
-                    expanded_projects,
-                    selected_workflow,
-                    selected_run: None,
-                    work_queues,
-                    work_queue_view_mode: WorkQueueViewMode::Board,
-                    work_queue_selected_issue,
-                    work_queue_inspector_visible: true,
-                    work_queue_editing_intake: false,
-                    work_queue_ad_hoc_open: false,
-                    work_queue_unmatched_expanded: false,
-                    workflows_overviews,
-                    workflows_filter: WorkflowsFilter::All,
-                    workflows_sort: WorkflowsSort::LastRun,
-                    workflows_search: String::new(),
-                    workflows_selected_id,
-                    workflows_inspector_visible: true,
-                    workflows_new_drawer_open: false,
-                    workflows_import_drawer_open: false,
-                    workflows_editing_selected: false,
-                    workflows_ad_hoc_open: false,
-                    workflows_more_menu_open: false,
-                    workflow_editors: BTreeMap::from([(
-                        ("api-gateway".to_owned(), "fix-issue".to_owned()),
-                        WorkflowEditorDocument::sample_fix_issue("api-gateway"),
-                    )]),
-                    active_workflow_editor_key: ("api-gateway".to_owned(), "fix-issue".to_owned()),
-                    workflow_editor_return_view: ActiveView::Workflows,
-                    workflow_editor_palette_search: String::new(),
-                    workflow_editor_inspector_visible: true,
-                    workflow_editor_history_open: false,
-                    workflow_editor_ad_hoc_open: false,
-                    workflow_editor_validation: None,
-                    workflow_runs_detail,
-                    active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
-                    workflow_run_selected_step: default_step,
-                    workflow_run_tab: RunDetailTab::Output,
-                    workflow_run_inspector_visible: true,
-                    workflow_run_command_palette_open: false,
-                    deploy_watch_entries: WorkflowRunViewData::sample_deploy_watch(),
-                    dashboard_dataset,
-                    dashboard_granularity: DashboardGranularity::Week,
-                    dashboard_period_offset: 0,
-                    dashboard_project_filter: None,
-                    tokens_show_table: false,
-                    inbox,
-                    inbox_filter: InboxFilter::All,
-                    inbox_selected_id,
-                    inbox_answered_expanded: false,
-                    inbox_waiting_rules_open: false,
-                    inbox_editing_command: false,
-                    inbox_edited_command,
-                    inbox_always_allow_open: false,
-                    inbox_always_allow_pattern,
-                    inbox_note_draft: String::new(),
-                    inbox_question_choice,
-                    inbox_feedback: None,
-                    menubar_popover_open: false,
-                    menubar_anchor_bounds: None,
-                    machines_fleet,
-                    selected_machine_id,
-                    machines_changes_expanded: false,
-                    machines_update_cores_open: false,
-                    machines_add_drawer_open: false,
-                    machines_settings_open: false,
-                    preferences,
-                    preferences_open: false,
-                    preferences_focused: false,
-                    preferences_tab: PreferencesTab::Providers,
-                    selected_provider_id,
-                    selected_prefs_machine_id: selected_machine_id,
-                    preferences_feedback: None,
-                    preferences_error: None,
-                    project_settings,
-                    project_settings_open: false,
-                    project_settings_focused: false,
-                    project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
-                    project_settings_feedback: None,
-                    project_settings_error: None,
-                    sidebar_visible: true,
-                    status_message,
-                    registration_error: None,
-                }
-            }
-            Err(err) => {
-                let factory = FactoryState::with_projects(DashboardDataset::sample_projects());
-                let selected_project = factory.projects().first().map(|project| project.id);
-                let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
-                let mut expanded_projects = BTreeSet::new();
-                if let Some(pid) = selected_project {
-                    expanded_projects.insert(pid);
-                }
-                let mut work_queues = BTreeMap::new();
-                let mut workflows_overviews = BTreeMap::new();
-                let mut project_settings = BTreeMap::new();
-                for project in factory.projects() {
-                    work_queues.insert(
-                        project.name.clone(),
-                        ProjectWorkQueue::for_project(&project.name),
-                    );
-                    workflows_overviews.insert(
-                        project.name.clone(),
-                        ProjectWorkflowsOverview::for_project(&project.name),
-                    );
-                    project_settings.insert(
-                        project.name.clone(),
-                        ProjectSettings::for_project(
-                            &project.name,
-                            &project.root_path.display().to_string(),
-                            &project.default_branch,
-                        ),
-                    );
-                }
-                let work_queue_selected_issue = selected_project
-                    .and_then(|pid| factory.project(pid))
-                    .and_then(|project| work_queues.get(&project.name))
-                    .and_then(ProjectWorkQueue::default_selected_issue);
-                let workflows_selected_id = selected_project
-                    .and_then(|pid| factory.project(pid))
-                    .and_then(|project| workflows_overviews.get(&project.name))
-                    .and_then(ProjectWorkflowsOverview::default_selected_id);
-                let mut workflow_runs_detail = BTreeMap::new();
-                let default_run = WorkflowRunViewData::sample_release_prep();
-                let default_step = default_run.active_step_index;
-                workflow_runs_detail.insert(
-                    ("api-gateway".to_owned(), "Release prep".to_owned()),
-                    default_run,
-                );
-                let preferences = AppPreferences::sample();
-                let selected_provider_id = default_selected_provider_id(&preferences);
-                Self {
-                    factory,
-                    db: None,
-                    db_path_display: "Unavailable".to_owned(),
-                    using_sample_projects: true,
-                    active_view: ActiveView::Dashboard,
-                    selected_project,
-                    expanded_projects,
-                    selected_workflow,
-                    selected_run: None,
-                    work_queues,
-                    work_queue_view_mode: WorkQueueViewMode::Board,
-                    work_queue_selected_issue,
-                    work_queue_inspector_visible: true,
-                    work_queue_editing_intake: false,
-                    work_queue_ad_hoc_open: false,
-                    work_queue_unmatched_expanded: false,
-                    workflows_overviews,
-                    workflows_filter: WorkflowsFilter::All,
-                    workflows_sort: WorkflowsSort::LastRun,
-                    workflows_search: String::new(),
-                    workflows_selected_id,
-                    workflows_inspector_visible: true,
-                    workflows_new_drawer_open: false,
-                    workflows_import_drawer_open: false,
-                    workflows_editing_selected: false,
-                    workflows_ad_hoc_open: false,
-                    workflows_more_menu_open: false,
-                    workflow_editors: BTreeMap::from([(
-                        ("api-gateway".to_owned(), "fix-issue".to_owned()),
-                        WorkflowEditorDocument::sample_fix_issue("api-gateway"),
-                    )]),
-                    active_workflow_editor_key: ("api-gateway".to_owned(), "fix-issue".to_owned()),
-                    workflow_editor_return_view: ActiveView::Workflows,
-                    workflow_editor_palette_search: String::new(),
-                    workflow_editor_inspector_visible: true,
-                    workflow_editor_history_open: false,
-                    workflow_editor_ad_hoc_open: false,
-                    workflow_editor_validation: None,
-                    workflow_runs_detail,
-                    active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
-                    workflow_run_selected_step: default_step,
-                    workflow_run_tab: RunDetailTab::Output,
-                    workflow_run_inspector_visible: true,
-                    workflow_run_command_palette_open: false,
-                    deploy_watch_entries: WorkflowRunViewData::sample_deploy_watch(),
-                    dashboard_dataset,
-                    dashboard_granularity: DashboardGranularity::Week,
-                    dashboard_period_offset: 0,
-                    dashboard_project_filter: None,
-                    tokens_show_table: false,
-                    inbox,
-                    inbox_filter: InboxFilter::All,
-                    inbox_selected_id,
-                    inbox_answered_expanded: false,
-                    inbox_waiting_rules_open: false,
-                    inbox_editing_command: false,
-                    inbox_edited_command,
-                    inbox_always_allow_open: false,
-                    inbox_always_allow_pattern,
-                    inbox_note_draft: String::new(),
-                    inbox_question_choice,
-                    inbox_feedback: None,
-                    menubar_popover_open: false,
-                    menubar_anchor_bounds: None,
-                    machines_fleet,
-                    selected_machine_id,
-                    machines_changes_expanded: false,
-                    machines_update_cores_open: false,
-                    machines_add_drawer_open: false,
-                    machines_settings_open: false,
-                    preferences,
-                    preferences_open: false,
-                    preferences_focused: false,
-                    preferences_tab: PreferencesTab::Providers,
-                    selected_provider_id,
-                    selected_prefs_machine_id: selected_machine_id,
-                    preferences_feedback: None,
-                    preferences_error: None,
-                    project_settings,
-                    project_settings_open: false,
-                    project_settings_focused: false,
-                    project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
-                    project_settings_feedback: None,
-                    project_settings_error: None,
-                    sidebar_visible: true,
-                    status_message: Some(format!("Could not open SQLite database: {err}")),
-                    registration_error: Some(format!("Database unavailable: {err}")),
-                }
-            }
+        Self {
+            factory,
+            db,
+            db_path_display,
+            demo_mode,
+            using_sample_projects,
+            saved_real_preferences,
+            active_view,
+            selected_project,
+            expanded_projects,
+            selected_workflow,
+            selected_run: None,
+            work_queues,
+            work_queue_view_mode: WorkQueueViewMode::Board,
+            work_queue_selected_issue,
+            work_queue_inspector_visible: true,
+            work_queue_editing_intake: false,
+            work_queue_ad_hoc_open: false,
+            work_queue_unmatched_expanded: false,
+            workflows_overviews,
+            workflows_filter: WorkflowsFilter::All,
+            workflows_sort: WorkflowsSort::LastRun,
+            workflows_search: String::new(),
+            workflows_selected_id,
+            workflows_inspector_visible: true,
+            workflows_new_drawer_open: false,
+            workflows_import_drawer_open: false,
+            workflows_editing_selected: false,
+            workflows_ad_hoc_open: false,
+            workflows_more_menu_open: false,
+            workflow_editors,
+            active_workflow_editor_key,
+            workflow_editor_return_view: ActiveView::Workflows,
+            workflow_editor_palette_search: String::new(),
+            workflow_editor_inspector_visible: true,
+            workflow_editor_history_open: false,
+            workflow_editor_ad_hoc_open: false,
+            workflow_editor_validation: None,
+            workflow_runs_detail,
+            active_workflow_run_key,
+            workflow_run_selected_step,
+            workflow_run_tab: RunDetailTab::Output,
+            workflow_run_inspector_visible: true,
+            workflow_run_command_palette_open: false,
+            deploy_watch_entries,
+            dashboard_dataset,
+            dashboard_granularity: DashboardGranularity::Week,
+            dashboard_period_offset: 0,
+            dashboard_project_filter: None,
+            tokens_show_table: false,
+            inbox,
+            inbox_filter: InboxFilter::All,
+            inbox_selected_id,
+            inbox_answered_expanded: false,
+            inbox_waiting_rules_open: false,
+            inbox_editing_command: false,
+            inbox_edited_command,
+            inbox_always_allow_open: false,
+            inbox_always_allow_pattern,
+            inbox_note_draft: String::new(),
+            inbox_question_choice,
+            inbox_feedback: None,
+            menubar_popover_open: false,
+            menubar_anchor_bounds: None,
+            machines_fleet,
+            selected_machine_id,
+            machines_changes_expanded: false,
+            machines_update_cores_open: false,
+            machines_add_drawer_open: false,
+            machines_settings_open: false,
+            preferences,
+            preferences_open: false,
+            preferences_focused: false,
+            preferences_tab: PreferencesTab::Providers,
+            selected_provider_id,
+            selected_prefs_machine_id: selected_machine_id,
+            preferences_feedback: None,
+            preferences_error: None,
+            project_settings,
+            project_settings_open: false,
+            project_settings_focused: false,
+            project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
+            project_settings_feedback: None,
+            project_settings_error: None,
+            sidebar_visible: true,
+            status_message,
+            registration_error,
         }
     }
 
@@ -449,36 +419,68 @@ impl AppState {
             .and_then(|id| self.factory.project(id))
             .or_else(|| self.factory.projects().first())
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "api-gateway".to_owned())
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    "api-gateway".to_owned()
+                } else {
+                    String::new()
+                }
+            })
     }
 
     fn ensure_queue_mut(&mut self, project_name: &str) -> &mut ProjectWorkQueue {
+        let demo = self.demo_mode;
         self.work_queues
             .entry(project_name.to_owned())
-            .or_insert_with(|| ProjectWorkQueue::for_project(project_name))
+            .or_insert_with(|| {
+                if demo {
+                    ProjectWorkQueue::for_project(project_name)
+                } else {
+                    ProjectWorkQueue::empty(project_name)
+                }
+            })
     }
 
     fn queue_for_name(&self, project_name: &str) -> ProjectWorkQueue {
         self.work_queues
             .get(project_name)
             .cloned()
-            .unwrap_or_else(|| ProjectWorkQueue::for_project(project_name))
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    ProjectWorkQueue::for_project(project_name)
+                } else {
+                    ProjectWorkQueue::empty(project_name)
+                }
+            })
     }
 
     fn ensure_workflows_overview_mut(
         &mut self,
         project_name: &str,
     ) -> &mut ProjectWorkflowsOverview {
+        let demo = self.demo_mode;
         self.workflows_overviews
             .entry(project_name.to_owned())
-            .or_insert_with(|| ProjectWorkflowsOverview::for_project(project_name))
+            .or_insert_with(|| {
+                if demo {
+                    ProjectWorkflowsOverview::for_project(project_name)
+                } else {
+                    ProjectWorkflowsOverview::empty(project_name)
+                }
+            })
     }
 
     fn workflows_overview_for_name(&self, project_name: &str) -> ProjectWorkflowsOverview {
         self.workflows_overviews
             .get(project_name)
             .cloned()
-            .unwrap_or_else(|| ProjectWorkflowsOverview::for_project(project_name))
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    ProjectWorkflowsOverview::for_project(project_name)
+                } else {
+                    ProjectWorkflowsOverview::empty(project_name)
+                }
+            })
     }
 
     fn sync_selected_workflow_overview_for_active_project(&mut self) {
@@ -506,19 +508,30 @@ impl AppState {
                 )
             })
             .unwrap_or_else(|| {
-                (
-                    "api-gateway".to_owned(),
-                    "/Users/jonathan/src/api-gateway".to_owned(),
-                    "main".to_owned(),
-                )
+                if self.demo_mode {
+                    (
+                        "api-gateway".to_owned(),
+                        "/Users/jonathan/src/api-gateway".to_owned(),
+                        "main".to_owned(),
+                    )
+                } else {
+                    (String::new(), String::new(), "main".to_owned())
+                }
             })
     }
 
     fn ensure_project_settings_mut(&mut self) -> &mut ProjectSettings {
         let (name, path, branch) = self.selected_project_meta();
+        let demo = self.demo_mode;
         self.project_settings
             .entry(name.clone())
-            .or_insert_with(|| ProjectSettings::for_project(&name, &path, &branch))
+            .or_insert_with(|| {
+                if demo {
+                    ProjectSettings::for_project(&name, &path, &branch)
+                } else {
+                    ProjectSettings::empty(&name, &path, &branch)
+                }
+            })
     }
 
     fn active_project_settings_clone(&self) -> ProjectSettings {
@@ -526,7 +539,13 @@ impl AppState {
         self.project_settings
             .get(&name)
             .cloned()
-            .unwrap_or_else(|| ProjectSettings::for_project(&name, &path, &branch))
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    ProjectSettings::for_project(&name, &path, &branch)
+                } else {
+                    ProjectSettings::empty(&name, &path, &branch)
+                }
+            })
     }
 
     fn sync_queue_from_project_settings(&mut self) {
@@ -562,9 +581,14 @@ impl AppState {
         workflow_name: &str,
     ) -> &mut WorkflowRunViewData {
         let key = (project_name.to_owned(), workflow_name.to_owned());
-        self.workflow_runs_detail
-            .entry(key)
-            .or_insert_with(|| WorkflowRunViewData::for_workflow(project_name, workflow_name))
+        let demo = self.demo_mode;
+        self.workflow_runs_detail.entry(key).or_insert_with(|| {
+            if demo {
+                WorkflowRunViewData::for_workflow(project_name, workflow_name)
+            } else {
+                WorkflowRunViewData::empty(project_name, workflow_name)
+            }
+        })
     }
 
     fn active_workflow_run_clone(&self) -> WorkflowRunViewData {
@@ -572,14 +596,25 @@ impl AppState {
         self.workflow_runs_detail
             .get(&self.active_workflow_run_key)
             .cloned()
-            .unwrap_or_else(|| WorkflowRunViewData::for_workflow(project, workflow))
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    WorkflowRunViewData::for_workflow(project, workflow)
+                } else {
+                    WorkflowRunViewData::empty(project, workflow)
+                }
+            })
     }
 
     fn ensure_workflow_editor_mut(&mut self) -> &mut WorkflowEditorDocument {
         let key = self.active_workflow_editor_key.clone();
-        self.workflow_editors
-            .entry(key.clone())
-            .or_insert_with(|| WorkflowEditorDocument::for_workflow_name(&key.0, &key.1))
+        let demo = self.demo_mode;
+        self.workflow_editors.entry(key.clone()).or_insert_with(|| {
+            if demo {
+                WorkflowEditorDocument::for_workflow_name(&key.0, &key.1)
+            } else {
+                WorkflowEditorDocument::empty(&key.0, &key.1)
+            }
+        })
     }
 
     fn active_workflow_editor_clone(&self) -> WorkflowEditorDocument {
@@ -587,7 +622,13 @@ impl AppState {
         self.workflow_editors
             .get(&self.active_workflow_editor_key)
             .cloned()
-            .unwrap_or_else(|| WorkflowEditorDocument::for_workflow_name(project, wf_id))
+            .unwrap_or_else(|| {
+                if self.demo_mode {
+                    WorkflowEditorDocument::for_workflow_name(project, wf_id)
+                } else {
+                    WorkflowEditorDocument::empty(project, wf_id)
+                }
+            })
     }
 
     fn sync_selected_issue_for_active_project(&mut self) {
@@ -626,9 +667,25 @@ impl AppState {
     }
 
     fn persist_preferences(&mut self) {
+        let to_save = if self.demo_mode {
+            let real = self
+                .saved_real_preferences
+                .get_or_insert_with(AppPreferences::empty);
+            real.general = self.preferences.general.clone();
+            real.appearance = self.preferences.appearance.clone();
+            real.machines = self.preferences.machines.clone();
+            real.advanced = self.preferences.advanced.clone();
+            real.demo_mode = false;
+            let mut persisted = real.clone();
+            persisted.demo_mode = true;
+            persisted
+        } else {
+            self.preferences.clone()
+        };
+
         if let Some(db_arc) = self.db.as_ref()
             && let Ok(db) = db_arc.lock()
-            && let Err(err) = db.save_preferences(&self.preferences)
+            && let Err(err) = db.save_preferences(&to_save)
         {
             self.preferences_error = Some(format!("Could not save preferences: {err}"));
         }
@@ -705,6 +762,98 @@ pub(crate) fn init_with_database_path(path: &Path) {
     let mode = loaded.preferences.appearance.mode;
     state().set(loaded);
     apply_appearance_mode(mode);
+}
+
+pub(crate) fn demo_mode() -> bool {
+    state().with(|s| s.demo_mode)
+}
+
+pub(crate) fn set_demo_mode(enabled: bool) {
+    let mut appearance_to_apply = None;
+    state().update(|s| {
+        if s.demo_mode == enabled {
+            return;
+        }
+        let db = s.db.clone();
+        let db_path_display = s.db_path_display.clone();
+        let prev_active_view = s.active_view;
+        let prev_sidebar_visible = s.sidebar_visible;
+        let prev_prefs_open = s.preferences_open;
+        let prev_prefs_tab = s.preferences_tab;
+
+        let persisted_projects = db
+            .as_ref()
+            .and_then(|arc| arc.lock().ok())
+            .and_then(|guard| guard.list_projects().ok())
+            .unwrap_or_default();
+
+        let base_prefs = if enabled {
+            let mut real = s.preferences.clone();
+            real.demo_mode = false;
+            real
+        } else {
+            let mut real = s
+                .saved_real_preferences
+                .clone()
+                .unwrap_or_else(AppPreferences::empty);
+            real.general = s.preferences.general.clone();
+            real.appearance = s.preferences.appearance.clone();
+            real.demo_mode = false;
+            real
+        };
+
+        let status = if enabled {
+            Some("Demo Mode enabled — showing sample data".to_owned())
+        } else {
+            Some("Demo Mode disabled".to_owned())
+        };
+
+        let mut next = AppState::build_for_mode(
+            db.clone(),
+            db_path_display,
+            persisted_projects,
+            base_prefs.clone(),
+            enabled,
+            status,
+            None,
+        );
+        next.sidebar_visible = prev_sidebar_visible;
+        next.preferences_open = prev_prefs_open;
+        next.preferences_tab = prev_prefs_tab;
+
+        let has_projects = !next.factory.projects().is_empty();
+        next.active_view = match prev_active_view {
+            ActiveView::Dashboard
+            | ActiveView::Inbox
+            | ActiveView::Machines
+            | ActiveView::RegisterProject => prev_active_view,
+            ActiveView::WorkQueue | ActiveView::Workflows | ActiveView::Workspace
+                if has_projects =>
+            {
+                prev_active_view
+            }
+            _ => ActiveView::Dashboard,
+        };
+
+        if let Some(db_arc) = db.as_ref()
+            && let Ok(guard) = db_arc.lock()
+        {
+            let mut to_save = base_prefs;
+            to_save.demo_mode = enabled;
+            let _ = guard.save_preferences(&to_save);
+        }
+
+        appearance_to_apply = Some(next.preferences.appearance.mode);
+        *s = next;
+    });
+    if let Some(mode) = appearance_to_apply {
+        apply_appearance_mode(mode);
+    }
+}
+
+pub(crate) fn toggle_demo_mode() {
+    let current = state().with_untracked(|s| s.demo_mode);
+    set_demo_mode(!current);
 }
 
 pub(crate) fn sidebar_visible() -> bool {
@@ -931,7 +1080,7 @@ pub(crate) fn open_project_workflow(project_id: ProjectId, workflow_name: &str) 
             .factory
             .project(project_id)
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "api-gateway".to_owned());
+            .unwrap_or_default();
         let step_index = s
             .ensure_workflow_run_mut(&project_name, &target)
             .active_step_index;
@@ -1090,6 +1239,7 @@ pub(crate) fn approve_workflow_run_review_gate() {
 pub(crate) fn edit_active_workflow() {
     state().update(|s| {
         let (project, workflow_name) = s.active_workflow_run_key.clone();
+        let demo = s.demo_mode;
         let overview_entry = s
             .workflows_overview_for_name(&project)
             .workflows
@@ -1098,12 +1248,16 @@ pub(crate) fn edit_active_workflow() {
         let key = if let Some(entry) = overview_entry {
             let wf_id = entry.id.clone();
             let key = (project.clone(), wf_id);
-            s.workflow_editors
-                .entry(key.clone())
-                .or_insert_with(|| WorkflowEditorDocument::from_overview_entry(&project, &entry));
+            s.workflow_editors.entry(key.clone()).or_insert_with(|| {
+                WorkflowEditorDocument::from_overview_entry_with_demo(&project, &entry, demo)
+            });
             key
         } else {
-            let doc = WorkflowEditorDocument::for_workflow_name(&project, &workflow_name);
+            let doc = if demo {
+                WorkflowEditorDocument::for_workflow_name(&project, &workflow_name)
+            } else {
+                WorkflowEditorDocument::empty(&project, &workflow_name)
+            };
             let key = (project.clone(), doc.workflow_id.clone());
             s.workflow_editors.entry(key.clone()).or_insert(doc);
             key
@@ -1123,32 +1277,37 @@ pub(crate) fn deploy_watch_entries() -> Vec<DeployWatchEntry> {
     state().with(|s| s.deploy_watch_entries.clone())
 }
 
-pub(crate) fn sidebar_provider_statuses() -> Vec<(&'static str, &'static str, bool)> {
+pub(crate) fn sidebar_provider_statuses() -> Vec<(String, &'static str, bool)> {
     state().with(|s| {
         let run = s.active_workflow_run_clone();
-        let running = run.execution_state == RunExecutionState::Running;
+        let running = !run.is_empty() && run.execution_state == RunExecutionState::Running;
         let active_provider = run.active_provider_name.as_str();
-        vec![
-            (
-                "Claude",
-                if running && active_provider == "Claude" {
-                    "Running"
-                } else {
-                    "Ready"
-                },
-                running && active_provider == "Claude",
-            ),
-            (
-                "Codex",
-                if running && active_provider == "Codex" {
-                    "Running"
-                } else {
-                    "Ready"
-                },
-                running && active_provider == "Codex",
-            ),
-            ("OpenRouter · Acme team", "Ready", false),
-        ]
+        let mut rows = Vec::new();
+        if s.preferences.claude.connected {
+            let is_running = running && active_provider == "Claude";
+            rows.push((
+                "Claude".to_owned(),
+                if is_running { "Running" } else { "Ready" },
+                is_running,
+            ));
+        }
+        if s.preferences.codex.connected {
+            let is_running = running && active_provider == "Codex";
+            rows.push((
+                "Codex".to_owned(),
+                if is_running { "Running" } else { "Ready" },
+                is_running,
+            ));
+        }
+        let openrouter_key = s
+            .preferences
+            .openrouter_key("openrouter-acme")
+            .or_else(|| s.preferences.openrouter_keys.iter().find(|k| k.is_default))
+            .or_else(|| s.preferences.openrouter_keys.first());
+        if let Some(key) = openrouter_key {
+            rows.push((format!("OpenRouter · {}", key.name), "Ready", false));
+        }
+        rows
     })
 }
 
@@ -1173,6 +1332,9 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
             Ok(project) => {
                 let id = project.id;
                 let saved_name = project.name.clone();
+                let saved_path = project.root_path.display().to_string();
+                let saved_branch = project.default_branch.clone();
+                let demo = s.demo_mode;
                 if s.using_sample_projects {
                     s.factory = FactoryState::with_projects(vec![project]);
                     s.using_sample_projects = false;
@@ -1180,12 +1342,31 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 } else {
                     s.factory.insert_project(project);
                 }
-                s.work_queues
-                    .entry(saved_name.clone())
-                    .or_insert_with(|| ProjectWorkQueue::for_project(&saved_name));
+                s.work_queues.entry(saved_name.clone()).or_insert_with(|| {
+                    if demo {
+                        ProjectWorkQueue::for_project(&saved_name)
+                    } else {
+                        ProjectWorkQueue::empty(&saved_name)
+                    }
+                });
                 s.workflows_overviews
                     .entry(saved_name.clone())
-                    .or_insert_with(|| ProjectWorkflowsOverview::for_project(&saved_name));
+                    .or_insert_with(|| {
+                        if demo {
+                            ProjectWorkflowsOverview::for_project(&saved_name)
+                        } else {
+                            ProjectWorkflowsOverview::empty(&saved_name)
+                        }
+                    });
+                s.project_settings
+                    .entry(saved_name.clone())
+                    .or_insert_with(|| {
+                        if demo {
+                            ProjectSettings::for_project(&saved_name, &saved_path, &saved_branch)
+                        } else {
+                            ProjectSettings::empty(&saved_name, &saved_path, &saved_branch)
+                        }
+                    });
                 s.selected_project = Some(id);
                 s.expanded_projects.insert(id);
                 s.selected_run = None;
@@ -1282,7 +1463,7 @@ pub(crate) fn work_queue_for_project(id: ProjectId) -> ProjectWorkQueue {
             .factory
             .project(id)
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "api-gateway".to_owned());
+            .unwrap_or_default();
         s.queue_for_name(&name)
     })
 }
@@ -1636,6 +1817,10 @@ pub(crate) fn set_dashboard_granularity(granularity: DashboardGranularity) {
 
 pub(crate) fn step_dashboard_period(delta: i32) {
     state().update(|s| {
+        if !s.demo_mode {
+            s.dashboard_period_offset = 0;
+            return;
+        }
         let (min_offset, max_offset) = match s.dashboard_granularity {
             DashboardGranularity::Week => (-2, 1),
             DashboardGranularity::Month => (-1, 0),
@@ -3128,11 +3313,7 @@ pub(crate) fn add_prefs_machine(
         arch: String::new(),
         address,
         ssh_target,
-        allowed_projects: vec![
-            "api-gateway".to_owned(),
-            "marketing-site".to_owned(),
-            "mobile-app".to_owned(),
-        ],
+        allowed_projects: available_machine_project_names(),
     };
 
     let mut added_ok = false;
@@ -3181,9 +3362,11 @@ pub(crate) fn available_machine_project_names() -> Vec<String> {
             .iter()
             .map(|p| p.name.clone())
             .collect();
-        for fallback in ["api-gateway", "marketing-site", "mobile-app"] {
-            if !names.iter().any(|n| n == fallback) {
-                names.push(fallback.to_owned());
+        if s.demo_mode {
+            for fallback in ["api-gateway", "marketing-site", "mobile-app"] {
+                if !names.iter().any(|n| n == fallback) {
+                    names.push(fallback.to_owned());
+                }
             }
         }
         names
@@ -3230,7 +3413,14 @@ pub(crate) fn step_log_retention_days(delta: i32) {
 
 pub(crate) fn reset_preferences_to_defaults() {
     state().update(|s| {
-        s.preferences = AppPreferences::sample();
+        if s.demo_mode {
+            let mut sample = AppPreferences::sample();
+            sample.demo_mode = true;
+            s.preferences = sample;
+            s.saved_real_preferences = Some(AppPreferences::empty());
+        } else {
+            s.preferences = AppPreferences::empty();
+        }
         s.selected_provider_id = default_selected_provider_id(&s.preferences);
         s.preferences_error = None;
         s.preferences_feedback = Some("Restored default preferences.".to_owned());
@@ -3747,7 +3937,7 @@ pub(crate) fn workflows_overview_for_project(id: ProjectId) -> ProjectWorkflowsO
             .factory
             .project(id)
             .map(|p| p.name.clone())
-            .unwrap_or_else(|| "api-gateway".to_owned());
+            .unwrap_or_default();
         s.workflows_overview_for_name(&name)
     })
 }
@@ -4140,6 +4330,7 @@ pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
     let target_id = workflow_id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
+        let demo = s.demo_mode;
         let entry = s
             .workflows_overview_for_name(&project)
             .workflow(&target_id)
@@ -4147,9 +4338,11 @@ pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
         let key = (project.clone(), target_id.clone());
         s.workflow_editors.entry(key.clone()).or_insert_with(|| {
             if let Some(entry) = entry {
-                WorkflowEditorDocument::from_overview_entry(&project, &entry)
-            } else {
+                WorkflowEditorDocument::from_overview_entry_with_demo(&project, &entry, demo)
+            } else if demo {
                 WorkflowEditorDocument::for_workflow_name(&project, &target_id)
+            } else {
+                WorkflowEditorDocument::empty(&project, &target_id)
             }
         });
         s.active_workflow_editor_key = key;
@@ -4497,4 +4690,75 @@ pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
         }
     });
     launched
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn build_for_mode_toggles_between_empty_and_demo_without_losing_real_projects() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+        let db = ProjectDatabase::open(&db_path).unwrap();
+
+        // Default fresh DB has Demo Mode disabled and empty data everywhere.
+        let clean = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        assert!(!clean.demo_mode);
+        assert!(clean.factory.projects().is_empty());
+        assert!(clean.inbox.pending.is_empty());
+        assert!(clean.machines_fleet.machines.is_empty());
+        assert!(clean.deploy_watch_entries.is_empty());
+        assert!(clean.preferences.openrouter_keys.is_empty());
+        assert!(!clean.preferences.claude.connected);
+
+        // Enabling Demo Mode populates sample data for visual testing.
+        let mut demo_prefs = AppPreferences::empty();
+        demo_prefs.demo_mode = true;
+        db.save_preferences(&demo_prefs).unwrap();
+
+        let mut demo = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        assert!(demo.demo_mode);
+        assert!(demo.using_sample_projects);
+        assert_eq!(demo.factory.projects().len(), 3);
+        assert_eq!(demo.inbox.pending.len(), 5);
+        assert_eq!(demo.machines_fleet.machines.len(), 5);
+        assert_eq!(demo.deploy_watch_entries.len(), 2);
+        assert_eq!(demo.preferences.openrouter_keys.len(), 2);
+        assert!(demo.preferences.claude.connected);
+
+        // Saving preferences while in Demo Mode must NOT leak sample providers/extensions to SQLite.
+        demo.preferences.appearance.mode = AppearanceMode::Dark;
+        demo.persist_preferences();
+        let saved_in_db = db.load_preferences().unwrap().unwrap();
+        assert!(saved_in_db.demo_mode);
+        assert_eq!(saved_in_db.appearance.mode, AppearanceMode::Dark);
+        assert!(!saved_in_db.claude.connected);
+        assert!(!saved_in_db.codex.connected);
+        assert!(saved_in_db.openrouter_keys.is_empty());
+        assert!(saved_in_db.extensions.entries.is_empty());
+
+        // Registering a real project and disabling Demo Mode preserves the real project with empty queues.
+        db.register_project("real-app", "/workspace/real-app", "main", "")
+            .unwrap();
+        demo_prefs.demo_mode = false;
+        db.save_preferences(&demo_prefs).unwrap();
+
+        let restored = AppState::from_database_result(ProjectDatabase::open(&db_path));
+        assert!(!restored.demo_mode);
+        assert!(!restored.using_sample_projects);
+        assert_eq!(restored.factory.projects().len(), 1);
+        assert_eq!(restored.factory.projects()[0].name, "real-app");
+        assert!(restored.inbox.pending.is_empty());
+        assert!(restored.machines_fleet.machines.is_empty());
+        assert!(restored.queue_for_name("real-app").items.is_empty());
+        assert!(
+            restored
+                .workflows_overview_for_name("real-app")
+                .workflows
+                .is_empty()
+        );
+    }
 }

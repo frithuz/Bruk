@@ -2,7 +2,8 @@
 //! and right-hand issue inspector matching `04 WorkQueue.png`.
 
 use factory_core::{
-    IntakeRule, ProjectWorkQueue, UnmatchedIssue, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+    IntakeRule, ProjectSettingsTab, ProjectWorkQueue, UnmatchedIssue, WorkQueueItem,
+    WorkQueueStage, WorkQueueViewMode,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
@@ -31,6 +32,46 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
         .flex_row()
         .bg(palette::canvas_bg())
         .child(scroll().flex_1().min_w(px(0.0)).child(dynamic(move || {
+            if store::selected_project().is_none() {
+                return view()
+                    .test_id("wq-no-project-empty")
+                    .flex_1()
+                    .items_center()
+                    .justify_center()
+                    .py(px(72.0))
+                    .px(px(24.0))
+                    .gap(px(10.0))
+                    .child(
+                        text("No project selected")
+                            .text_size(px(17.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::text_primary()),
+                    )
+                    .child(
+                        text("Register a local repository to manage its issue intake and work queue.")
+                            .text_size(px(13.0))
+                            .text_color(palette::text_muted()),
+                    )
+                    .child(
+                        button()
+                            .on_press(store::open_register_project)
+                            .mt(px(4.0))
+                            .h(px(34.0))
+                            .px(px(15.0))
+                            .rounded(px(8.0))
+                            .bg(palette::nav_active_bg())
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                text("Register a Project")
+                                    .text_size(px(13.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette::nav_active_fg()),
+                            ),
+                    )
+                    .into_element();
+            }
+
             let queue = store::active_work_queue();
             let view_mode = store::work_queue_view_mode();
             let selected_issue = store::selected_work_queue_issue()
@@ -66,17 +107,27 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
                 body = body.child(ad_hoc_run_card(&queue, ad_hoc_workflow, ad_hoc_title));
             }
 
-            body = match view_mode {
-                WorkQueueViewMode::Board => {
-                    body.child(board_view(&queue, selected_issue, workflow_picker_open))
-                }
-                WorkQueueViewMode::List => {
-                    body.child(list_view(&queue, selected_issue, workflow_picker_open))
-                }
-            };
+            let is_unconfigured_empty = queue.items.is_empty()
+                && queue.unmatched_issues.is_empty()
+                && queue.repo_slug.is_empty();
 
-            body = body.child(unmatched_issues_footer(&queue, unmatched_expanded));
-            body
+            if is_unconfigured_empty {
+                body = body.child(work_queue_empty_card());
+            } else {
+                body = match view_mode {
+                    WorkQueueViewMode::Board => {
+                        body.child(board_view(&queue, selected_issue, workflow_picker_open))
+                    }
+                    WorkQueueViewMode::List => {
+                        body.child(list_view(&queue, selected_issue, workflow_picker_open))
+                    }
+                };
+            }
+
+            if !queue.unmatched_issues.is_empty() {
+                body = body.child(unmatched_issues_footer(&queue, unmatched_expanded));
+            }
+            body.into_element()
         })))
         .child(when(store::work_queue_inspector_visible, move || {
             inspector_panel(workflow_picker_open)
@@ -310,46 +361,54 @@ fn ad_hoc_run_card(
     ad_hoc_title: Signal<String>,
 ) -> impl IntoElement {
     let mut workflow_pills = view().flex_row().items_center().gap(px(6.0));
-    for wf in &queue.workflows {
-        let wf_name = wf.name.clone();
-        let wf_border = wf_name.clone();
-        let wf_bg = wf_name.clone();
-        let wf_text = wf_name.clone();
-        let wf_press = wf_name.clone();
+    if queue.workflows.is_empty() {
         workflow_pills = workflow_pills.child(
-            button()
-                .on_press(move || ad_hoc_workflow.set(wf_press.clone()))
-                .px(px(9.0))
-                .py(px(4.5))
-                .rounded(px(7.0))
-                .border_1()
-                .border_color(move || {
-                    if ad_hoc_workflow.get() == wf_border {
-                        palette::nav_active_bg()
-                    } else {
-                        palette::border_color()
-                    }
-                })
-                .bg(move || {
-                    if ad_hoc_workflow.get() == wf_bg {
-                        palette::nav_active_bg()
-                    } else {
-                        palette::control_bg()
-                    }
-                })
-                .child(
-                    text(wf_name)
-                        .text_size(px(11.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(move || {
-                            if ad_hoc_workflow.get() == wf_text {
-                                palette::nav_active_fg()
-                            } else {
-                                palette::text_primary()
-                            }
-                        }),
-                ),
+            text("No workflows configured for this project yet — running with default ad-hoc workflow.")
+                .text_size(px(11.5))
+                .text_color(palette::text_muted()),
         );
+    } else {
+        for wf in &queue.workflows {
+            let wf_name = wf.name.clone();
+            let wf_border = wf_name.clone();
+            let wf_bg = wf_name.clone();
+            let wf_text = wf_name.clone();
+            let wf_press = wf_name.clone();
+            workflow_pills = workflow_pills.child(
+                button()
+                    .on_press(move || ad_hoc_workflow.set(wf_press.clone()))
+                    .px(px(9.0))
+                    .py(px(4.5))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(move || {
+                        if ad_hoc_workflow.get() == wf_border {
+                            palette::nav_active_bg()
+                        } else {
+                            palette::border_color()
+                        }
+                    })
+                    .bg(move || {
+                        if ad_hoc_workflow.get() == wf_bg {
+                            palette::nav_active_bg()
+                        } else {
+                            palette::control_bg()
+                        }
+                    })
+                    .child(
+                        text(wf_name)
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(move || {
+                                if ad_hoc_workflow.get() == wf_text {
+                                    palette::nav_active_fg()
+                                } else {
+                                    palette::text_primary()
+                                }
+                            }),
+                    ),
+            );
+        }
     }
 
     let launch = move || {
@@ -435,7 +494,94 @@ fn ad_hoc_run_card(
         )
 }
 
-// --- Board View (3-column Kanban matching 04 WorkQueue.png) -----------------------------
+// --- Empty State & Board View (3-column Kanban matching 04 WorkQueue.png) ---------------
+
+fn work_queue_empty_card() -> impl IntoElement {
+    view()
+        .test_id("wq-empty-state")
+        .p(px(36.0))
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .items_center()
+        .justify_center()
+        .gap(px(10.0))
+        .child(
+            view()
+                .w(px(40.0))
+                .h(px(40.0))
+                .rounded(px(10.0))
+                .bg(palette::subtle_surface_bg())
+                .border_1()
+                .border_color(palette::divider_color())
+                .items_center()
+                .justify_center()
+                .child(icons::work_queue(palette::text_secondary())),
+        )
+        .child(
+            text("Work queue is empty")
+                .text_size(px(16.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            text(
+                "Connect GitHub Issues or itsaplan in Project Settings to automatically pull labeled issues, or launch an ad-hoc run.",
+            )
+            .text_center()
+            .w(px(440.0))
+            .text_size(px(12.5))
+            .text_color(palette::text_muted()),
+        )
+        .child(
+            view()
+                .pt(px(4.0))
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    button()
+                        .test_id("wq-empty-configure-source")
+                        .accessibility_label("Configure Issue Source")
+                        .on_press(|| {
+                            store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake)
+                        })
+                        .h(px(32.0))
+                        .px(px(14.0))
+                        .rounded(px(8.0))
+                        .bg(palette::nav_active_bg())
+                        .items_center()
+                        .justify_center()
+                        .active(|s| s.opacity(0.85))
+                        .child(
+                            text("Configure Issue Source…")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::nav_active_fg()),
+                        ),
+                )
+                .child(
+                    button()
+                        .on_press(|| store::set_work_queue_ad_hoc_open(true))
+                        .h(px(32.0))
+                        .px(px(12.0))
+                        .rounded(px(8.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .items_center()
+                        .justify_center()
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .child(
+                            text("Start Ad-hoc Run…")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
+        )
+}
 
 fn board_view(
     queue: &ProjectWorkQueue,
@@ -1257,13 +1403,13 @@ fn inspector_content(
         workflow_picker_open,
     ));
 
-    // "Software Factory will update the issue" bulleted list
+    // "Bruk will update the issue" bulleted list
     panel = panel.child(
         view()
             .pt(px(6.0))
             .gap(px(6.0))
             .child(
-                text("Software Factory will update the issue")
+                text("Bruk will update the issue")
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
                     .text_color(palette::text_secondary()),

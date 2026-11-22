@@ -2,8 +2,8 @@
 //! breakdowns, project activity table, highest token runs, wait latency, and insights.
 
 use factory_core::{
-    DashboardInsight, DashboardSnapshot, HighTokenRun, ProjectActivityRow, ProjectColor,
-    ProjectTokens, ProviderUsage, TokenBucket, format_axis_tokens, format_currency,
+    DashboardInsight, DashboardSnapshot, HighTokenRun, PreferencesTab, ProjectActivityRow,
+    ProjectColor, ProjectTokens, ProviderUsage, TokenBucket, format_axis_tokens, format_currency,
     format_tenths_hours, format_tokens, format_wait_minutes,
 };
 use nsh_base::button;
@@ -25,6 +25,10 @@ pub(crate) fn dashboard_view() -> impl IntoElement {
         .child(dynamic(|| {
             let snap = store::dashboard_snapshot();
             let show_table = store::tokens_show_table();
+
+            if snap.is_empty() && store::project_ids().is_empty() {
+                return dashboard_empty_state().into_element();
+            }
 
             view()
                 .flex_1()
@@ -55,7 +59,143 @@ pub(crate) fn dashboard_view() -> impl IntoElement {
                         .child(wait_time_card(&snap))
                         .child(worth_a_look_card(&snap)),
                 )
+                .into_element()
         }))
+}
+
+fn dashboard_empty_state() -> impl IntoElement {
+    view()
+        .test_id("dashboard-empty-state")
+        .flex_1()
+        .items_center()
+        .justify_center()
+        .px(px(28.0))
+        .py(px(64.0))
+        .child(
+            card()
+                .w(px(520.0))
+                .p(px(28.0))
+                .items_center()
+                .gap(px(14.0))
+                .child(
+                    view()
+                        .w(px(44.0))
+                        .h(px(44.0))
+                        .rounded(px(11.0))
+                        .bg(palette::subtle_surface_bg())
+                        .border_1()
+                        .border_color(palette::divider_color())
+                        .items_center()
+                        .justify_center()
+                        .child(icons::dashboard(palette::text_secondary())),
+                )
+                .child(
+                    view()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            text("Welcome to Bruk")
+                                .text_size(px(18.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text(
+                                "Register a local repository, connect an AI provider, and run workflows to see activity, token usage, and latency metrics here.",
+                            )
+                            .text_center()
+                            .text_size(px(13.0))
+                            .text_color(palette::text_muted()),
+                        ),
+                )
+                .child(
+                    view()
+                        .pt(px(4.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            button()
+                                .test_id("dashboard-empty-register-project")
+                                .accessibility_label("Register a Project")
+                                .on_press(store::open_register_project)
+                                .h(px(34.0))
+                                .px(px(15.0))
+                                .rounded(px(8.0))
+                                .bg(palette::nav_active_bg())
+                                .items_center()
+                                .justify_center()
+                                .active(|s| s.opacity(0.85))
+                                .child(
+                                    text("Register a Project")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette::nav_active_fg()),
+                                ),
+                        )
+                        .child(
+                            button()
+                                .test_id("dashboard-empty-providers")
+                                .accessibility_label("Configure Providers")
+                                .on_press(|| store::open_preferences_tab(PreferencesTab::Providers))
+                                .h(px(34.0))
+                                .px(px(14.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::control_bg())
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .active(|s| s.opacity(0.8))
+                                .child(
+                                    text("Configure Providers…")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::text_primary()),
+                                ),
+                        )
+                        .child(
+                            button()
+                                .test_id("dashboard-empty-machines")
+                                .accessibility_label("Add a Machine")
+                                .on_press(store::open_machines)
+                                .h(px(34.0))
+                                .px(px(14.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::control_bg())
+                                .items_center()
+                                .justify_center()
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .active(|s| s.opacity(0.8))
+                                .child(
+                                    text("Machines")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::text_primary()),
+                                ),
+                        ),
+                )
+                .child(
+                    view()
+                        .w_full()
+                        .pt(px(10.0))
+                        .mt(px(4.0))
+                        .border_t_1()
+                        .border_color(palette::divider_color())
+                        .items_center()
+                        .child(
+                            text(
+                                "Want to preview visuals with sample data? Enable Demo Mode in the Bruk menu.",
+                            )
+                            .text_center()
+                            .text_size(px(11.5))
+                            .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
 }
 
 fn card() -> View {
@@ -145,11 +285,34 @@ fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoE
         legend = legend.child(legend_item(&project.project_name, project.color));
     }
 
+    let has_buckets = !snap.buckets.is_empty();
     let toggle_label = if show_table {
         "Show chart"
     } else {
         "Show table"
     };
+
+    let mut header_right = view().flex_row().items_center().gap(px(14.0)).child(legend);
+    if has_buckets {
+        header_right = header_right.child(
+            button()
+                .on_press(store::toggle_tokens_show_table)
+                .px(px(10.0))
+                .py(px(4.5))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(
+                    text(toggle_label)
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
 
     card()
         .flex_1()
@@ -168,33 +331,27 @@ fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoE
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette::text_primary()),
                 )
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(14.0))
-                        .child(legend)
-                        .child(
-                            button()
-                                .on_press(store::toggle_tokens_show_table)
-                                .px(px(10.0))
-                                .py(px(4.5))
-                                .rounded(px(7.0))
-                                .border_1()
-                                .border_color(palette::border_color())
-                                .bg(palette::control_bg())
-                                .hover(|s| s.bg(palette::subtle_surface_bg()))
-                                .active(|s| s.opacity(0.8))
-                                .child(
-                                    text(toggle_label)
-                                        .text_size(px(11.5))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::text_secondary()),
-                                ),
-                        ),
-                ),
+                .child(header_right),
         )
-        .child(if show_table {
+        .child(if !has_buckets {
+            view()
+                .h(px(CHART_PLOT_HEIGHT))
+                .items_center()
+                .justify_center()
+                .gap(px(4.0))
+                .child(
+                    text("No token usage recorded yet")
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                )
+                .child(
+                    text("Daily token consumption by project will appear here once runs execute.")
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                )
+                .into_element()
+        } else if show_table {
             tokens_table_view(snap).into_element()
         } else {
             tokens_chart_view(snap).into_element()
@@ -444,13 +601,29 @@ fn tokens_by_project_card(snap: &DashboardSnapshot) -> impl IntoElement {
         .max(1);
 
     let mut project_bars = view().gap(px(12.0));
-    for item in &snap.project_tokens {
-        project_bars = project_bars.child(project_token_bar_row(item, max_project));
+    if snap.project_tokens.is_empty() {
+        project_bars = project_bars.child(
+            text("No project token usage yet.")
+                .text_size(px(12.0))
+                .text_color(palette::text_muted()),
+        );
+    } else {
+        for item in &snap.project_tokens {
+            project_bars = project_bars.child(project_token_bar_row(item, max_project));
+        }
     }
 
     let mut provider_bars = view().gap(px(8.0));
-    for provider in &snap.providers {
-        provider_bars = provider_bars.child(provider_usage_row(provider, max_provider));
+    if snap.providers.is_empty() {
+        provider_bars = provider_bars.child(
+            text("No provider usage recorded yet.")
+                .text_size(px(12.0))
+                .text_color(palette::text_muted()),
+        );
+    } else {
+        for provider in &snap.providers {
+            provider_bars = provider_bars.child(provider_usage_row(provider, max_provider));
+        }
     }
 
     card()
@@ -578,9 +751,19 @@ fn provider_usage_row(provider: &ProviderUsage, max_tokens: u64) -> impl IntoEle
 
 fn projects_worked_on_card(snap: &DashboardSnapshot) -> impl IntoElement {
     let mut rows = view();
-    for (idx, row) in snap.project_rows.iter().enumerate() {
-        let is_last = idx + 1 == snap.project_rows.len();
-        rows = rows.child(project_activity_row(row, is_last));
+    if snap.project_rows.is_empty() {
+        rows = rows.child(
+            view().py(px(18.0)).items_center().child(
+                text("No projects worked on yet.")
+                    .text_size(px(12.5))
+                    .text_color(palette::text_muted()),
+            ),
+        );
+    } else {
+        for (idx, row) in snap.project_rows.iter().enumerate() {
+            let is_last = idx + 1 == snap.project_rows.len();
+            rows = rows.child(project_activity_row(row, is_last));
+        }
     }
 
     card()
@@ -822,6 +1005,16 @@ fn high_token_run_item(run: &HighTokenRun) -> impl IntoElement {
 
 fn wait_time_card(snap: &DashboardSnapshot) -> impl IntoElement {
     let wait = &snap.wait_metrics;
+    let median_display = if wait.requests_answered == 0 {
+        "—".to_owned()
+    } else {
+        format_wait_minutes(wait.median_answer_minutes)
+    };
+    let longest_display = if wait.requests_answered == 0 {
+        "—".to_owned()
+    } else {
+        format_wait_minutes(wait.longest_wait_minutes)
+    };
 
     card()
         .flex_grow(1.18)
@@ -839,14 +1032,8 @@ fn wait_time_card(snap: &DashboardSnapshot) -> impl IntoElement {
                 .flex_row()
                 .items_start()
                 .gap(px(32.0))
-                .child(wait_stat(
-                    format_wait_minutes(wait.median_answer_minutes),
-                    "Median answer time",
-                ))
-                .child(wait_stat(
-                    format_wait_minutes(wait.longest_wait_minutes),
-                    "Longest wait",
-                ))
+                .child(wait_stat(median_display, "Median answer time"))
+                .child(wait_stat(longest_display, "Longest wait"))
                 .child(wait_stat(
                     format_tenths_hours(wait.total_waiting_tenths_hours),
                     "Agent time spent waiting",
@@ -881,8 +1068,13 @@ fn wait_stat(value: String, label: &'static str) -> impl IntoElement {
 fn worth_a_look_card(snap: &DashboardSnapshot) -> impl IntoElement {
     let mut items = view().gap(px(8.0));
     if snap.insights.is_empty() {
+        let empty_msg = if snap.has_activity() {
+            "Everything looks healthy for this selection."
+        } else {
+            "No insights yet. Suggestions will appear here as workflows run."
+        };
         items = items.child(
-            text("Everything looks healthy for this selection.")
+            text(empty_msg)
                 .text_size(px(12.0))
                 .text_color(palette::text_muted()),
         );

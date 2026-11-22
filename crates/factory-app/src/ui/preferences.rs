@@ -1105,7 +1105,7 @@ fn openrouter_detail_pane(
                     .bg(palette::card_bg())
                     .child(
                         text(format!(
-                            "Remove '{}' from Keychain and Software Factory?",
+                            "Remove '{}' from Keychain and Bruk?",
                             current_name_for_confirm
                         ))
                         .text_size(px(12.5))
@@ -1499,7 +1499,7 @@ fn general_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(setting_row(
                                 "Default landing view",
-                                "Screen shown when Software Factory opens.",
+                                "Screen shown when Bruk opens.",
                                 landing_picker,
                             ))
                             .child(card_divider())
@@ -1562,7 +1562,7 @@ fn general_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(toggle_row(
                                 "Automatically check for updates",
-                                "Periodically check for new Software Factory releases.",
+                                "Periodically check for new Bruk releases.",
                                 prefs.auto_check_updates,
                                 || store::toggle_general_flag(GeneralFlag::AutoCheckUpdates),
                             )),
@@ -1658,32 +1658,29 @@ fn machines_tab() -> impl IntoElement {
     let draft_add_platform = signal(MachinePlatform::Linux);
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
-        view()
-            .flex_1()
-            .p(px(22.0))
-            .child(
-                view()
-                    .flex_row()
-                    .items_start()
-                    .gap(px(18.0))
-                    .child(machines_left_rail(
-                        active_editor,
-                        draft_add_name,
-                        draft_add_ipv4,
-                        draft_add_port,
-                        draft_add_user,
-                        draft_add_platform,
-                    ))
-                    .child(machines_detail_column(
-                        active_editor,
-                        draft_text,
-                        draft_add_name,
-                        draft_add_ipv4,
-                        draft_add_port,
-                        draft_add_user,
-                        draft_add_platform,
-                    )),
-            ),
+        view().flex_1().p(px(22.0)).child(
+            view()
+                .flex_row()
+                .items_start()
+                .gap(px(18.0))
+                .child(machines_left_rail(
+                    active_editor,
+                    draft_add_name,
+                    draft_add_ipv4,
+                    draft_add_port,
+                    draft_add_user,
+                    draft_add_platform,
+                ))
+                .child(machines_detail_column(
+                    active_editor,
+                    draft_text,
+                    draft_add_name,
+                    draft_add_ipv4,
+                    draft_add_port,
+                    draft_add_user,
+                    draft_add_platform,
+                )),
+        ),
     )
 }
 
@@ -1708,23 +1705,40 @@ fn machines_left_rail(
             .p(px(8.0))
             .gap(px(3.0));
 
-        for machine in &fleet.machines {
-            let is_selected = !adding && selected_id == Some(machine.id);
-            card = card.child(machine_prefs_list_row(machine, is_selected, active_editor));
+        if fleet.machines.is_empty() {
+            card = card.child(
+                text("No machines configured")
+                    .px(px(6.0))
+                    .py(px(6.0))
+                    .text_size(px(12.0))
+                    .text_color(palette::text_muted()),
+            );
+        } else {
+            for machine in &fleet.machines {
+                let is_selected = !adding && selected_id == Some(machine.id);
+                card = card.child(machine_prefs_list_row(machine, is_selected, active_editor));
+            }
         }
 
         card = card.child(
-            view().pt(px(8.0)).px(px(4.0)).pb(px(2.0)).items_start().child(
-                secondary_button_id("prefs-machine-add", "Add Machine...", move || {
-                    store::clear_preferences_messages();
-                    draft_add_name.set(String::new());
-                    draft_add_ipv4.set(String::new());
-                    draft_add_port.set("22".to_owned());
-                    draft_add_user.set("bruk".to_owned());
-                    draft_add_platform.set(MachinePlatform::Linux);
-                    active_editor.set(Some(MachinePrefsEditor::AddMachine));
-                }),
-            ),
+            view()
+                .pt(px(8.0))
+                .px(px(4.0))
+                .pb(px(2.0))
+                .items_start()
+                .child(secondary_button_id(
+                    "prefs-machine-add",
+                    "Add Machine...",
+                    move || {
+                        store::clear_preferences_messages();
+                        draft_add_name.set(String::new());
+                        draft_add_ipv4.set(String::new());
+                        draft_add_port.set("22".to_owned());
+                        draft_add_user.set("bruk".to_owned());
+                        draft_add_platform.set(MachinePlatform::Linux);
+                        active_editor.set(Some(MachinePrefsEditor::AddMachine));
+                    },
+                )),
         );
 
         card
@@ -1828,9 +1842,11 @@ fn machines_detail_column(
                     .child(card_divider())
                     .child(
                         view().p(px(16.0)).child(
-                            text("No machines configured yet. Add a remote SSH host to get started.")
-                                .text_size(px(12.5))
-                                .text_color(palette::text_muted()),
+                            text(
+                                "No machines configured yet. Add a remote SSH host to get started.",
+                            )
+                            .text_size(px(12.5))
+                            .text_color(palette::text_muted()),
                         ),
                     )
                     .into_element()
@@ -2016,7 +2032,10 @@ fn machine_platform_option(
 ) -> impl IntoElement {
     let selected = platform == active;
     button()
-        .test_id(&format!("prefs-new-machine-platform-{}", platform.short_badge()))
+        .test_id(&format!(
+            "prefs-new-machine-platform-{}",
+            platform.short_badge()
+        ))
         .on_press(move || draft_platform.set(platform))
         .px(px(10.0))
         .py(px(5.0))
@@ -2059,10 +2078,16 @@ fn machine_prefs_detail_pane(
     let is_showing_host_key = editor == Some(MachinePrefsEditor::ShowHostKey(id));
     let is_changing_ssh_key = editor == Some(MachinePrefsEditor::ChangeSshKey(id));
     let is_changing_core_updates = editor == Some(MachinePrefsEditor::ChangeCoreUpdates(id));
-    let is_confirming_claude_signout =
-        editor == Some(MachinePrefsEditor::ConfirmAgentSignOut(id, MachineAgentKind::ClaudeCode));
-    let is_confirming_codex_signout =
-        editor == Some(MachinePrefsEditor::ConfirmAgentSignOut(id, MachineAgentKind::Codex));
+    let is_confirming_claude_signout = editor
+        == Some(MachinePrefsEditor::ConfirmAgentSignOut(
+            id,
+            MachineAgentKind::ClaudeCode,
+        ));
+    let is_confirming_codex_signout = editor
+        == Some(MachinePrefsEditor::ConfirmAgentSignOut(
+            id,
+            MachineAgentKind::Codex,
+        ));
     let is_changing_sessions = editor == Some(MachinePrefsEditor::ChangeSessionsAtOnce(id));
     let is_editing_projects = editor == Some(MachinePrefsEditor::EditProjects(id));
     let is_confirming_remove = editor == Some(MachinePrefsEditor::ConfirmRemove(id));
@@ -2377,11 +2402,15 @@ fn machine_prefs_detail_pane(
                     move || !is_local,
                     move || {
                         let key_val = current_ssh_key.clone();
-                        secondary_button_id("prefs-machine-change-ssh-key", "Change...", move || {
-                            store::clear_preferences_messages();
-                            draft_text.set(key_val.clone());
-                            active_editor.set(Some(MachinePrefsEditor::ChangeSshKey(id)));
-                        })
+                        secondary_button_id(
+                            "prefs-machine-change-ssh-key",
+                            "Change...",
+                            move || {
+                                store::clear_preferences_messages();
+                                draft_text.set(key_val.clone());
+                                active_editor.set(Some(MachinePrefsEditor::ChangeSshKey(id)));
+                            },
+                        )
                     },
                 )),
         )
@@ -2718,7 +2747,11 @@ fn machine_prefs_detail_pane(
                 )
                 .child(secondary_button_id(
                     "prefs-machine-edit-projects",
-                    if is_editing_projects { "Done" } else { "Edit..." },
+                    if is_editing_projects {
+                        "Done"
+                    } else {
+                        "Edit..."
+                    },
                     move || {
                         store::clear_preferences_messages();
                         if active_editor.get_untracked()
@@ -2952,9 +2985,7 @@ fn core_update_policy_picker(
     current_policy: CoreUpdatePolicy,
     active_editor: Signal<Option<MachinePrefsEditor>>,
 ) -> impl IntoElement {
-    let mut options = view()
-        .pt(px(4.0))
-        .gap(px(6.0));
+    let mut options = view().pt(px(4.0)).gap(px(6.0));
     for policy in CoreUpdatePolicy::ALL {
         let policy_val = *policy;
         let selected = policy_val == current_policy;
@@ -3225,15 +3256,31 @@ fn extensions_tab() -> impl IntoElement {
             .child(dynamic(move || {
                 let prefs = store::preferences().extensions;
                 let mut list_card = grouped_card("Installed Extensions");
-                for entry in prefs.entries {
-                    let entry_id = entry.id.clone();
-                    let label = format!("{}  v{}", entry.name, entry.version);
-                    list_card = list_card.child(card_divider()).child(toggle_row(
-                        label,
-                        entry.description,
-                        entry.enabled,
-                        move || store::toggle_extension(&entry_id),
-                    ));
+                if prefs.entries.is_empty() {
+                    list_card = list_card.child(card_divider()).child(
+                        view().p(px(16.0)).gap(px(4.0)).child(
+                            text("No extensions installed")
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text("Extensions that add issue sources, workflow steps, or status widgets will appear here.")
+                                .text_size(px(12.0))
+                                .text_color(palette::text_muted()),
+                        ),
+                    );
+                } else {
+                    for entry in prefs.entries {
+                        let entry_id = entry.id.clone();
+                        let label = format!("{}  v{}", entry.name, entry.version);
+                        list_card = list_card.child(card_divider()).child(toggle_row(
+                            label,
+                            entry.description,
+                            entry.enabled,
+                            move || store::toggle_extension(&entry_id),
+                        ));
+                    }
                 }
 
                 view()

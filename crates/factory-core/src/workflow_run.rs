@@ -288,6 +288,37 @@ pub struct WorkflowRunViewData {
 }
 
 impl WorkflowRunViewData {
+    /// Clean empty workflow run view state when no run exists yet.
+    pub fn empty(project_name: &str, workflow_name: &str) -> Self {
+        Self {
+            project_name: project_name.to_owned(),
+            workflow_name: workflow_name.to_owned(),
+            run_number: 0,
+            execution_state: RunExecutionState::Stopped,
+            active_step_index: 0,
+            subtitle: "No runs recorded for this workflow yet".to_owned(),
+            worktree_name: String::new(),
+            branch_name: String::new(),
+            active_provider_name: String::new(),
+            attempt_summary: None,
+            total_elapsed: "0:00".to_owned(),
+            active_extensions_count: 0,
+            steps: Vec::new(),
+            diffs: Vec::new(),
+            coverage: Vec::new(),
+            budget_guard: BudgetGuardState {
+                spent_cents: 0,
+                limit_cents: 500,
+                pause_when_reached: true,
+            },
+        }
+    }
+
+    /// True when no real or demo run has been recorded yet.
+    pub fn is_empty(&self) -> bool {
+        self.run_number == 0 && self.steps.is_empty()
+    }
+
     /// Builds a mocked detailed run for `(project_name, workflow_name)`.
     ///
     /// `("api-gateway", "Release prep")` matches the `02 Main.png` reference mockup verbatim.

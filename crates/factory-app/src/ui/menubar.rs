@@ -57,10 +57,12 @@ impl TraySnapshot {
     pub(crate) fn tooltip(&self) -> String {
         if self.pending_count == 0 {
             if self.all_agents_paused {
-                "Software Factory — All caught up · Agents paused".to_owned()
+                "Bruk — All caught up · Agents paused".to_owned()
+            } else if self.active_agents == 0 {
+                "Bruk — All caught up · Idle".to_owned()
             } else {
                 format!(
-                    "Software Factory — All caught up · {} agents working",
+                    "Bruk — All caught up · {} agents working",
                     self.active_agents
                 )
             }
@@ -70,10 +72,7 @@ impl TraySnapshot {
             } else {
                 format!("{} agents working", self.active_agents)
             };
-            format!(
-                "Software Factory — {} waiting on you · {status}",
-                self.pending_count
-            )
+            format!("Bruk — {} waiting on you · {status}", self.pending_count)
         }
     }
 
@@ -135,11 +134,9 @@ fn build_tray(snap: &TraySnapshot) -> nsh_core::element::desktop::Tray {
             MenuItem::new(pause_label).on_select(store::toggle_pause_all_agents),
             MenuItem::new(snooze_label).on_select(store::toggle_snooze_notifications),
             MenuItem::separator(),
-            MenuItem::new("Show Software Factory").on_select(|| main_window().focus()),
+            MenuItem::new("Show Bruk").on_select(|| main_window().focus()),
             MenuItem::separator(),
-            MenuItem::new("Quit Software Factory")
-                .role_like_quit()
-                .on_select(quit),
+            MenuItem::new("Quit Bruk").role_like_quit().on_select(quit),
         ])
         .on_click(|event| store::toggle_menubar_popover(event.bounds))
 }

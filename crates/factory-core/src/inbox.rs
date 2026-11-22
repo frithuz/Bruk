@@ -346,7 +346,26 @@ pub struct InboxState {
     pub waiting_rules: WaitingRulesConfig,
 }
 
+impl Default for InboxState {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 impl InboxState {
+    /// Clean empty inbox with no pending or answered requests and zero active agents.
+    pub fn empty() -> Self {
+        Self {
+            pending: Vec::new(),
+            answered_today: Vec::new(),
+            saved_allow_rules: Vec::new(),
+            active_agents_count: 0,
+            all_agents_paused: false,
+            notifications_snoozed_minutes: None,
+            waiting_rules: WaitingRulesConfig::default(),
+        }
+    }
+
     /// Mock dataset matching both `08 Inbox.png` and `10 AttentionSurfaces.png`.
     ///
     /// Includes the four blocking requests shown in `08 Inbox.png` plus the
@@ -743,6 +762,9 @@ impl InboxState {
     /// Subtitle shown below `Inbox` in the Inbox window toolbar.
     pub fn header_subtitle(&self) -> String {
         let count = self.pending.len();
+        if count == 0 && self.active_agents_count == 0 && !self.all_agents_paused {
+            return "No waiting requests · Idle".to_owned();
+        }
         let agents_part = if self.all_agents_paused {
             "agents paused".to_owned()
         } else {
@@ -765,6 +787,10 @@ impl InboxState {
     pub fn menubar_agents_status(&self) -> String {
         if self.all_agents_paused {
             "Agents paused".to_owned()
+        } else if self.active_agents_count == 0 {
+            "No active agents".to_owned()
+        } else if self.active_agents_count == 1 {
+            "1 agent working".to_owned()
         } else {
             format!("{} agents working", self.active_agents_count)
         }

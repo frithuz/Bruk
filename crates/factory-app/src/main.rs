@@ -8,7 +8,7 @@ fn main() -> impl std::process::Termination {
     platform::run_app(
         platform::AppSource::Rust(platform::Root::of::<factory_app::App>()),
         platform::AppOptions {
-            title: "Software Factory".to_owned(),
+            title: "Bruk".to_owned(),
             size: (1360, 920),
             ..Default::default()
         },

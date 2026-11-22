@@ -331,6 +331,17 @@ pub struct ProjectWorkflowsOverview {
 }
 
 impl ProjectWorkflowsOverview {
+    /// Clean empty workflows overview for a project with no workflows yet.
+    pub fn empty(project_name: &str) -> Self {
+        Self {
+            project_name: project_name.to_owned(),
+            workflows: Vec::new(),
+            running_count: 0,
+            next_run_number: 1,
+            next_custom_seq: 1,
+        }
+    }
+
     /// Builds a mocked workflows overview tailored to `project_name`.
     ///
     /// `"api-gateway"` matches `12 Workflows.png` verbatim; other sample and
@@ -1051,6 +1062,9 @@ impl ProjectWorkflowsOverview {
 
     pub fn header_subtitle(&self) -> String {
         let count = self.workflows.len();
+        if count == 0 {
+            return format!("{} · No workflows yet", self.project_name);
+        }
         let noun = if count == 1 { "workflow" } else { "workflows" };
         format!(
             "{} · {} {} · {} running",

@@ -152,10 +152,16 @@ pub(crate) fn workflows_view() -> impl IntoElement {
                 body = body.child(import_workflow_drawer(import_path));
             }
 
-            body = body
-                .child(workflows_table_card(&rows, selected_id.as_deref()))
-                .child(run_outcome_legend())
-                .child(templates_section());
+            let total_workflows = overview.workflows.len();
+            body = body.child(workflows_table_card(
+                &rows,
+                total_workflows,
+                selected_id.as_deref(),
+            ));
+            if total_workflows > 0 {
+                body = body.child(run_outcome_legend());
+            }
+            body = body.child(templates_section());
 
             body
         })))
@@ -525,6 +531,7 @@ fn labeled_input(
 
 fn workflows_table_card(
     rows: &[WorkflowOverviewEntry],
+    total_workflows: usize,
     selected_id: Option<&str>,
 ) -> impl IntoElement {
     let mut table = view()
@@ -536,7 +543,7 @@ fn workflows_table_card(
         .child(table_header_row());
 
     if rows.is_empty() {
-        table = table.child(empty_table_state());
+        table = table.child(empty_table_state(total_workflows == 0));
     } else {
         for (idx, workflow) in rows.iter().enumerate() {
             let is_selected = selected_id == Some(workflow.id.as_str());
@@ -592,7 +599,71 @@ fn table_header_row() -> impl IntoElement {
         )
 }
 
-fn empty_table_state() -> impl IntoElement {
+fn empty_table_state(no_workflows_yet: bool) -> impl IntoElement {
+    if no_workflows_yet {
+        return view()
+            .test_id("wfo-empty-state")
+            .py(px(36.0))
+            .px(px(20.0))
+            .items_center()
+            .justify_center()
+            .gap(px(8.0))
+            .child(
+                text("No workflows yet")
+                    .text_size(px(15.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette::text_primary()),
+            )
+            .child(
+                text("Create a workflow from scratch, import a .bruk-workflow file, or start from a template below.")
+                    .text_center()
+                    .w(px(420.0))
+                    .text_size(px(12.5))
+                    .text_color(palette::text_muted()),
+            )
+            .child(
+                view()
+                    .pt(px(4.0))
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(
+                        button()
+                            .test_id("wfo-empty-new")
+                            .on_press(|| store::set_workflows_new_drawer_open(true))
+                            .px(px(12.0))
+                            .py(px(6.0))
+                            .rounded(px(7.0))
+                            .bg(palette::nav_active_bg())
+                            .active(|s| s.opacity(0.85))
+                            .child(
+                                text("New Workflow")
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(palette::nav_active_fg()),
+                            ),
+                    )
+                    .child(
+                        button()
+                            .on_press(|| store::set_workflows_import_drawer_open(true))
+                            .px(px(11.0))
+                            .py(px(6.0))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::control_bg())
+                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                            .child(
+                                text("Import...")
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::text_primary()),
+                            ),
+                    ),
+            )
+            .into_element();
+    }
+
     view()
         .py(px(28.0))
         .px(px(16.0))
@@ -623,6 +694,7 @@ fn empty_table_state() -> impl IntoElement {
                         .text_color(palette::text_primary()),
                 ),
         )
+        .into_element()
 }
 
 fn workflow_table_row(

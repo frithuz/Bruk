@@ -261,6 +261,21 @@ pub struct DashboardSnapshot {
     pub insights: Vec<DashboardInsight>,
 }
 
+impl DashboardSnapshot {
+    /// True when the workspace has no recorded projects, runs, or token usage yet.
+    pub fn is_empty(&self) -> bool {
+        self.project_rows.is_empty() && !self.has_activity()
+    }
+
+    /// True when any runs, tokens, issues, or PRs have been recorded in this snapshot.
+    pub fn has_activity(&self) -> bool {
+        self.total_runs > 0
+            || self.total_tokens > 0
+            || self.issues_resolved > 0
+            || self.prs_merged > 0
+    }
+}
+
 /// Internal per-period dataset record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PeriodData {
@@ -290,11 +305,61 @@ pub struct DashboardDataset {
 
 impl Default for DashboardDataset {
     fn default() -> Self {
-        Self::sample()
+        Self::empty()
     }
 }
 
 impl DashboardDataset {
+    /// Creates an empty dataset with no mocked telemetry or historical sample periods.
+    pub fn empty() -> Self {
+        let empty_wait = WaitMetrics {
+            median_answer_minutes: 0,
+            longest_wait_minutes: 0,
+            total_waiting_tenths_hours: 0,
+            requests_answered: 0,
+            permissions: 0,
+            questions: 0,
+            reviews: 0,
+            timed_out: 0,
+        };
+        Self {
+            weekly: vec![PeriodData {
+                offset: 0,
+                period_label: "This week".to_owned(),
+                date_range_label: "No activity yet".to_owned(),
+                issues_delta_prev: 0,
+                prs_delta_prev: 0,
+                tokens_delta_pct: 0,
+                billed_cost_cents: 0,
+                working_time_tenths_hours: 0,
+                chart_max_tokens: 0,
+                buckets: Vec::new(),
+                providers: Vec::new(),
+                project_rows: Vec::new(),
+                highest_token_runs: Vec::new(),
+                wait_metrics: empty_wait.clone(),
+                insights: Vec::new(),
+            }],
+            monthly: vec![PeriodData {
+                offset: 0,
+                period_label: "This month".to_owned(),
+                date_range_label: "No activity yet".to_owned(),
+                issues_delta_prev: 0,
+                prs_delta_prev: 0,
+                tokens_delta_pct: 0,
+                billed_cost_cents: 0,
+                working_time_tenths_hours: 0,
+                chart_max_tokens: 0,
+                buckets: Vec::new(),
+                providers: Vec::new(),
+                project_rows: Vec::new(),
+                highest_token_runs: Vec::new(),
+                wait_metrics: empty_wait,
+                insights: Vec::new(),
+            }],
+        }
+    }
+
     /// Creates a rich multi-period dataset matching the reference dashboard layout.
     pub fn sample() -> Self {
         Self {
@@ -599,13 +664,20 @@ impl DashboardDataset {
             DashboardGranularity::Month => "month",
         };
 
+        let has_baseline_data =
+            !period.buckets.is_empty() || !period.project_rows.is_empty() || period_all_tokens > 0;
+
         let issues_delta_text = if filter.is_some() {
             format!("In {filter_label}")
+        } else if !has_baseline_data && issues_resolved == 0 {
+            "No activity yet".to_owned()
         } else {
             format_count_delta(period.issues_delta_prev, period_unit)
         };
         let prs_delta_text = if filter.is_some() {
             format!("In {filter_label}")
+        } else if !has_baseline_data && prs_merged == 0 {
+            "No activity yet".to_owned()
         } else {
             format_count_delta(period.prs_delta_prev, period_unit)
         };
@@ -614,15 +686,21 @@ impl DashboardDataset {
                 "{}% of workspace total",
                 (share_ratio * 100.0).round() as u32
             )
+        } else if !has_baseline_data && total_tokens == 0 {
+            "No token usage yet".to_owned()
         } else {
             format_pct_delta(period.tokens_delta_pct, period_unit)
         };
 
-        let provider_footnote = format!(
-            "Claude and Codex use your subscriptions. OpenRouter billed {} this {}.",
-            format_currency(billed_cost_cents),
-            period_unit
-        );
+        let provider_footnote = if providers.is_empty() && billed_cost_cents == 0 {
+            "No provider usage recorded yet.".to_owned()
+        } else {
+            format!(
+                "Claude and Codex use your subscriptions. OpenRouter billed {} this {}.",
+                format_currency(billed_cost_cents),
+                period_unit
+            )
+        };
 
         let highest_token_runs: Vec<HighTokenRun> = period
             .highest_token_runs

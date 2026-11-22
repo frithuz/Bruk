@@ -709,11 +709,20 @@ fn intake_rules_section(
                         ),
                 );
 
-            for (idx, rule) in settings.intake_rules.iter().enumerate() {
-                table =
-                    table
+            if settings.intake_rules.is_empty() {
+                table = table.child(card_divider()).child(
+                    view().px(px(16.0)).py(px(14.0)).child(
+                        text("No intake rules configured yet. Add a rule to route labeled issues to a workflow.")
+                            .text_size(px(12.5))
+                            .text_color(palette::text_muted()),
+                    ),
+                );
+            } else {
+                for (idx, rule) in settings.intake_rules.iter().enumerate() {
+                    table = table
                         .child(card_divider())
                         .child(intake_rule_row(idx + 1, rule, show_remove));
+                }
             }
             table
         }))
@@ -1215,7 +1224,13 @@ fn providers_tab() -> impl IntoElement {
                     .as_deref()
                     .and_then(|id| prefs.openrouter_key(id))
                     .map(|k| format!("{} · {}", k.name, k.cap_summary()))
-                    .unwrap_or_else(|| "Workspace default OpenRouter key".to_owned());
+                    .unwrap_or_else(|| {
+                        if prefs.openrouter_keys.is_empty() {
+                            "No OpenRouter keys configured".to_owned()
+                        } else {
+                            "Workspace default OpenRouter key".to_owned()
+                        }
+                    });
 
                 view()
                     .gap(px(18.0))
@@ -1327,16 +1342,27 @@ fn workflows_tab() -> impl IntoElement {
                 let settings = store::active_project_settings();
 
                 let mut list_card = grouped_card("Discovered workflows");
-                for wf in &settings.workflows {
-                    let wf_name = wf.name.clone();
-                    let wf_toggle_name = wf_name.clone();
-                    let subtitle = format!("{} · {} · {}", wf.file_path, wf.trigger_label, wf.summary);
-                    list_card = list_card.child(card_divider()).child(toggle_row(
-                        wf_name,
-                        subtitle,
-                        wf.enabled,
-                        move || store::toggle_project_workflow(&wf_toggle_name),
-                    ));
+                if settings.workflows.is_empty() {
+                    list_card = list_card.child(card_divider()).child(
+                        view().px(px(16.0)).py(px(14.0)).child(
+                            text("No workflow files discovered yet. Add definitions in .factory/workflows/ or create one from Workflows.")
+                                .text_size(px(12.5))
+                                .text_color(palette::text_muted()),
+                        ),
+                    );
+                } else {
+                    for wf in &settings.workflows {
+                        let wf_name = wf.name.clone();
+                        let wf_toggle_name = wf_name.clone();
+                        let subtitle =
+                            format!("{} · {} · {}", wf.file_path, wf.trigger_label, wf.summary);
+                        list_card = list_card.child(card_divider()).child(toggle_row(
+                            wf_name,
+                            subtitle,
+                            wf.enabled,
+                            move || store::toggle_project_workflow(&wf_toggle_name),
+                        ));
+                    }
                 }
 
                 view()

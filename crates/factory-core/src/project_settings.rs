@@ -247,6 +247,68 @@ pub struct ProjectSettings {
 }
 
 impl ProjectSettings {
+    /// Clean initial settings for a real project with no mocked issue counts, rules, or secrets.
+    pub fn empty(project_name: &str, root_path: &str, default_branch: &str) -> Self {
+        let branch = if default_branch.trim().is_empty() {
+            "main"
+        } else {
+            default_branch.trim()
+        };
+        Self {
+            project_name: project_name.to_owned(),
+            root_path: root_path.to_owned(),
+            default_branch: branch.to_owned(),
+            git_remote: String::new(),
+            branch_prefix: "agent/".to_owned(),
+            use_isolated_worktrees: true,
+            open_prs_as_draft: false,
+            auto_cleanup_worktrees: true,
+            archived: false,
+
+            issue_source: IssueSourceKind::GitHubIssues,
+            github_repo: String::new(),
+            github_auth_mode: IssueSourceAuthMode::GitHubCli,
+            github_token_last4: None,
+            itsaplan_workspace: String::new(),
+            itsaplan_agent_member: String::new(),
+            source_connected: false,
+            open_issues_count: 0,
+            last_synced_label: "Never synced".to_owned(),
+            required_label: "agent-ready".to_owned(),
+            intake_rules: Vec::new(),
+            max_concurrent_runs: 2,
+            auto_start_matching_work: false,
+            add_working_label: true,
+            comment_with_run_summary: true,
+            link_pr_closes_issue: true,
+
+            default_provider: ProviderKind::Claude,
+            openrouter_key_id: None,
+            model_override: String::new(),
+
+            workflows_dir: ".factory/workflows".to_owned(),
+            workflows: Vec::new(),
+            require_review_before_pr: true,
+            auto_reload_workflows: true,
+
+            env_vars: Vec::new(),
+            load_dotenv_local: false,
+            inherit_host_path: true,
+
+            max_loop_attempts: 5,
+            step_timeout_minutes: 30,
+            per_run_budget_cents: 500,
+            monthly_budget_cents: 12_000,
+            pause_on_budget_limit: true,
+            require_approval_for_ci: true,
+            sandbox_mode: ProjectSandboxMode::WorkspaceWrite,
+            preferred_runner: "Any available machine".to_owned(),
+
+            next_rule_id: 1,
+            next_env_id: 1,
+        }
+    }
+
     /// Builds placeholder settings for `project_name`.
     ///
     /// `"api-gateway"` matches the `05 ProjectSettings.png` reference mockup verbatim;

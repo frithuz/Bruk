@@ -224,6 +224,7 @@ impl ProjectDatabase {
     }
 
     /// Loads persisted application preferences from SQLite, if saved previously.
+    /// Legacy pre-Demo-Mode rows are automatically migrated and re-saved cleanly.
     pub fn load_preferences(&self) -> Result<Option<AppPreferences>, StorageError> {
         let raw: Option<String> = self
             .conn
@@ -234,7 +235,13 @@ impl ProjectDatabase {
             )
             .optional()?;
         match raw {
-            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            Some(json) => {
+                let mut prefs: AppPreferences = serde_json::from_str(&json)?;
+                if prefs.migrate_legacy_sample_defaults() {
+                    self.save_preferences(&prefs)?;
+                }
+                Ok(Some(prefs))
+            }
             None => Ok(None),
         }
     }
@@ -364,5 +371,28 @@ mod tests {
         assert_eq!(loaded.appearance.mode, crate::AppearanceMode::Dark);
         assert!(loaded.openrouter_key("openrouter-acme").unwrap().is_default);
         assert_eq!(loaded.openrouter_keys.len(), 3);
+    }
+
+    #[test]
+    fn migrates_legacy_pre_demo_mode_preferences_by_clearing_sample_providers() {
+        let db = ProjectDatabase::open_in_memory().unwrap();
+        let mut legacy = AppPreferences::sample();
+        legacy.schema_version = 0;
+        legacy.appearance.mode = crate::AppearanceMode::Dark;
+        legacy.general.default_projects_dir = "~/code".to_owned();
+        db.save_preferences(&legacy).unwrap();
+
+        let migrated = db.load_preferences().unwrap().unwrap();
+        assert_eq!(
+            migrated.schema_version,
+            crate::preferences::PREFERENCES_SCHEMA_VERSION
+        );
+        assert!(!migrated.demo_mode);
+        assert!(!migrated.claude.connected);
+        assert!(!migrated.codex.connected);
+        assert!(migrated.openrouter_keys.is_empty());
+        assert!(migrated.extensions.entries.is_empty());
+        assert_eq!(migrated.appearance.mode, crate::AppearanceMode::Dark);
+        assert_eq!(migrated.general.default_projects_dir, "~/code");
     }
 }
