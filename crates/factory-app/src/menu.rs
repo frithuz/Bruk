@@ -31,6 +31,7 @@ struct MenuSnapshot {
     recent_projects: Vec<(ProjectId, String)>,
     has_selected_project: bool,
     on_work_queue: bool,
+    on_workflows: bool,
     on_workflow_run: bool,
     inspector_visible: bool,
     has_queued_issues: bool,
@@ -51,9 +52,12 @@ fn current_menu_snapshot() -> MenuSnapshot {
     let has_selected_project = store::selected_project().is_some();
     let active_view = store::active_view();
     let on_work_queue = active_view == store::ActiveView::WorkQueue;
+    let on_workflows = active_view == store::ActiveView::Workflows;
     let on_workflow_run = active_view == store::ActiveView::WorkflowRun;
     let inspector_visible = if on_workflow_run {
         store::workflow_run_inspector_visible()
+    } else if on_workflows {
+        store::workflows_inspector_visible()
     } else {
         store::work_queue_inspector_visible()
     };
@@ -85,6 +89,7 @@ fn current_menu_snapshot() -> MenuSnapshot {
         recent_projects,
         has_selected_project,
         on_work_queue,
+        on_workflows,
         on_workflow_run,
         inspector_visible,
         has_queued_issues,
@@ -168,7 +173,8 @@ fn file_menu(snapshot: &MenuSnapshot) -> MenuItem {
         [
             MenuItem::new("New Workflow")
                 .shortcut("mod+n")
-                .disabled(true),
+                .disabled(!snapshot.has_projects)
+                .on_select(open_new_workflow),
             MenuItem::new("New Project…")
                 .shortcut("mod+shift+n")
                 .on_select(open_new_project),
@@ -177,10 +183,13 @@ fn file_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .on_select(open_project_dialog),
             recent_menu,
             MenuItem::separator(),
-            MenuItem::new("Import Workflow…").disabled(true),
+            MenuItem::new("Import Workflow…")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_import_workflow),
             MenuItem::new("Export Workflow…")
                 .shortcut("mod+shift+e")
-                .disabled(true),
+                .disabled(!snapshot.on_workflows)
+                .on_select(store::export_selected_overview_workflow),
             MenuItem::separator(),
             // Use `on_select` instead of `MenuRole::Close` so `MenuItem::window_menu`
             // binds AppKit's `windowsMenu` to the `Window` submenu rather than `File`.
@@ -224,7 +233,7 @@ fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
     };
     let is_full_screen = snapshot.is_full_screen;
 
-    let has_inspector = snapshot.on_work_queue || snapshot.on_workflow_run;
+    let has_inspector = snapshot.on_work_queue || snapshot.on_workflows || snapshot.on_workflow_run;
     let inspector_label = if has_inspector && snapshot.inspector_visible {
         "Hide Inspector"
     } else {
@@ -310,8 +319,8 @@ fn workflow_menu(snapshot: &MenuSnapshot) -> MenuItem {
         [
             MenuItem::new("Edit Workflow")
                 .shortcut("mod+e")
-                .disabled(!snapshot.on_workflow_run)
-                .on_select(store::edit_active_workflow),
+                .disabled(!(snapshot.on_workflow_run || snapshot.on_workflows))
+                .on_select(edit_active_workflow),
             MenuItem::new("Add Step…")
                 .shortcut("alt+mod+n")
                 .disabled(true),
@@ -319,7 +328,9 @@ fn workflow_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .shortcut("mod+shift+v")
                 .disabled(true),
             MenuItem::separator(),
-            MenuItem::new("Duplicate").disabled(true),
+            MenuItem::new("Duplicate")
+                .disabled(!snapshot.on_workflows)
+                .on_select(store::duplicate_selected_overview_workflow),
             MenuItem::new("Version History…").disabled(true),
             MenuItem::separator(),
             from_extensions_header(),
@@ -523,9 +534,28 @@ fn open_ad_hoc_run() {
     main_window().focus();
 }
 
+fn open_new_workflow() {
+    store::open_new_workflow_drawer();
+    main_window().focus();
+}
+
+fn open_import_workflow() {
+    store::open_import_workflow_drawer();
+    main_window().focus();
+}
+
+fn edit_active_workflow() {
+    if store::active_view() == store::ActiveView::Workflows {
+        store::set_workflows_editing_selected(true);
+    } else {
+        store::edit_active_workflow();
+    }
+}
+
 fn toggle_active_inspector() {
     match store::active_view() {
         store::ActiveView::WorkflowRun => store::toggle_workflow_run_inspector(),
+        store::ActiveView::Workflows => store::toggle_workflows_inspector(),
         store::ActiveView::WorkQueue => store::toggle_work_queue_inspector(),
         _ => {}
     }
@@ -558,6 +588,7 @@ mod tests {
             recent_projects: vec![(1, "api-gateway".to_owned()), (2, "mobile-app".to_owned())],
             has_selected_project: true,
             on_work_queue: true,
+            on_workflows: false,
             on_workflow_run: false,
             inspector_visible: true,
             has_queued_issues: true,

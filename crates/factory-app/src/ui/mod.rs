@@ -10,6 +10,7 @@ pub(crate) mod project_settings;
 mod register_project;
 mod work_queue;
 mod workflow_run;
+mod workflows;
 mod workspace;
 
 use factory_core::{
@@ -98,6 +99,10 @@ fn top_header_bar() -> impl IntoElement {
                     work_queue_header_controls,
                 ))
                 .child(when(
+                    || store::active_view() == ActiveView::Workflows,
+                    workflows::workflows_header_controls,
+                ))
+                .child(when(
                     || store::active_view() == ActiveView::WorkflowRun,
                     workflow_run_header_controls,
                 )),
@@ -113,6 +118,7 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::Inbox => "Inbox".to_owned(),
                 ActiveView::Machines => "Machines".to_owned(),
                 ActiveView::WorkQueue => "Work queue".to_owned(),
+                ActiveView::Workflows => "Workflows".to_owned(),
                 ActiveView::WorkflowRun => store::active_workflow_run().workflow_name,
                 ActiveView::RegisterProject => "Register Project".to_owned(),
                 ActiveView::Workspace => store::selected_project()
@@ -156,6 +162,7 @@ fn header_title_block() -> impl IntoElement {
                         queue.project_name, queue.tracker_name, queue.repo_slug
                     )
                 }
+                ActiveView::Workflows => store::active_workflows_overview().header_subtitle(),
                 ActiveView::WorkflowRun => {
                     let run = store::active_workflow_run();
                     format!("{} · Run #{}", run.project_name, run.run_number)
@@ -1221,21 +1228,84 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                         ),
                 ),
         )
-        .child(
-            view()
-                .flex_row()
-                .items_center()
-                .gap(px(4.0))
-                .px(px(9.0))
-                .pt(px(5.0))
-                .pb(px(1.0))
+        .child({
+            let is_workflows_active = move || {
+                store::active_view() == ActiveView::Workflows
+                    && store::selected_project_id() == Some(id)
+            };
+            let workflows_test_id = format!("sidebar-workflows-{id}");
+
+            button()
+                .test_id(&workflows_test_id)
+                .accessibility_label(move || {
+                    let name = store::project_by_id(id).map(|p| p.name).unwrap_or_default();
+                    Some(SharedString::from(format!("Workflows for {name}")))
+                })
+                .on_press(move || store::open_workflows_for_project(id))
+                .rounded(px(7.0))
+                .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                .active(|s| s.opacity(0.85))
                 .child(
-                    text("Workflows · See all")
-                        .text_size(px(11.0))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(palette::text_muted()),
-                ),
-        )
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.0))
+                        .px(px(9.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .bg(move || {
+                            if is_workflows_active() {
+                                palette::nav_active_bg()
+                            } else {
+                                AdaptiveColor::TRANSPARENT
+                            }
+                        })
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(icons::workflow_branch(14.0, move || {
+                                    if is_workflows_active() {
+                                        palette::nav_active_fg()
+                                    } else {
+                                        palette::text_secondary()
+                                    }
+                                }))
+                                .child(
+                                    text("Workflows")
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(move || {
+                                            if is_workflows_active() {
+                                                palette::nav_active_fg()
+                                            } else {
+                                                palette::text_primary()
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(
+                            text(move || {
+                                store::workflows_overview_for_project(id)
+                                    .workflows
+                                    .len()
+                                    .to_string()
+                            })
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .tabular_nums()
+                            .text_color(move || {
+                                if is_workflows_active() {
+                                    palette::nav_active_fg()
+                                } else {
+                                    palette::text_muted()
+                                }
+                            }),
+                        ),
+                )
+        })
         .child(dynamic(move || {
             let queue = store::work_queue_for_project(id);
             let active_view = store::active_view();
@@ -1447,6 +1517,10 @@ fn content_pane() -> impl IntoElement {
                 .child(when(
                     || store::active_view() == ActiveView::WorkQueue,
                     work_queue::work_queue_view,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::Workflows,
+                    workflows::workflows_view,
                 ))
                 .child(when(
                     || store::active_view() == ActiveView::WorkflowRun,

@@ -726,3 +726,181 @@ fn project_settings_window_renders_issues_intake_and_interactive_tabs() {
     app.press_window_close("project-settings").unwrap();
     assert!(app.window_state("project-settings").unwrap().is_none());
 }
+
+#[test]
+fn workflows_overview_renders_reference_table_inspector_templates_and_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Open api-gateway's Workflows overview from the expanded sidebar tree.
+    app.press("id:sidebar-workflows-1").unwrap();
+    app.wait_for("api-gateway · 6 workflows · 2 running")
+        .unwrap();
+
+    // Verify header, filter tabs, sort control, table columns, and all 6 reference workflows.
+    assert!(app.screen().shows("Workflows"));
+    assert!(app.screen().shows("Import..."));
+    assert!(app.screen().shows("New Workflow"));
+    assert!(app.screen().shows("All"));
+    assert!(app.screen().shows("Active"));
+    assert!(app.screen().shows("Picks up issues"));
+    assert!(app.screen().shows("Drafts"));
+    assert!(app.screen().shows("Sort by"));
+    assert!(app.screen().shows("Last run"));
+    assert!(app.screen().shows("Starts from"));
+    assert!(app.screen().shows("Last 10 runs"));
+    assert!(app.screen().shows("Now"));
+
+    assert!(app.screen().shows("Fix issue"));
+    assert!(
+        app.screen()
+            .shows("Plans, fixes until tests pass, then opens a PR")
+    );
+    assert!(app.screen().shows("Work queue · bug"));
+    assert!(app.screen().shows("Last run 3 min ago"));
+    assert!(app.screen().shows("2 active · 1 needs you"));
+
+    assert!(app.screen().shows("Triage new issues"));
+    assert!(
+        app.screen()
+            .shows("Labels, asks for repro steps, sizes the work")
+    );
+    assert!(app.screen().shows("Work queue · other"));
+    assert!(app.screen().shows("Last run 6 min ago"));
+
+    assert!(app.screen().shows("Dependency upgrade"));
+    assert!(
+        app.screen()
+            .shows("Upgrades one dependency and fixes fallout")
+    );
+    assert!(app.screen().shows("Work queue · chore"));
+    assert!(app.screen().shows("Last run 22 min ago"));
+
+    assert!(app.screen().shows("Docs refresh"));
+    assert!(
+        app.screen()
+            .shows("Updates docs pages affected by recent changes")
+    );
+    assert!(app.screen().shows("Work queue · docs"));
+    assert!(app.screen().shows("Failed yesterday"));
+    assert!(app.screen().shows("Idle"));
+
+    assert!(app.screen().shows("Release prep"));
+    assert!(app.screen().shows("Changelog, version bump, release PR"));
+    assert!(app.screen().shows("Ad-hoc only"));
+    assert!(app.screen().shows("Last run 4 min ago"));
+
+    assert!(app.screen().shows("Security audit"));
+    assert!(
+        app.screen()
+            .shows("Reviews auth code paths and reports findings")
+    );
+    assert!(app.screen().shows("Never run"));
+    assert!(app.screen().shows("Draft"));
+
+    // Verify run outcome legend and all 4 starter template cards.
+    assert!(app.screen().shows("Succeeded"));
+    assert!(app.screen().shows("Failed or stopped"));
+    assert!(app.screen().shows("Running or waiting"));
+    assert!(app.screen().shows("No run yet"));
+    assert!(app.screen().shows("Start from a template"));
+    assert!(app.screen().shows("Blank workflow"));
+    assert!(app.screen().shows("Start with one step"));
+    assert!(app.screen().shows("Fix an issue"));
+    assert!(app.screen().shows("Plan, fix in a loop, review, PR"));
+    assert!(app.screen().shows("Review a pull request"));
+    assert!(app.screen().shows("Two models compare notes"));
+    assert!(app.screen().shows("Import from file..."));
+    assert!(app.screen().shows("A .wald-workflow file"));
+
+    // Verify default right-hand inspector for Fix issue.
+    assert!(app.screen().shows("Edit"));
+    assert!(app.screen().shows("Ad-hoc Run..."));
+    assert!(app.screen().shows("Steps"));
+    assert!(app.screen().shows("Read issue & plan"));
+    assert!(app.screen().shows("Fix until tests pass · max 5"));
+    assert!(app.screen().shows("until pass"));
+    assert!(app.screen().shows("Implement fix"));
+    assert!(app.screen().shows("Run tests"));
+    assert!(app.screen().shows("Review gate"));
+    assert!(app.screen().shows("Open pull request"));
+    assert!(app.screen().shows("Comment on issue"));
+    assert!(app.screen().shows("Issues labeled bug"));
+    assert!(app.screen().shows("Allowed"));
+    assert!(app.screen().shows("14 min"));
+    assert!(app.screen().shows("$1.12"));
+    assert!(app.screen().shows("Today by you"));
+    assert!(app.screen().shows("Recent runs"));
+    assert!(app.screen().shows("Issue #325 · Move CI to Node 24"));
+    assert!(app.screen().shows("Issue #318 · Flaky session test"));
+    assert!(app.screen().shows("Issue #310 · 429 on burst"));
+    assert!(app.screen().shows("Issue #301 · Header casing"));
+
+    // Selecting Security audit updates the right-hand inspector.
+    app.press("id:wfo-row-security-audit").unwrap();
+    app.wait_for("Map auth & token paths").unwrap();
+    assert!(app.screen().shows("No runs yet"));
+
+    // Filter with Drafts and search input, then return to All.
+    app.press("id:wfo-filter-drafts").unwrap();
+    assert!(!app.screen().shows("Last run 3 min ago"));
+    assert!(app.screen().shows("Never run"));
+
+    app.press("id:wfo-filter-all").unwrap();
+    app.wait_for("Last run 3 min ago").unwrap();
+
+    app.type_text("id:wfo-header-filter", "changelog").unwrap();
+    assert!(app.screen().shows("Changelog, version bump, release PR"));
+    assert!(!app.screen().shows("Last run 3 min ago"));
+    app.clear("id:wfo-header-filter").unwrap();
+    app.wait_for("Last run 3 min ago").unwrap();
+
+    // Launch an ad-hoc run for Fix issue from the inspector.
+    app.press("id:wfo-row-fix-issue").unwrap();
+    app.wait_for("Fix until tests pass · max 5").unwrap();
+    app.press("id:wfo-inspector-adhoc").unwrap();
+    app.wait_for("id:wfo-adhoc-input").unwrap();
+    app.type_text("id:wfo-adhoc-input", "Issue #345 · Audit timeout")
+        .unwrap();
+    app.press("id:wfo-adhoc-start").unwrap();
+    app.wait_for("Issue #345 · Audit timeout").unwrap();
+    assert!(app.screen().shows("api-gateway · 6 workflows · 3 running"));
+
+    // Create a draft workflow from the Review a pull request template card.
+    app.press("id:wfo-template-review-pr").unwrap();
+    app.wait_for("Primary diff review").unwrap();
+    assert!(app.screen().shows("api-gateway · 7 workflows · 3 running"));
+
+    // Create a custom workflow via the header + New Workflow drawer.
+    app.press("id:wfo-header-new").unwrap();
+    app.wait_for("Create a new workflow").unwrap();
+    app.type_text("id:wfo-new-name", "Nightly smoke tests")
+        .unwrap();
+    app.type_text("id:wfo-new-desc", "Runs staging smoke suite every night")
+        .unwrap();
+    app.press("id:wfo-new-submit").unwrap();
+    app.wait_for("Nightly smoke tests").unwrap();
+    assert!(app.screen().shows("api-gateway · 8 workflows · 3 running"));
+
+    // Import a .wald-workflow file via the Import... drawer.
+    app.press("id:wfo-header-import").unwrap();
+    app.wait_for("Import workflow from file").unwrap();
+    app.press("id:wfo-import-submit").unwrap();
+    app.wait_for("Canary deploy").unwrap();
+    assert!(app.screen().shows("api-gateway · 9 workflows · 3 running"));
+
+    // Hide and restore the inspector via View › Hide Inspector (⌥⌘I).
+    assert!(app.screen().shows("Recent runs"));
+    app.press_key("alt+mod+i").unwrap();
+    assert!(!app.screen().shows("Recent runs"));
+    app.press_key("alt+mod+i").unwrap();
+    app.wait_for("Recent runs").unwrap();
+
+    // Clicking a recent run on Fix issue navigates to the live WorkflowRun view.
+    app.press("id:wfo-row-fix-issue").unwrap();
+    app.wait_for("id:wfo-recent-run-44").unwrap();
+    app.press("id:wfo-recent-run-44").unwrap();
+    app.wait_for("Edit Workflow").unwrap();
+}

@@ -211,6 +211,26 @@ pub(crate) fn provider_dot_blue() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0x1668D6), rgb(0x58A6FF))
 }
 
+pub(crate) fn run_dot_success_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x189A57), rgb(0x22B56B))
+}
+
+pub(crate) fn run_dot_running_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x1266D6), rgb(0x2574E8))
+}
+
+pub(crate) fn run_dot_failed_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xC83A32), rgb(0xF87171))
+}
+
+pub(crate) fn run_dot_empty_border() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD4D7DD), rgb(0x3A404D))
+}
+
+pub(crate) fn workflow_now_amber() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xC45B13), rgb(0xF09A49))
+}
+
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
     match color {
         ProjectColor::Blue => AdaptiveColor::new(rgb(0x2071E8), rgb(0x3B82F6)),

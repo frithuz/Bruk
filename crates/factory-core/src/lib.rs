@@ -12,6 +12,7 @@ pub mod project_settings;
 pub mod storage;
 pub mod work_queue;
 pub mod workflow_run;
+pub mod workflows_overview;
 
 pub use dashboard::{
     DashboardDataset, DashboardGranularity, DashboardInsight, DashboardQuery, DashboardSnapshot,
@@ -44,4 +45,10 @@ pub use workflow_run::{
     DiffLineKind, RunDetailTab, RunExecutionState, RunStepDetail, RunStepStatus, StepAgentInfo,
     StepGitInfo, StepIoBinding, StepOutputChip, StepProgressInfo, StepTranscriptEntry,
     TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunError, WorkflowRunViewData,
+};
+pub use workflows_overview::{
+    ProjectWorkflowsOverview, RecentRunStatus, RunOutcomeDot, WorkflowNowTone,
+    WorkflowOverviewEntry, WorkflowRecentRun, WorkflowStepGroup, WorkflowStepPreview,
+    WorkflowTemplateKind, WorkflowTriggerKind, WorkflowTriggerLine, WorkflowsFilter,
+    WorkflowsOverviewError, WorkflowsSort,
 };

@@ -11,8 +11,9 @@ use factory_core::{
     DashboardSnapshot, DefaultLandingView, DeployWatchEntry, DryRunExecutor, FactoryState,
     InboxItem, IntakeRule, IssueSourceKind, MachineNode, MachineStatus, PreferencesTab, Project,
     ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab,
-    ProjectWorkQueue, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
-    WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun, WorkflowRunViewData,
+    ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState,
+    RunId, RunStatus, WorkQueueViewMode, Workflow, WorkflowId, WorkflowRun, WorkflowRunViewData,
+    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
 };
 use nsh_core::{platform::Appearance, prelude::*};
 
@@ -23,6 +24,7 @@ pub(crate) enum ActiveView {
     Inbox,
     Machines,
     WorkQueue,
+    Workflows,
     WorkflowRun,
     Workspace,
     RegisterProject,
@@ -46,6 +48,17 @@ struct AppState {
     work_queue_editing_intake: bool,
     work_queue_ad_hoc_open: bool,
     work_queue_unmatched_expanded: bool,
+    workflows_overviews: BTreeMap<String, ProjectWorkflowsOverview>,
+    workflows_filter: WorkflowsFilter,
+    workflows_sort: WorkflowsSort,
+    workflows_search: String,
+    workflows_selected_id: Option<String>,
+    workflows_inspector_visible: bool,
+    workflows_new_drawer_open: bool,
+    workflows_import_drawer_open: bool,
+    workflows_editing_selected: bool,
+    workflows_ad_hoc_open: bool,
+    workflows_more_menu_open: bool,
     workflow_runs_detail: BTreeMap<(String, String), WorkflowRunViewData>,
     active_workflow_run_key: (String, String),
     workflow_run_selected_step: usize,
@@ -126,11 +139,16 @@ impl AppState {
                     expanded_projects.insert(pid);
                 }
                 let mut work_queues = BTreeMap::new();
+                let mut workflows_overviews = BTreeMap::new();
                 let mut project_settings = BTreeMap::new();
                 for project in factory.projects() {
                     work_queues.insert(
                         project.name.clone(),
                         ProjectWorkQueue::for_project(&project.name),
+                    );
+                    workflows_overviews.insert(
+                        project.name.clone(),
+                        ProjectWorkflowsOverview::for_project(&project.name),
                     );
                     project_settings.insert(
                         project.name.clone(),
@@ -145,6 +163,10 @@ impl AppState {
                     .and_then(|pid| factory.project(pid))
                     .and_then(|project| work_queues.get(&project.name))
                     .and_then(ProjectWorkQueue::default_selected_issue);
+                let workflows_selected_id = selected_project
+                    .and_then(|pid| factory.project(pid))
+                    .and_then(|project| workflows_overviews.get(&project.name))
+                    .and_then(ProjectWorkflowsOverview::default_selected_id);
                 let mut workflow_runs_detail = BTreeMap::new();
                 let default_run = WorkflowRunViewData::sample_release_prep();
                 let default_step = default_run.active_step_index;
@@ -169,6 +191,17 @@ impl AppState {
                     work_queue_editing_intake: false,
                     work_queue_ad_hoc_open: false,
                     work_queue_unmatched_expanded: false,
+                    workflows_overviews,
+                    workflows_filter: WorkflowsFilter::All,
+                    workflows_sort: WorkflowsSort::LastRun,
+                    workflows_search: String::new(),
+                    workflows_selected_id,
+                    workflows_inspector_visible: true,
+                    workflows_new_drawer_open: false,
+                    workflows_import_drawer_open: false,
+                    workflows_editing_selected: false,
+                    workflows_ad_hoc_open: false,
+                    workflows_more_menu_open: false,
                     workflow_runs_detail,
                     active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
                     workflow_run_selected_step: default_step,
@@ -210,11 +243,16 @@ impl AppState {
                     expanded_projects.insert(pid);
                 }
                 let mut work_queues = BTreeMap::new();
+                let mut workflows_overviews = BTreeMap::new();
                 let mut project_settings = BTreeMap::new();
                 for project in factory.projects() {
                     work_queues.insert(
                         project.name.clone(),
                         ProjectWorkQueue::for_project(&project.name),
+                    );
+                    workflows_overviews.insert(
+                        project.name.clone(),
+                        ProjectWorkflowsOverview::for_project(&project.name),
                     );
                     project_settings.insert(
                         project.name.clone(),
@@ -229,6 +267,10 @@ impl AppState {
                     .and_then(|pid| factory.project(pid))
                     .and_then(|project| work_queues.get(&project.name))
                     .and_then(ProjectWorkQueue::default_selected_issue);
+                let workflows_selected_id = selected_project
+                    .and_then(|pid| factory.project(pid))
+                    .and_then(|project| workflows_overviews.get(&project.name))
+                    .and_then(ProjectWorkflowsOverview::default_selected_id);
                 let mut workflow_runs_detail = BTreeMap::new();
                 let default_run = WorkflowRunViewData::sample_release_prep();
                 let default_step = default_run.active_step_index;
@@ -255,6 +297,17 @@ impl AppState {
                     work_queue_editing_intake: false,
                     work_queue_ad_hoc_open: false,
                     work_queue_unmatched_expanded: false,
+                    workflows_overviews,
+                    workflows_filter: WorkflowsFilter::All,
+                    workflows_sort: WorkflowsSort::LastRun,
+                    workflows_search: String::new(),
+                    workflows_selected_id,
+                    workflows_inspector_visible: true,
+                    workflows_new_drawer_open: false,
+                    workflows_import_drawer_open: false,
+                    workflows_editing_selected: false,
+                    workflows_ad_hoc_open: false,
+                    workflows_more_menu_open: false,
                     workflow_runs_detail,
                     active_workflow_run_key: ("api-gateway".to_owned(), "Release prep".to_owned()),
                     workflow_run_selected_step: default_step,
@@ -309,6 +362,35 @@ impl AppState {
             .get(project_name)
             .cloned()
             .unwrap_or_else(|| ProjectWorkQueue::for_project(project_name))
+    }
+
+    fn ensure_workflows_overview_mut(
+        &mut self,
+        project_name: &str,
+    ) -> &mut ProjectWorkflowsOverview {
+        self.workflows_overviews
+            .entry(project_name.to_owned())
+            .or_insert_with(|| ProjectWorkflowsOverview::for_project(project_name))
+    }
+
+    fn workflows_overview_for_name(&self, project_name: &str) -> ProjectWorkflowsOverview {
+        self.workflows_overviews
+            .get(project_name)
+            .cloned()
+            .unwrap_or_else(|| ProjectWorkflowsOverview::for_project(project_name))
+    }
+
+    fn sync_selected_workflow_overview_for_active_project(&mut self) {
+        let name = self.selected_project_name();
+        let selected_id = self.workflows_selected_id.clone();
+        let overview = self.ensure_workflows_overview_mut(&name);
+        let valid = selected_id
+            .as_deref()
+            .is_some_and(|id| overview.workflow(id).is_some());
+        if !valid {
+            let default_id = overview.default_selected_id();
+            self.workflows_selected_id = default_id;
+        }
     }
 
     fn selected_project_meta(&self) -> (String, String, String) {
@@ -847,11 +929,16 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 s.work_queues
                     .entry(saved_name.clone())
                     .or_insert_with(|| ProjectWorkQueue::for_project(&saved_name));
+                s.workflows_overviews
+                    .entry(saved_name.clone())
+                    .or_insert_with(|| ProjectWorkflowsOverview::for_project(&saved_name));
                 s.selected_project = Some(id);
                 s.expanded_projects.insert(id);
                 s.selected_run = None;
                 s.work_queue_selected_issue = None;
+                s.workflows_selected_id = None;
                 s.sync_selected_issue_for_active_project();
+                s.sync_selected_workflow_overview_for_active_project();
                 s.registration_error = None;
                 s.status_message = Some(format!("Registered project '{saved_name}'"));
                 created = true;
@@ -2363,4 +2450,457 @@ pub(crate) fn set_project_preferred_runner(runner: &str) {
     state().update(|s| {
         s.ensure_project_settings_mut().preferred_runner = runner;
     });
+}
+
+// --- Workflows Overview state -----------------------------------------------------------
+
+pub(crate) fn open_workflows_for_project(id: ProjectId) {
+    state().update(|s| {
+        let project_changed = s.selected_project != Some(id);
+        s.selected_project = Some(id);
+        s.expanded_projects.insert(id);
+        s.active_view = ActiveView::Workflows;
+        if project_changed {
+            s.workflows_selected_id = None;
+            s.workflows_search.clear();
+            s.workflows_filter = WorkflowsFilter::All;
+            s.workflows_new_drawer_open = false;
+            s.workflows_import_drawer_open = false;
+            s.workflows_editing_selected = false;
+            s.workflows_ad_hoc_open = false;
+            s.workflows_more_menu_open = false;
+        }
+        s.sync_selected_workflow_overview_for_active_project();
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn open_new_workflow_drawer() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::Workflows;
+        s.workflows_new_drawer_open = true;
+        s.workflows_import_drawer_open = false;
+        s.sync_selected_workflow_overview_for_active_project();
+    });
+}
+
+pub(crate) fn open_import_workflow_drawer() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        if let Some(pid) = s.selected_project {
+            s.expanded_projects.insert(pid);
+        }
+        s.active_view = ActiveView::Workflows;
+        s.workflows_import_drawer_open = true;
+        s.workflows_new_drawer_open = false;
+        s.sync_selected_workflow_overview_for_active_project();
+    });
+}
+
+pub(crate) fn active_workflows_overview() -> ProjectWorkflowsOverview {
+    state().with(|s| {
+        let name = s.selected_project_name();
+        s.workflows_overview_for_name(&name)
+    })
+}
+
+pub(crate) fn workflows_overview_for_project(id: ProjectId) -> ProjectWorkflowsOverview {
+    state().with(|s| {
+        let name = s
+            .factory
+            .project(id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| "api-gateway".to_owned());
+        s.workflows_overview_for_name(&name)
+    })
+}
+
+pub(crate) fn workflows_filter() -> WorkflowsFilter {
+    state().with(|s| s.workflows_filter)
+}
+
+pub(crate) fn set_workflows_filter(filter: WorkflowsFilter) {
+    state().update(|s| {
+        s.workflows_filter = filter;
+    });
+}
+
+pub(crate) fn workflows_sort() -> WorkflowsSort {
+    state().with(|s| s.workflows_sort)
+}
+
+pub(crate) fn set_workflows_sort(sort: WorkflowsSort) {
+    state().update(|s| {
+        s.workflows_sort = sort;
+    });
+}
+
+pub(crate) fn workflows_search() -> String {
+    state().with(|s| s.workflows_search.clone())
+}
+
+pub(crate) fn set_workflows_search(query: &str) {
+    let query = query.to_owned();
+    state().update(|s| {
+        s.workflows_search = query;
+    });
+}
+
+pub(crate) fn reset_workflows_filters() {
+    state().update(|s| {
+        s.workflows_filter = WorkflowsFilter::All;
+        s.workflows_search.clear();
+    });
+}
+
+pub(crate) fn selected_workflow_overview_id() -> Option<String> {
+    state().with(|s| s.workflows_selected_id.clone())
+}
+
+pub(crate) fn select_workflow_overview(id: &str) {
+    let id = id.to_owned();
+    state().update(|s| {
+        s.workflows_selected_id = Some(id);
+        s.workflows_inspector_visible = true;
+        s.workflows_editing_selected = false;
+        s.workflows_ad_hoc_open = false;
+        s.workflows_more_menu_open = false;
+    });
+}
+
+pub(crate) fn workflows_inspector_visible() -> bool {
+    state().with(|s| s.workflows_inspector_visible)
+}
+
+pub(crate) fn toggle_workflows_inspector() {
+    state().update(|s| {
+        s.workflows_inspector_visible = !s.workflows_inspector_visible;
+    });
+}
+
+pub(crate) fn workflows_new_drawer_open() -> bool {
+    state().with(|s| s.workflows_new_drawer_open)
+}
+
+pub(crate) fn set_workflows_new_drawer_open(open: bool) {
+    state().update(|s| {
+        s.workflows_new_drawer_open = open;
+        if open {
+            s.workflows_import_drawer_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflows_import_drawer_open() -> bool {
+    state().with(|s| s.workflows_import_drawer_open)
+}
+
+pub(crate) fn set_workflows_import_drawer_open(open: bool) {
+    state().update(|s| {
+        s.workflows_import_drawer_open = open;
+        if open {
+            s.workflows_new_drawer_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflows_editing_selected() -> bool {
+    state().with(|s| s.workflows_editing_selected)
+}
+
+pub(crate) fn set_workflows_editing_selected(editing: bool) {
+    state().update(|s| {
+        s.workflows_editing_selected = editing;
+        if editing {
+            s.workflows_ad_hoc_open = false;
+            s.workflows_more_menu_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflows_ad_hoc_open() -> bool {
+    state().with(|s| s.workflows_ad_hoc_open)
+}
+
+pub(crate) fn set_workflows_ad_hoc_open(open: bool) {
+    state().update(|s| {
+        s.workflows_ad_hoc_open = open;
+        if open {
+            s.workflows_editing_selected = false;
+            s.workflows_more_menu_open = false;
+        }
+    });
+}
+
+pub(crate) fn workflows_more_menu_open() -> bool {
+    state().with(|s| s.workflows_more_menu_open)
+}
+
+pub(crate) fn set_workflows_more_menu_open(open: bool) {
+    state().update(|s| {
+        s.workflows_more_menu_open = open;
+        if open {
+            s.workflows_editing_selected = false;
+            s.workflows_ad_hoc_open = false;
+        }
+    });
+}
+
+pub(crate) fn create_overview_workflow(
+    name: &str,
+    description: &str,
+    issue_label: Option<&str>,
+    as_draft: bool,
+) -> bool {
+    let mut created = false;
+    let name_owned = name.to_owned();
+    let desc_owned = description.to_owned();
+    let label_owned = issue_label.map(str::to_owned);
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.create_workflow(&name_owned, &desc_owned, label_owned.as_deref(), as_draft) {
+            Ok(id) => {
+                let display_name = overview
+                    .workflow(&id)
+                    .map(|w| w.name.clone())
+                    .unwrap_or_else(|| name_owned.clone());
+                s.workflows_selected_id = Some(id);
+                s.workflows_new_drawer_open = false;
+                s.workflows_filter = WorkflowsFilter::All;
+                s.workflows_search.clear();
+                s.status_message = Some(format!("Created workflow '{display_name}'"));
+                created = true;
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+    created
+}
+
+pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        let id = overview.create_from_template(template);
+        let display_name = overview
+            .workflow(&id)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| template.title().to_owned());
+        s.workflows_selected_id = Some(id);
+        s.workflows_filter = WorkflowsFilter::All;
+        s.workflows_search.clear();
+        s.workflows_editing_selected = false;
+        s.workflows_ad_hoc_open = false;
+        s.workflows_more_menu_open = false;
+        s.status_message = Some(format!(
+            "Created draft workflow '{display_name}' from template"
+        ));
+    });
+}
+
+pub(crate) fn import_overview_workflow(file_path: &str) -> bool {
+    let mut imported = false;
+    let path_owned = file_path.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.import_from_file(&path_owned) {
+            Ok(id) => {
+                let display_name = overview
+                    .workflow(&id)
+                    .map(|w| w.name.clone())
+                    .unwrap_or_else(|| "Imported workflow".to_owned());
+                s.workflows_selected_id = Some(id);
+                s.workflows_import_drawer_open = false;
+                s.workflows_filter = WorkflowsFilter::All;
+                s.workflows_search.clear();
+                s.status_message = Some(format!("Imported workflow '{display_name}'"));
+                imported = true;
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+    imported
+}
+
+pub(crate) fn update_selected_overview_workflow(
+    id: &str,
+    name: &str,
+    description: &str,
+    is_draft: bool,
+) {
+    let id_owned = id.to_owned();
+    let name_owned = name.to_owned();
+    let desc_owned = description.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.update_workflow(&id_owned, &name_owned, &desc_owned, is_draft) {
+            Ok(()) => {
+                s.workflows_editing_selected = false;
+                s.status_message = Some(format!("Saved changes to '{}'", name_owned.trim()));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
+    let mut started = false;
+    let id_owned = id.to_owned();
+    let summary_owned = summary.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        let wf_name = overview
+            .workflow(&id_owned)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| id_owned.clone());
+        match overview.launch_ad_hoc_run(&id_owned, &summary_owned) {
+            Ok(run_no) => {
+                s.workflows_ad_hoc_open = false;
+                s.status_message = Some(format!("Started ad-hoc run #{run_no} ({wf_name})"));
+                started = true;
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+    started
+}
+
+pub(crate) fn duplicate_overview_workflow(id: &str) {
+    let id_owned = id.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.duplicate_workflow(&id_owned) {
+            Ok(copy_id) => {
+                let copy_name = overview
+                    .workflow(&copy_id)
+                    .map(|w| w.name.clone())
+                    .unwrap_or_else(|| copy_id.clone());
+                s.workflows_selected_id = Some(copy_id);
+                s.workflows_more_menu_open = false;
+                s.status_message = Some(format!("Duplicated workflow as '{copy_name}'"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn duplicate_selected_overview_workflow() {
+    let selected = state().with_untracked(|s| {
+        let name = s.selected_project_name();
+        let overview = s.workflows_overview_for_name(&name);
+        s.workflows_selected_id
+            .clone()
+            .filter(|id| overview.workflow(id).is_some())
+            .or_else(|| overview.default_selected_id())
+    });
+    if let Some(id) = selected {
+        duplicate_overview_workflow(&id);
+    }
+}
+
+pub(crate) fn toggle_overview_workflow_draft(id: &str) {
+    let id_owned = id.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        let wf_name = overview
+            .workflow(&id_owned)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| id_owned.clone());
+        match overview.toggle_draft(&id_owned) {
+            Ok(is_draft) => {
+                s.workflows_more_menu_open = false;
+                let action = if is_draft {
+                    "Moved to draft"
+                } else {
+                    "Published"
+                };
+                s.status_message = Some(format!("{action} '{wf_name}'"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn export_overview_workflow(id: &str) {
+    let id_owned = id.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        let filename = format!("{id_owned}.wald-workflow");
+        let wf_name = overview
+            .workflow(&id_owned)
+            .map(|w| w.name.clone())
+            .unwrap_or_else(|| id_owned.clone());
+        s.workflows_more_menu_open = false;
+        s.status_message = Some(format!("Exported '{wf_name}' to {filename}"));
+    });
+}
+
+pub(crate) fn export_selected_overview_workflow() {
+    let selected = state().with_untracked(|s| {
+        let name = s.selected_project_name();
+        let overview = s.workflows_overview_for_name(&name);
+        s.workflows_selected_id
+            .clone()
+            .filter(|id| overview.workflow(id).is_some())
+            .or_else(|| overview.default_selected_id())
+    });
+    if let Some(id) = selected {
+        export_overview_workflow(&id);
+    }
+}
+
+pub(crate) fn delete_overview_workflow(id: &str) {
+    let id_owned = id.to_owned();
+    state().update(|s| {
+        let project = s.selected_project_name();
+        let overview = s.ensure_workflows_overview_mut(&project);
+        match overview.delete_workflow(&id_owned) {
+            Ok(removed_name) => {
+                let next_id = overview.default_selected_id();
+                s.workflows_selected_id = next_id;
+                s.workflows_more_menu_open = false;
+                s.status_message = Some(format!("Deleted workflow '{removed_name}'"));
+            }
+            Err(err) => {
+                s.status_message = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn open_workflow_run_from_overview(workflow_name: &str) {
+    let project_id = state().with_untracked(|s| {
+        s.selected_project
+            .or_else(|| s.factory.projects().first().map(|p| p.id))
+    });
+    if let Some(pid) = project_id {
+        open_project_workflow(pid, workflow_name);
+    }
 }

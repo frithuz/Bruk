@@ -371,3 +371,39 @@ pub(crate) fn extension_puzzle(
     )
     .text_color(color)
 }
+
+/// Three horizontal dots `•••` for overflow action buttons.
+pub(crate) fn more_horizontal(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor"><circle cx="3.5" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12.5" cy="8" r="1.25"/></svg>"#,
+        14.0,
+    )
+    .text_color(color)
+}
+
+/// Crisp white checkmark sized for a 14×14 succeeded run dot.
+pub(crate) fn run_dot_check(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.6 6.3 5 8.7 9.4 3.6"/></svg>"#,
+        10.0,
+    )
+    .text_color(color)
+}
+
+/// Crisp `×` mark sized for a 14×14 failed/stopped run dot.
+pub(crate) fn run_dot_cross(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M3.4 3.4 8.6 8.6M8.6 3.4 3.4 8.6"/></svg>"#,
+        10.0,
+    )
+    .text_color(color)
+}
+
+/// Three tiny horizontal dots sized for a 14×14 running/waiting run dot.
+pub(crate) fn run_dot_ellipsis(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor"><circle cx="2.7" cy="6" r="1.05"/><circle cx="6" cy="6" r="1.05"/><circle cx="9.3" cy="6" r="1.05"/></svg>"#,
+        10.0,
+    )
+    .text_color(color)
+}
