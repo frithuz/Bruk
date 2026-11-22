@@ -7,7 +7,7 @@ use factory_core::{
 use nsh_base::{button, input};
 use nsh_core::{
     desktop::{TitleBarOptions, TitleBarStyle, WindowAttributes, WindowKind, WindowPosition},
-    element::desktop::window,
+    element::desktop::{current_window, window},
     prelude::*,
 };
 
@@ -57,6 +57,9 @@ pub(crate) fn preferences_window() -> impl IntoElement {
 }
 
 fn preferences_surface() -> impl IntoElement {
+    store::set_preferences_focused(true);
+    current_window().on_focus_change(store::set_preferences_focused);
+
     view()
         .flex_1()
         .min_h(px(0.0))

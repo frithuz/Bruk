@@ -8,7 +8,7 @@ use std::{
 use factory_core::{
     AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
     DashboardSnapshot, DefaultLandingView, DryRunExecutor, FactoryState, InboxItem, MachineNode,
-    MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId, RunId, Workflow,
+    MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId, RunId, RunStatus, Workflow,
     WorkflowId, WorkflowRun,
 };
 use nsh_core::{platform::Appearance, prelude::*};
@@ -42,10 +42,12 @@ struct AppState {
     machines: Vec<MachineNode>,
     preferences: AppPreferences,
     preferences_open: bool,
+    preferences_focused: bool,
     preferences_tab: PreferencesTab,
     selected_provider_id: String,
     preferences_feedback: Option<String>,
     preferences_error: Option<String>,
+    sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
 }
@@ -111,10 +113,12 @@ impl AppState {
                     machines,
                     preferences,
                     preferences_open: false,
+                    preferences_focused: false,
                     preferences_tab: PreferencesTab::Providers,
                     selected_provider_id,
                     preferences_feedback: None,
                     preferences_error: None,
+                    sidebar_visible: true,
                     status_message,
                     registration_error: None,
                 }
@@ -143,10 +147,12 @@ impl AppState {
                     machines,
                     preferences,
                     preferences_open: false,
+                    preferences_focused: false,
                     preferences_tab: PreferencesTab::Providers,
                     selected_provider_id,
                     preferences_feedback: None,
                     preferences_error: None,
+                    sidebar_visible: true,
                     status_message: Some(format!("Could not open SQLite database: {err}")),
                     registration_error: Some(format!("Database unavailable: {err}")),
                 }
@@ -210,6 +216,16 @@ pub(crate) fn init_with_database_path(path: &Path) {
     apply_appearance_mode(mode);
 }
 
+pub(crate) fn sidebar_visible() -> bool {
+    state().with(|s| s.sidebar_visible)
+}
+
+pub(crate) fn toggle_sidebar() {
+    state().update(|s| {
+        s.sidebar_visible = !s.sidebar_visible;
+    });
+}
+
 pub(crate) fn active_view() -> ActiveView {
     state().with(|s| s.active_view)
 }
@@ -261,6 +277,16 @@ pub(crate) fn registration_error() -> Option<String> {
 
 pub(crate) fn project_ids() -> Vec<ProjectId> {
     state().with(|s| s.factory.projects().iter().map(|p| p.id).collect())
+}
+
+pub(crate) fn recent_projects() -> Vec<(ProjectId, String)> {
+    state().with(|s| {
+        s.factory
+            .projects()
+            .iter()
+            .map(|p| (p.id, p.name.clone()))
+            .collect()
+    })
 }
 
 pub(crate) fn tracked_project_ids() -> Vec<ProjectId> {
@@ -338,6 +364,35 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
         }
     });
     created
+}
+
+/// Opens an existing project matching `path`, or registers it in SQLite and opens its workspace.
+pub(crate) fn open_or_register_project_path(path: &Path) -> bool {
+    let existing = state().with_untracked(|s| {
+        s.factory
+            .projects()
+            .iter()
+            .find(|project| project.root_path == path)
+            .map(|project| project.id)
+    });
+    if let Some(id) = existing {
+        select_project(id);
+        return true;
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|segment| segment.to_str())
+        .filter(|segment| !segment.trim().is_empty())
+        .unwrap_or("project");
+    let path_str = path.display().to_string();
+    if register_project(name, &path_str) {
+        open_workspace();
+        true
+    } else {
+        open_register_project();
+        false
+    }
 }
 
 /// Deletes a tracked project from SQLite and removes it from the reactive state.
@@ -583,6 +638,17 @@ pub(crate) fn advance_selected_run() {
     });
 }
 
+pub(crate) fn approve_selected_run_step() {
+    let is_waiting = state().with_untracked(|s| {
+        s.selected_run
+            .and_then(|id| s.factory.run(id))
+            .is_some_and(|run| run.status == RunStatus::WaitingForApproval)
+    });
+    if is_waiting {
+        advance_selected_run();
+    }
+}
+
 pub(crate) fn cancel_selected_run() {
     state().update(|s| {
         let Some(run_id) = s.selected_run else {
@@ -603,22 +669,51 @@ pub(crate) fn status_message() -> Option<String> {
     state().with(|s| s.status_message.clone())
 }
 
+pub(crate) fn set_status_message(message: impl Into<String>) {
+    let message = message.into();
+    state().update(|s| {
+        s.status_message = Some(message);
+    });
+}
+
 // --- Preferences Window & Settings ------------------------------------------------------
 
 pub(crate) fn preferences_open() -> bool {
     state().with(|s| s.preferences_open)
 }
 
+pub(crate) fn preferences_focused() -> bool {
+    state().with(|s| s.preferences_focused)
+}
+
+pub(crate) fn set_preferences_focused(focused: bool) {
+    state().update(|s| {
+        s.preferences_focused = focused;
+    });
+}
+
 pub(crate) fn open_preferences() {
     state().update(|s| {
         s.preferences_open = true;
+        s.preferences_focused = true;
         s.preferences_error = None;
+    });
+}
+
+pub(crate) fn open_preferences_tab(tab: PreferencesTab) {
+    state().update(|s| {
+        s.preferences_tab = tab;
+        s.preferences_open = true;
+        s.preferences_focused = true;
+        s.preferences_error = None;
+        s.preferences_feedback = None;
     });
 }
 
 pub(crate) fn close_preferences() {
     state().update(|s| {
         s.preferences_open = false;
+        s.preferences_focused = false;
         s.preferences_error = None;
         s.preferences_feedback = None;
     });

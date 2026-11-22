@@ -28,7 +28,7 @@ pub(crate) fn shell() -> impl IntoElement {
                 .flex_1()
                 .min_h(px(0.0))
                 .flex_row()
-                .child(sidebar())
+                .child(when(store::sidebar_visible, sidebar))
                 .child(content_pane()),
         )
 }

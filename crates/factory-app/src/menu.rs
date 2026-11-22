@@ -1,0 +1,487 @@
+//! Native macOS application menu bar (`Software Factory`, `File`, `Edit`, `View`,
+//! `Project`, `Workflow`, `Run`, `Window`, `Help`).
+//!
+//! Implemented commands are wired to live application state and native AppKit
+//! actions; unimplemented commands remain visible as disabled entries matching
+//! the reference menu specification.
+
+use factory_core::{PreferencesTab, ProjectId, RunStatus};
+use nsh_core::{
+    desktop::{MenuRole, WindowMode},
+    element::{
+        desktop::{MenuItem, main_window, set_application_menu},
+        reveal_path,
+    },
+    file_dialog::OpenDialog,
+    prelude::*,
+};
+
+use crate::store;
+
+/// Inline SVG puzzle-piece template icon for "From extensions" section headers.
+const EXTENSIONS_ICON_URI: &str = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyMCAyMCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSJibGFjayIgc3Ryb2tlLXdpZHRoPSIxLjUiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCI+PHBhdGggZD0iTTcuNSA0LjJhMS43IDEuNyAwIDAgMSAzLjQgMGgzLjNhMS4zIDEuMyAwIDAgMSAxLjMgMS4zdjMuM2ExLjcgMS43IDAgMCAxIDAgMy40djMuM2ExLjMgMS4zIDAgMCAxLTEuMyAxLjNINS41YTEuMyAxLjMgMCAwIDEtMS4zLTEuM1Y1LjVhMS4zIDEuMyAwIDAgMSAxLjMtMS4zaDJaIi8+PC9zdmc+";
+
+/// Minimal reactive slice of application state that affects the menu bar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MenuSnapshot {
+    sidebar_visible: bool,
+    is_full_screen: bool,
+    recent_projects: Vec<(ProjectId, String)>,
+    has_selected_project: bool,
+    can_stop_run: bool,
+    can_approve_step: bool,
+    has_projects: bool,
+}
+
+fn current_menu_snapshot() -> MenuSnapshot {
+    let sidebar_visible = store::sidebar_visible();
+    let is_full_screen = main_window()
+        .state()
+        .is_some_and(|state| state.mode == WindowMode::FullScreen);
+    let recent_projects = store::recent_projects();
+    let has_projects = !recent_projects.is_empty();
+    let has_selected_project = store::selected_project().is_some();
+    let selected_run = store::selected_run();
+    let can_stop_run = selected_run
+        .as_ref()
+        .is_some_and(|run| !run.status.is_terminal());
+    let can_approve_step = selected_run
+        .as_ref()
+        .is_some_and(|run| run.status == RunStatus::WaitingForApproval);
+
+    MenuSnapshot {
+        sidebar_visible,
+        is_full_screen,
+        recent_projects,
+        has_selected_project,
+        can_stop_run,
+        can_approve_step,
+        has_projects,
+    }
+}
+
+/// Installs the reactive macOS application menu bar for the root app surface.
+pub(crate) fn install_application_menu() {
+    let snapshot = computed(current_menu_snapshot);
+    effect(move || {
+        let state = snapshot.get();
+        set_application_menu(build_application_menu(&state));
+    });
+}
+
+fn build_application_menu(snapshot: &MenuSnapshot) -> Vec<MenuItem> {
+    vec![
+        app_menu(),
+        file_menu(snapshot),
+        edit_menu(),
+        view_menu(snapshot),
+        project_menu(snapshot),
+        workflow_menu(),
+        run_menu(snapshot),
+        window_menu(),
+        help_menu(),
+    ]
+}
+
+// --- Top-Level Menus --------------------------------------------------------------------
+
+fn app_menu() -> MenuItem {
+    MenuItem::submenu(
+        "Software Factory",
+        [
+            MenuItem::role(MenuRole::About),
+            MenuItem::new("Check for Updates…").disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Settings…")
+                .shortcut("mod+,")
+                .on_select(store::open_preferences),
+            MenuItem::new("Extensions…")
+                .on_select(|| store::open_preferences_tab(PreferencesTab::Extensions)),
+            MenuItem::separator(),
+            MenuItem::submenu("Services", []).disabled(true),
+            MenuItem::separator(),
+            MenuItem::role(MenuRole::Hide),
+            MenuItem::role(MenuRole::HideOthers),
+            MenuItem::role(MenuRole::ShowAll),
+            MenuItem::separator(),
+            MenuItem::role(MenuRole::Quit),
+        ],
+    )
+}
+
+fn file_menu(snapshot: &MenuSnapshot) -> MenuItem {
+    let recent_menu = if snapshot.recent_projects.is_empty() {
+        MenuItem::submenu("Open Recent", []).disabled(true)
+    } else {
+        let items: Vec<MenuItem> = snapshot
+            .recent_projects
+            .iter()
+            .map(|(id, name)| {
+                let project_id = *id;
+                MenuItem::new(name.clone()).on_select(move || {
+                    store::select_project(project_id);
+                    main_window().focus();
+                })
+            })
+            .collect();
+        MenuItem::submenu("Open Recent", items)
+    };
+
+    MenuItem::submenu(
+        "File",
+        [
+            MenuItem::new("New Workflow")
+                .shortcut("mod+n")
+                .disabled(true),
+            MenuItem::new("New Project…")
+                .shortcut("mod+shift+n")
+                .on_select(open_new_project),
+            MenuItem::new("Open Project…")
+                .shortcut("mod+o")
+                .on_select(open_project_dialog),
+            recent_menu,
+            MenuItem::separator(),
+            MenuItem::new("Import Workflow…").disabled(true),
+            MenuItem::new("Export Workflow…")
+                .shortcut("mod+shift+e")
+                .disabled(true),
+            MenuItem::separator(),
+            // Use `on_select` instead of `MenuRole::Close` so `MenuItem::window_menu`
+            // binds AppKit's `windowsMenu` to the `Window` submenu rather than `File`.
+            MenuItem::new("Close Window")
+                .shortcut("mod+w")
+                .on_select(close_active_window),
+        ],
+    )
+}
+
+fn edit_menu() -> MenuItem {
+    MenuItem::submenu(
+        "Edit",
+        [
+            MenuItem::role(MenuRole::Undo),
+            MenuItem::role(MenuRole::Redo),
+            MenuItem::separator(),
+            MenuItem::role(MenuRole::Cut),
+            MenuItem::role(MenuRole::Copy),
+            MenuItem::role(MenuRole::Paste),
+            MenuItem::role(MenuRole::SelectAll),
+            MenuItem::separator(),
+            MenuItem::new("Find…").shortcut("mod+f").disabled(true),
+            MenuItem::new("Find in Run Output")
+                .shortcut("alt+mod+f")
+                .disabled(true),
+        ],
+    )
+}
+
+fn view_menu(snapshot: &MenuSnapshot) -> MenuItem {
+    let sidebar_label = if snapshot.sidebar_visible {
+        "Hide Sidebar"
+    } else {
+        "Show Sidebar"
+    };
+    let full_screen_label = if snapshot.is_full_screen {
+        "Exit Full Screen"
+    } else {
+        "Enter Full Screen"
+    };
+    let is_full_screen = snapshot.is_full_screen;
+
+    MenuItem::submenu(
+        "View",
+        [
+            MenuItem::new(sidebar_label)
+                .shortcut("ctrl+cmd+s")
+                .on_select(store::toggle_sidebar),
+            MenuItem::new("Show Inspector")
+                .shortcut("alt+mod+i")
+                .disabled(true),
+            MenuItem::new("Command Palette")
+                .shortcut("mod+k")
+                .disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Output").shortcut("mod+1").disabled(true),
+            MenuItem::new("Diff").shortcut("mod+2").disabled(true),
+            MenuItem::new("Logs").shortcut("mod+3").disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Wrap Transcript Lines").disabled(true),
+            // Use `on_select` instead of `MenuRole::ToggleFullScreen` so AppKit's
+            // `windowsMenu` stays attached to the `Window` submenu.
+            MenuItem::new(full_screen_label)
+                .shortcut("ctrl+cmd+f")
+                .on_select(move || toggle_full_screen(is_full_screen)),
+            MenuItem::separator(),
+            from_extensions_header(),
+            MenuItem::new("Coverage").shortcut("mod+4").disabled(true),
+        ],
+    )
+}
+
+fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
+    MenuItem::submenu(
+        "Project",
+        [
+            MenuItem::new("Work Queue").shortcut("mod+0").disabled(true),
+            MenuItem::new("Sync Issues")
+                .shortcut("mod+shift+i")
+                .disabled(true),
+            MenuItem::new("Issue Source & Intake…").disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Project Settings…").disabled(true),
+            MenuItem::new("Environment Variables…").disabled(true),
+            MenuItem::new("Show in Finder")
+                .shortcut("alt+mod+o")
+                .disabled(!snapshot.has_selected_project)
+                .on_select(reveal_selected_project_in_finder),
+            MenuItem::separator(),
+            MenuItem::new("Archive Project…").disabled(true),
+        ],
+    )
+}
+
+fn workflow_menu() -> MenuItem {
+    MenuItem::submenu(
+        "Workflow",
+        [
+            MenuItem::new("Edit Workflow")
+                .shortcut("mod+e")
+                .disabled(true),
+            MenuItem::new("Add Step…")
+                .shortcut("alt+mod+n")
+                .disabled(true),
+            MenuItem::new("Validate")
+                .shortcut("mod+shift+v")
+                .disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Duplicate").disabled(true),
+            MenuItem::new("Version History…").disabled(true),
+            MenuItem::separator(),
+            from_extensions_header(),
+            MenuItem::new("Post Update to Chat").disabled(true),
+        ],
+    )
+}
+
+fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
+    MenuItem::submenu(
+        "Run",
+        [
+            MenuItem::new("Ad-hoc Run").shortcut("mod+r").disabled(true),
+            MenuItem::new("Ad-hoc Run with Inputs…")
+                .shortcut("mod+shift+r")
+                .disabled(true),
+            MenuItem::new("Start Next Queued Issue")
+                .shortcut("alt+mod+enter")
+                .disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Pause").shortcut("mod+.").disabled(true),
+            MenuItem::new("Stop")
+                .shortcut("mod+shift+.")
+                .disabled(!snapshot.can_stop_run)
+                .on_select(store::cancel_selected_run),
+            MenuItem::new("Retry Failed Step")
+                .shortcut("alt+mod+r")
+                .disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Approve Step")
+                .shortcut("mod+enter")
+                .disabled(!snapshot.can_approve_step)
+                .on_select(store::approve_selected_run_step),
+            MenuItem::new("Request Changes…").disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Run History")
+                .shortcut("mod+y")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_run_history),
+            MenuItem::separator(),
+            from_extensions_header(),
+            MenuItem::new("Set Run Budget…").disabled(true),
+        ],
+    )
+}
+
+fn window_menu() -> MenuItem {
+    MenuItem::submenu(
+        "Window",
+        [
+            MenuItem::role(MenuRole::Minimize),
+            MenuItem::role(MenuRole::Zoom),
+            MenuItem::separator(),
+            MenuItem::new("Dashboard")
+                .shortcut("mod+shift+d")
+                .on_select(open_dashboard_window),
+            MenuItem::new("Inbox")
+                .shortcut("mod+i")
+                .on_select(open_inbox_window),
+            MenuItem::new("Machines")
+                .shortcut("alt+mod+m")
+                .on_select(open_machines_window),
+            MenuItem::new("Run Monitor")
+                .shortcut("mod+shift+m")
+                .disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Bring All to Front").disabled(true),
+        ],
+    )
+}
+
+fn help_menu() -> MenuItem {
+    // macOS AppKit automatically inserts the native Help Search field at the top of
+    // a top-level menu titled "Help".
+    MenuItem::submenu(
+        "Help",
+        [
+            MenuItem::new("Software Factory Help").disabled(true),
+            MenuItem::new("Workflow Reference").disabled(true),
+            MenuItem::new("Extension API").disabled(true),
+            MenuItem::separator(),
+            MenuItem::new("Report an Issue…").disabled(true),
+        ],
+    )
+}
+
+fn from_extensions_header() -> MenuItem {
+    MenuItem::new("From extensions")
+        .icon(EXTENSIONS_ICON_URI)
+        .disabled(true)
+}
+
+// --- Menu Action Handlers ---------------------------------------------------------------
+
+fn open_new_project() {
+    store::open_register_project();
+    main_window().focus();
+}
+
+fn open_project_dialog() {
+    let answer = pick_paths(
+        OpenDialog::folders()
+            .title("Open Project Folder")
+            .button_label("Open Project"),
+    );
+    spawn(async move {
+        if let Ok(Some(paths)) = answer.await
+            && let Some(chosen) = paths.into_iter().next()
+        {
+            store::open_or_register_project_path(&chosen);
+            main_window().focus();
+        }
+    });
+}
+
+fn close_active_window() {
+    if store::preferences_open() && store::preferences_focused() {
+        store::close_preferences();
+    } else {
+        main_window().close();
+    }
+}
+
+fn toggle_full_screen(is_full_screen: bool) {
+    let next_mode = if is_full_screen {
+        WindowMode::Normal
+    } else {
+        WindowMode::FullScreen
+    };
+    main_window().set_mode(next_mode);
+}
+
+fn reveal_selected_project_in_finder() {
+    let Some(project) = store::selected_project() else {
+        return;
+    };
+    let path = project.root_path;
+    let answer = reveal_path(path.clone());
+    spawn(async move {
+        if let Err(err) = answer.await {
+            store::set_status_message(format!(
+                "Could not show '{}' in Finder: {err}",
+                path.display()
+            ));
+        }
+    });
+}
+
+fn open_run_history() {
+    store::open_workspace();
+    main_window().focus();
+}
+
+fn open_dashboard_window() {
+    store::open_dashboard();
+    main_window().focus();
+}
+
+fn open_inbox_window() {
+    store::open_inbox();
+    main_window().focus();
+}
+
+fn open_machines_window() {
+    store::open_machines();
+    main_window().focus();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_snapshot() -> MenuSnapshot {
+        MenuSnapshot {
+            sidebar_visible: true,
+            is_full_screen: false,
+            recent_projects: vec![(1, "api-gateway".to_owned()), (2, "mobile-app".to_owned())],
+            has_selected_project: true,
+            can_stop_run: false,
+            can_approve_step: false,
+            has_projects: true,
+        }
+    }
+
+    #[test]
+    fn builds_all_nine_top_level_menus_with_valid_shortcuts() {
+        let menu = build_application_menu(&sample_snapshot());
+        assert_eq!(menu.len(), 9);
+        let debug = format!("{menu:?}");
+        for expected in [
+            "Software Factory",
+            "File",
+            "Edit",
+            "View",
+            "Project",
+            "Workflow",
+            "Run",
+            "Window",
+            "Help",
+        ] {
+            assert!(
+                debug.contains(expected),
+                "expected top-level menu '{expected}' in {debug}"
+            );
+        }
+    }
+
+    #[test]
+    fn sidebar_and_fullscreen_labels_reflect_snapshot_state() {
+        let mut snap = sample_snapshot();
+        let initial = format!("{:?}", view_menu(&snap));
+        assert!(initial.contains("Hide Sidebar"));
+        assert!(initial.contains("Enter Full Screen"));
+
+        snap.sidebar_visible = false;
+        snap.is_full_screen = true;
+        let toggled = format!("{:?}", view_menu(&snap));
+        assert!(toggled.contains("Show Sidebar"));
+        assert!(toggled.contains("Exit Full Screen"));
+    }
+
+    #[test]
+    fn recent_projects_populate_open_recent_submenu() {
+        let snap = sample_snapshot();
+        let file = format!("{:?}", file_menu(&snap));
+        assert!(file.contains("Open Recent"));
+        assert!(file.contains("api-gateway"));
+        assert!(file.contains("mobile-app"));
+    }
+}

@@ -257,3 +257,80 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
     reopened.wait_for("CI Runner").unwrap();
     assert!(reopened.screen().shows("$350.00 · $41.20 used"));
 }
+
+#[test]
+fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    let mut app = start_with_db(db_path);
+
+    // Window menu shortcuts switch top-level views.
+    app.press_key("mod+i").unwrap();
+    app.wait_for("4 requests waiting for your input").unwrap();
+
+    app.press_key("alt+mod+m").unwrap();
+    app.wait_for("2 connected · 1 disconnected").unwrap();
+
+    app.press_key("mod+shift+d").unwrap();
+    app.wait_for("Issues resolved").unwrap();
+
+    // View › Hide Sidebar / Show Sidebar (⌃⌘S).
+    assert!(app.screen().shows("Projects"));
+    app.press_key("ctrl+cmd+s").unwrap();
+    assert!(!app.screen().shows("Projects"));
+    app.press_key("ctrl+cmd+s").unwrap();
+    app.wait_for("Projects").unwrap();
+
+    // App › Settings… (⌘,) and File › Close Window (⌘W) closes Preferences when focused.
+    app.press_key("mod+,").unwrap();
+    app.wait_for("sk-or-••••••••••••81c0").unwrap();
+    assert!(app.window_state("preferences").unwrap().is_some());
+
+    app.press_key("mod+w").unwrap();
+    assert!(app.window_state("preferences").unwrap().is_none());
+
+    // File › New Project… (⇧⌘N) opens project registration.
+    app.press_key("mod+shift+n").unwrap();
+    app.wait_for("Register a local repository").unwrap();
+
+    // Run › Run History (⌘Y) opens the project workspace.
+    app.press_key("mod+y").unwrap();
+    app.wait_for("Workflow runs").unwrap();
+
+    // Start the 4-step Feature Implementation workflow (ends with a Human Gate).
+    app.type_text(
+        "text:Describe work for the AI workflow to execute...",
+        "Ship menubar commands",
+    )
+    .unwrap();
+    app.press("role:button[Run Workflow]").unwrap();
+    app.wait_for("Run #1 · Queued (0/4)").unwrap();
+
+    // Advance 4 times to reach the WaitingForApproval gate.
+    app.press("role:button[Advance Step]").unwrap();
+    app.wait_for("Run #1 · Running (1/4)").unwrap();
+    app.press("role:button[Advance Step]").unwrap();
+    app.wait_for("Run #1 · Running (2/4)").unwrap();
+    app.press("role:button[Advance Step]").unwrap();
+    app.wait_for("Run #1 · Running (3/4)").unwrap();
+    app.press("role:button[Advance Step]").unwrap();
+    app.wait_for("Run #1 · Awaiting Approval (3/4)").unwrap();
+
+    // Run › Approve Step (⌘↩) approves the waiting human gate.
+    app.press_key("mod+enter").unwrap();
+    app.wait_for("Run #1 · Succeeded (4/4)").unwrap();
+
+    // Start a second run and cancel it via Run › Stop (⇧⌘.).
+    app.type_text(
+        "text:Describe work for the AI workflow to execute...",
+        "Cancelable run",
+    )
+    .unwrap();
+    app.press("role:button[Run Workflow]").unwrap();
+    app.wait_for("Run #2 · Queued (0/4)").unwrap();
+
+    app.press_key("mod+shift+.").unwrap();
+    app.wait_for("Cancelled run #2").unwrap();
+    assert!(app.screen().shows("Run #2 · Cancelled (0/4)"));
+}
