@@ -6,7 +6,14 @@ mod ui;
 use std::path::PathBuf;
 
 use nsh_base::theme;
-use nsh_core::{element::Root, prelude::*};
+use nsh_core::{
+    desktop::MenuRole,
+    element::{
+        Root,
+        desktop::{MenuItem, set_application_menu},
+    },
+    prelude::*,
+};
 
 /// Registers this crate's Native Shell UI set (`nsh.json` `"rust"`).
 #[native_module("software-factory/native")]
@@ -52,9 +59,55 @@ fn app_surface() -> impl IntoElement {
     attrs.title_bar = Some(title_bar);
     nsh_core::element::desktop::current_window().set(attrs);
 
+    install_application_menu();
+
     view()
         .flex_1()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
         .child(ui::shell())
+        .child(ui::preferences::preferences_window())
+}
+
+fn install_application_menu() {
+    set_application_menu(vec![
+        MenuItem::submenu(
+            "Software Factory",
+            [
+                MenuItem::role(MenuRole::About),
+                MenuItem::separator(),
+                MenuItem::new("Settings…")
+                    .shortcut("mod+,")
+                    .on_select(store::open_preferences),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Hide),
+                MenuItem::role(MenuRole::HideOthers),
+                MenuItem::role(MenuRole::ShowAll),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Quit),
+            ],
+        ),
+        MenuItem::submenu(
+            "Edit",
+            [
+                MenuItem::role(MenuRole::Undo),
+                MenuItem::role(MenuRole::Redo),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Cut),
+                MenuItem::role(MenuRole::Copy),
+                MenuItem::role(MenuRole::Paste),
+                MenuItem::role(MenuRole::SelectAll),
+            ],
+        ),
+        MenuItem::submenu(
+            "Window",
+            [
+                MenuItem::role(MenuRole::Minimize),
+                MenuItem::role(MenuRole::Zoom),
+                MenuItem::role(MenuRole::ToggleFullScreen),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Close),
+            ],
+        ),
+    ]);
 }

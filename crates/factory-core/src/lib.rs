@@ -7,6 +7,7 @@
 pub mod dashboard;
 pub mod engine;
 pub mod model;
+pub mod preferences;
 pub mod storage;
 
 pub use dashboard::{
@@ -19,5 +20,11 @@ pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepO
 pub use model::{
     LogEntry, LogLevel, Project, ProjectId, RunId, RunStatus, StepKind, StepRun, StepRunStatus,
     Workflow, WorkflowId, WorkflowRun, WorkflowStep,
+};
+pub use preferences::{
+    AdvancedSettings, AppPreferences, AppearanceMode, AppearanceSettings, CliAccount,
+    ConnectionTestState, DefaultLandingView, ExtensionEntry, ExtensionsSettings, GeneralSettings,
+    MachinesSettings, OpenRouterKey, PreferencesError, PreferencesTab, ProviderKind,
+    format_dollars_cents, format_whole_or_cents,
 };
 pub use storage::{ProjectDatabase, StorageError, default_db_path};

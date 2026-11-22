@@ -5,6 +5,7 @@ mod icons;
 mod inbox;
 mod machines;
 mod palette;
+pub(crate) mod preferences;
 mod register_project;
 mod workspace;
 
@@ -280,7 +281,13 @@ fn project_filter_dropdown() -> impl IntoElement {
 
 fn sidebar() -> impl IntoElement {
     view()
-        .w(px(210.0))
+        .w(move || {
+            if store::preferences().appearance.compact_sidebar {
+                px(188.0)
+            } else {
+                px(210.0)
+            }
+        })
         .flex_shrink_0()
         .bg(palette::sidebar_bg())
         .border_r_1()
@@ -354,6 +361,49 @@ fn sidebar() -> impl IntoElement {
                         |id, _| sidebar_project_row(id.get_untracked()),
                     )),
             ),
+        )
+        .child(
+            view()
+                .pt(px(8.0))
+                .border_t_1()
+                .border_color(palette::divider_color())
+                .child(sidebar_preferences_item()),
+        )
+}
+
+fn sidebar_preferences_item() -> impl IntoElement {
+    button()
+        .accessibility_label("Preferences")
+        .on_press(store::open_preferences)
+        .rounded(px(7.0))
+        .hover(|s| s.bg(palette::sidebar_hover_bg()))
+        .active(|s| s.opacity(0.85))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .px(px(10.0))
+                .py(px(7.0))
+                .rounded(px(7.0))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(9.0))
+                        .child(icons::settings_gear(15.0, palette::text_secondary()))
+                        .child(
+                            text("Preferences")
+                                .text_size(px(13.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(
+                    text("⌘,")
+                        .text_size(px(11.0))
+                        .text_color(palette::text_muted()),
+                ),
         )
 }
 

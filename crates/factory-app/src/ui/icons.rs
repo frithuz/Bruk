@@ -80,3 +80,78 @@ pub(crate) fn alert_circle(color: impl IntoReactive<AdaptiveColor>) -> impl Into
     )
     .text_color(color)
 }
+
+/// Gear / cog icon for Preferences General tab and sidebar Settings entry.
+pub(crate) fn settings_gear(
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="2.9"/><path d="M10 2.6v2.1M10 15.3v2.1M2.6 10h2.1M15.3 10h2.1M4.8 4.8l1.5 1.5M13.7 13.7l1.5 1.5M15.2 4.8l-1.5 1.5M6.3 13.7l-1.5 1.5"/></svg>"#,
+        size_px,
+    )
+    .text_color(color)
+}
+
+/// Half-filled contrast circle for the Preferences Appearance tab.
+pub(crate) fn appearance(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="10" cy="10" r="6.8"/><path d="M10 3.2A6.8 6.8 0 0 0 10 16.8Z" fill="currentColor" stroke="none"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
+/// Stacked provider / server bars icon for the Preferences Providers tab.
+pub(crate) fn providers(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="5" rx="1.5"/><rect x="3" y="11" width="14" height="5" rx="1.5"/><circle cx="6.2" cy="6.5" r="0.8" fill="currentColor" stroke="none"/><circle cx="6.2" cy="13.5" r="0.8" fill="currentColor" stroke="none"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
+/// Larger desktop monitor icon for the Preferences Machines tab.
+pub(crate) fn machines_toolbar(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><rect x="2.8" y="3.5" width="14.4" height="9.8" rx="1.6"/><path d="M6.8 16.5h6.4"/><path d="M10 13.3v3.2"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
+/// Puzzle piece icon for the Preferences Extensions tab.
+pub(crate) fn extensions(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 4.2a1.7 1.7 0 0 1 3.4 0h3.3a1.3 1.3 0 0 1 1.3 1.3v3.3a1.7 1.7 0 0 1 0 3.4v3.3a1.3 1.3 0 0 1-1.3 1.3H5.5a1.3 1.3 0 0 1-1.3-1.3V5.5a1.3 1.3 0 0 1 1.3-1.3h2Z"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
+/// Horizontal sliders icon for the Preferences Advanced tab.
+pub(crate) fn advanced(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round"><path d="M3.2 6h4.2M11 6h5.8M3.2 10h8.6M15.4 10h1.4M3.2 14h2.6M9.4 14h7.4"/><circle cx="9.2" cy="6" r="1.6"/><circle cx="13.6" cy="10" r="1.6"/><circle cx="7.6" cy="14" r="1.6"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
+/// Crisp checkmark icon for provider verification status ("Key works").
+pub(crate) fn check(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3.2 8.4 6.5 11.7 12.8 4.8"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Small downward triangle caret for buttons like "Add Account ▾".
+pub(crate) fn caret_down(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 12" fill="currentColor"><path d="M3 4.3h6L6 8.3 3 4.3Z"/></svg>"#,
+        10.0,
+    )
+    .text_color(color)
+}

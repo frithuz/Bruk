@@ -3,13 +3,17 @@
 
 use std::path::PathBuf;
 
-use nsh_core::prelude::{Size, px};
+use nsh_core::{
+    platform::Os,
+    prelude::{Size, px},
+};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 use tempfile::TempDir;
 
 fn start_with_db(db_path: PathBuf) -> Headless {
     let mut config = EngineConfig::new(factory_app::root_with_db_path(db_path));
+    config.environment.os = Os::MacOs;
     config.viewport = Size::new(px(1360.0), px(920.0));
     let mut app = Headless::start(config).unwrap();
     app.wait_for("Issues resolved").unwrap();
@@ -176,4 +180,80 @@ fn opens_registered_project_and_runs_workflow_to_completion() {
     app.wait_for("Run #1 · Running (2/3)").unwrap();
     app.press("role:button[Advance Step]").unwrap();
     app.wait_for("Run #1 · Succeeded (3/3)").unwrap();
+}
+
+#[test]
+fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    {
+        let mut app = start_with_db(db_path.clone());
+        assert!(app.window_state("preferences").unwrap().is_none());
+
+        // Open Preferences window from the sidebar entry.
+        app.press("role:button[Preferences]").unwrap();
+        app.wait_for("sk-or-••••••••••••81c0").unwrap();
+        assert!(app.window_state("preferences").unwrap().is_some());
+
+        // Verify reference Providers tab content matches 17 Preferences.png.
+        assert!(app.screen().shows("Acme team"));
+        assert!(app.screen().shows("OpenRouter · API key"));
+        assert!(app.screen().shows("Key works"));
+        assert!(app.screen().shows("$200.00 · $41.20 used"));
+        assert!(app.screen().shows("openrouter/auto"));
+        assert!(app.screen().shows("api-gateway · marketing-site"));
+
+        // Promote Acme team to default OpenRouter key.
+        app.press("role:button[Make Default]").unwrap();
+        app.wait_for("Updated default OpenRouter key.").unwrap();
+
+        // Update monthly spending cap inline.
+        app.press("role:button[Edit...]").unwrap();
+        let cap_selector = "id:prefs-inline-input";
+        app.clear(cap_selector).unwrap();
+        app.type_text(cap_selector, "350").unwrap();
+        app.press("role:button[Save Cap]").unwrap();
+        app.wait_for("$350.00 · $41.20 used").unwrap();
+
+        // Add a new OpenRouter key via Add Account menu.
+        app.press("role:button[Add Account]").unwrap();
+        app.wait_for("Add OpenRouter key...").unwrap();
+        app.press("role:button[Add OpenRouter key...]").unwrap();
+        app.wait_for("Add OpenRouter API key").unwrap();
+        app.type_text("id:prefs-new-key-name", "CI Runner").unwrap();
+        app.type_text("id:prefs-new-key-secret", "sk-or-v1-testsecret99ef")
+            .unwrap();
+        app.press("role:button[Add Key]").unwrap();
+        app.wait_for("sk-or-••••••••••••99ef").unwrap();
+        assert!(app.screen().shows("CI Runner"));
+
+        // Switch across other Preferences tabs and verify their controls.
+        app.press("id:prefs-tab-appearance").unwrap();
+        app.wait_for("Log & code font size").unwrap();
+        app.press("role:button[Dark]").unwrap();
+
+        app.press("id:prefs-tab-general").unwrap();
+        app.wait_for("Default landing view").unwrap();
+
+        app.press("id:prefs-tab-machines").unwrap();
+        app.wait_for("Max concurrent runs per machine").unwrap();
+
+        app.press("id:prefs-tab-extensions").unwrap();
+        app.wait_for("Installed Extensions").unwrap();
+        assert!(app.screen().shows("GitHub Issues & Pull Requests  v1.2.0"));
+
+        app.press("id:prefs-tab-advanced").unwrap();
+        app.wait_for("Provider CLI configs").unwrap();
+
+        // Close the secondary Preferences window cleanly.
+        app.press_window_close("preferences").unwrap();
+        assert!(app.window_state("preferences").unwrap().is_none());
+    }
+
+    // Reopen app against the same SQLite database and verify preferences persisted.
+    let mut reopened = start_with_db(db_path);
+    reopened.press("role:button[Preferences]").unwrap();
+    reopened.wait_for("CI Runner").unwrap();
+    assert!(reopened.screen().shows("$350.00 · $41.20 used"));
 }

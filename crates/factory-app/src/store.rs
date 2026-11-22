@@ -6,11 +6,12 @@ use std::{
 };
 
 use factory_core::{
-    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DryRunExecutor,
-    FactoryState, InboxItem, MachineNode, MachineStatus, Project, ProjectDatabase, ProjectId,
-    RunId, Workflow, WorkflowId, WorkflowRun,
+    AppPreferences, AppearanceMode, DashboardDataset, DashboardGranularity, DashboardQuery,
+    DashboardSnapshot, DefaultLandingView, DryRunExecutor, FactoryState, InboxItem, MachineNode,
+    MachineStatus, PreferencesTab, Project, ProjectDatabase, ProjectId, RunId, Workflow,
+    WorkflowId, WorkflowRun,
 };
-use nsh_core::prelude::*;
+use nsh_core::{platform::Appearance, prelude::*};
 
 /// Primary screen shown in the main content area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +40,12 @@ struct AppState {
     tokens_show_table: bool,
     inbox_items: Vec<InboxItem>,
     machines: Vec<MachineNode>,
+    preferences: AppPreferences,
+    preferences_open: bool,
+    preferences_tab: PreferencesTab,
+    selected_provider_id: String,
+    preferences_feedback: Option<String>,
+    preferences_error: Option<String>,
     status_message: Option<String>,
     registration_error: Option<String>,
 }
@@ -61,10 +68,22 @@ impl AppState {
                     .path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|| ":memory:".to_owned());
-                let (persisted_projects, status_message) = match db.list_projects() {
+                let (persisted_projects, mut status_message) = match db.list_projects() {
                     Ok(projects) => (projects, None),
                     Err(err) => (Vec::new(), Some(format!("Failed to load projects: {err}"))),
                 };
+                let preferences = match db.load_preferences() {
+                    Ok(Some(prefs)) => prefs,
+                    Ok(None) => AppPreferences::sample(),
+                    Err(err) => {
+                        if status_message.is_none() {
+                            status_message = Some(format!("Failed to load preferences: {err}"));
+                        }
+                        AppPreferences::sample()
+                    }
+                };
+                let selected_provider_id = default_selected_provider_id(&preferences);
+                let active_view = landing_to_active_view(preferences.general.default_landing_view);
                 let using_sample_projects = persisted_projects.is_empty();
                 let projects = if using_sample_projects {
                     DashboardDataset::sample_projects()
@@ -79,7 +98,7 @@ impl AppState {
                     db: Some(Arc::new(Mutex::new(db))),
                     db_path_display,
                     using_sample_projects,
-                    active_view: ActiveView::Dashboard,
+                    active_view,
                     selected_project,
                     selected_workflow,
                     selected_run: None,
@@ -90,6 +109,12 @@ impl AppState {
                     tokens_show_table: false,
                     inbox_items,
                     machines,
+                    preferences,
+                    preferences_open: false,
+                    preferences_tab: PreferencesTab::Providers,
+                    selected_provider_id,
+                    preferences_feedback: None,
+                    preferences_error: None,
                     status_message,
                     registration_error: None,
                 }
@@ -98,6 +123,8 @@ impl AppState {
                 let factory = FactoryState::with_projects(DashboardDataset::sample_projects());
                 let selected_project = factory.projects().first().map(|project| project.id);
                 let selected_workflow = factory.workflows().first().map(|workflow| workflow.id);
+                let preferences = AppPreferences::sample();
+                let selected_provider_id = default_selected_provider_id(&preferences);
                 Self {
                     factory,
                     db: None,
@@ -114,12 +141,55 @@ impl AppState {
                     tokens_show_table: false,
                     inbox_items,
                     machines,
+                    preferences,
+                    preferences_open: false,
+                    preferences_tab: PreferencesTab::Providers,
+                    selected_provider_id,
+                    preferences_feedback: None,
+                    preferences_error: None,
                     status_message: Some(format!("Could not open SQLite database: {err}")),
                     registration_error: Some(format!("Database unavailable: {err}")),
                 }
             }
         }
     }
+
+    fn persist_preferences(&mut self) {
+        if let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+            && let Err(err) = db.save_preferences(&self.preferences)
+        {
+            self.preferences_error = Some(format!("Could not save preferences: {err}"));
+        }
+    }
+}
+
+fn default_selected_provider_id(prefs: &AppPreferences) -> String {
+    if prefs.openrouter_key("openrouter-acme").is_some() {
+        "openrouter-acme".to_owned()
+    } else if let Some(first) = prefs.openrouter_keys.first() {
+        first.id.clone()
+    } else {
+        prefs.claude.id.clone()
+    }
+}
+
+fn landing_to_active_view(landing: DefaultLandingView) -> ActiveView {
+    match landing {
+        DefaultLandingView::Dashboard => ActiveView::Dashboard,
+        DefaultLandingView::Inbox => ActiveView::Inbox,
+        DefaultLandingView::Machines => ActiveView::Machines,
+        DefaultLandingView::Workspace => ActiveView::Workspace,
+    }
+}
+
+fn apply_appearance_mode(mode: AppearanceMode) {
+    let appearance = match mode {
+        AppearanceMode::System => Appearance::System,
+        AppearanceMode::Light => Appearance::Light,
+        AppearanceMode::Dark => Appearance::Dark,
+    };
+    nsh_core::element::set_color_scheme(appearance);
 }
 
 fn state() -> Signal<AppState> {
@@ -128,13 +198,16 @@ fn state() -> Signal<AppState> {
 
 /// Initializes the per-surface store using the default SQLite DB in the user config folder.
 pub(crate) fn init_default() {
-    let _ = state();
+    let mode = state().with_untracked(|s| s.preferences.appearance.mode);
+    apply_appearance_mode(mode);
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
 pub(crate) fn init_with_database_path(path: &Path) {
     let loaded = AppState::from_database_result(ProjectDatabase::open(path));
+    let mode = loaded.preferences.appearance.mode;
     state().set(loaded);
+    apply_appearance_mode(mode);
 }
 
 pub(crate) fn active_view() -> ActiveView {
@@ -528,4 +601,392 @@ pub(crate) fn cancel_selected_run() {
 
 pub(crate) fn status_message() -> Option<String> {
     state().with(|s| s.status_message.clone())
+}
+
+// --- Preferences Window & Settings ------------------------------------------------------
+
+pub(crate) fn preferences_open() -> bool {
+    state().with(|s| s.preferences_open)
+}
+
+pub(crate) fn open_preferences() {
+    state().update(|s| {
+        s.preferences_open = true;
+        s.preferences_error = None;
+    });
+}
+
+pub(crate) fn close_preferences() {
+    state().update(|s| {
+        s.preferences_open = false;
+        s.preferences_error = None;
+        s.preferences_feedback = None;
+    });
+}
+
+pub(crate) fn preferences_tab() -> PreferencesTab {
+    state().with(|s| s.preferences_tab)
+}
+
+pub(crate) fn set_preferences_tab(tab: PreferencesTab) {
+    state().update(|s| {
+        s.preferences_tab = tab;
+        s.preferences_error = None;
+        s.preferences_feedback = None;
+    });
+}
+
+pub(crate) fn preferences() -> AppPreferences {
+    state().with(|s| s.preferences.clone())
+}
+
+pub(crate) fn selected_provider_id() -> String {
+    state().with(|s| s.selected_provider_id.clone())
+}
+
+pub(crate) fn select_provider(id: String) {
+    state().update(|s| {
+        s.selected_provider_id = id;
+        s.preferences_error = None;
+        s.preferences_feedback = None;
+    });
+}
+
+pub(crate) fn preferences_error() -> Option<String> {
+    state().with(|s| s.preferences_error.clone())
+}
+
+pub(crate) fn preferences_feedback() -> Option<String> {
+    state().with(|s| s.preferences_feedback.clone())
+}
+
+pub(crate) fn clear_preferences_messages() {
+    state().update(|s| {
+        s.preferences_error = None;
+        s.preferences_feedback = None;
+    });
+}
+
+pub(crate) fn test_selected_provider() {
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.test_provider(&id) {
+            Ok(_) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Connection verified.".to_owned());
+                s.persist_preferences();
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn add_openrouter_key(
+    name: &str,
+    raw_api_key: &str,
+    monthly_cap: &str,
+    default_model: &str,
+) -> bool {
+    let mut added = false;
+    state().update(|s| {
+        match s
+            .preferences
+            .add_openrouter_key(name, raw_api_key, monthly_cap, default_model)
+        {
+            Ok(new_id) => {
+                s.selected_provider_id = new_id;
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Added OpenRouter key '{}'.", name.trim()));
+                s.persist_preferences();
+                added = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    added
+}
+
+pub(crate) fn replace_selected_openrouter_key(raw_api_key: &str) -> bool {
+    let mut updated = false;
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s
+            .preferences
+            .replace_openrouter_key_secret(&id, raw_api_key)
+        {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some("API key updated in Keychain.".to_owned());
+                s.persist_preferences();
+                updated = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    updated
+}
+
+pub(crate) fn update_selected_openrouter_cap(monthly_cap_input: &str) -> bool {
+    let mut updated = false;
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.update_openrouter_cap(&id, monthly_cap_input) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Monthly spending cap updated.".to_owned());
+                s.persist_preferences();
+                updated = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    updated
+}
+
+pub(crate) fn update_selected_provider_model(model: &str) -> bool {
+    let mut updated = false;
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.update_provider_model(&id, model) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Default model set to {}.", model.trim()));
+                s.persist_preferences();
+                updated = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    updated
+}
+
+pub(crate) fn make_selected_openrouter_default() {
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.make_default_openrouter_key(&id) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Updated default OpenRouter key.".to_owned());
+                s.persist_preferences();
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn rename_selected_openrouter_key(new_name: &str) -> bool {
+    let mut renamed = false;
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.rename_openrouter_key(&id, new_name) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Renamed key to '{}'.", new_name.trim()));
+                s.persist_preferences();
+                renamed = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    renamed
+}
+
+pub(crate) fn remove_selected_openrouter_key() {
+    state().update(|s| {
+        let id = s.selected_provider_id.clone();
+        match s.preferences.remove_openrouter_key(&id) {
+            Ok(next_selected) => {
+                s.selected_provider_id = next_selected;
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Removed OpenRouter key.".to_owned());
+                s.persist_preferences();
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+}
+
+pub(crate) fn set_cli_account_connected(id: &str, connected: bool) {
+    state().update(|s| match s.preferences.set_cli_connected(id, connected) {
+        Ok(()) => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(if connected {
+                "Signed in to CLI account.".to_owned()
+            } else {
+                "Signed out of CLI account.".to_owned()
+            });
+            s.persist_preferences();
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn set_appearance_mode(mode: AppearanceMode) {
+    state().update(|s| {
+        s.preferences.appearance.mode = mode;
+        s.persist_preferences();
+    });
+    apply_appearance_mode(mode);
+}
+
+pub(crate) fn toggle_compact_sidebar() {
+    state().update(|s| {
+        s.preferences.appearance.compact_sidebar = !s.preferences.appearance.compact_sidebar;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_monospace_font_size(size: u8) {
+    state().update(|s| {
+        s.preferences.appearance.monospace_font_size = size.clamp(11, 16);
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_default_landing_view(view: DefaultLandingView) {
+    state().update(|s| {
+        s.preferences.general.default_landing_view = view;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_default_projects_dir(dir: &str) {
+    state().update(|s| {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            s.preferences.general.default_projects_dir = trimmed.to_owned();
+            s.persist_preferences();
+        }
+    });
+}
+
+pub(crate) fn toggle_general_flag(flag: GeneralFlag) {
+    state().update(|s| {
+        match flag {
+            GeneralFlag::ConfirmBeforeCancel => {
+                s.preferences.general.confirm_before_cancel =
+                    !s.preferences.general.confirm_before_cancel;
+            }
+            GeneralFlag::NotifyHumanGate => {
+                s.preferences.general.notify_on_human_gate =
+                    !s.preferences.general.notify_on_human_gate;
+            }
+            GeneralFlag::NotifyRunFailure => {
+                s.preferences.general.notify_on_run_failure =
+                    !s.preferences.general.notify_on_run_failure;
+            }
+            GeneralFlag::AutoCheckUpdates => {
+                s.preferences.general.auto_check_updates =
+                    !s.preferences.general.auto_check_updates;
+            }
+        }
+        s.persist_preferences();
+    });
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum GeneralFlag {
+    ConfirmBeforeCancel,
+    NotifyHumanGate,
+    NotifyRunFailure,
+    AutoCheckUpdates,
+}
+
+pub(crate) fn step_max_concurrent_runs(delta: i32) {
+    state().update(|s| {
+        let next = (s.preferences.machines.max_concurrent_runs as i32 + delta).clamp(1, 16) as u32;
+        s.preferences.machines.max_concurrent_runs = next;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn step_heartbeat_interval(delta: i32) {
+    state().update(|s| {
+        let next =
+            (s.preferences.machines.heartbeat_interval_secs as i32 + delta).clamp(5, 120) as u32;
+        s.preferences.machines.heartbeat_interval_secs = next;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_auto_reconnect_runners() {
+    state().update(|s| {
+        s.preferences.machines.auto_reconnect_runners =
+            !s.preferences.machines.auto_reconnect_runners;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_prefer_local_machine() {
+    state().update(|s| {
+        s.preferences.machines.prefer_local_machine = !s.preferences.machines.prefer_local_machine;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_allow_project_mcp_servers() {
+    state().update(|s| {
+        s.preferences.extensions.allow_project_mcp_servers =
+            !s.preferences.extensions.allow_project_mcp_servers;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_extension(id: &str) {
+    state().update(|s| {
+        s.preferences.toggle_extension(id);
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_verbose_step_logs() {
+    state().update(|s| {
+        s.preferences.advanced.verbose_step_logs = !s.preferences.advanced.verbose_step_logs;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn toggle_keep_worktrees_on_failure() {
+    state().update(|s| {
+        s.preferences.advanced.keep_worktrees_on_failure =
+            !s.preferences.advanced.keep_worktrees_on_failure;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn step_log_retention_days(delta: i32) {
+    state().update(|s| {
+        let next = (s.preferences.advanced.log_retention_days as i32 + delta).clamp(7, 365) as u32;
+        s.preferences.advanced.log_retention_days = next;
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn reset_preferences_to_defaults() {
+    state().update(|s| {
+        s.preferences = AppPreferences::sample();
+        s.selected_provider_id = default_selected_provider_id(&s.preferences);
+        s.preferences_error = None;
+        s.preferences_feedback = Some("Restored default preferences.".to_owned());
+        s.persist_preferences();
+    });
+    apply_appearance_mode(AppearanceMode::System);
 }

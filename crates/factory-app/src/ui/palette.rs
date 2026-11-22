@@ -1,7 +1,7 @@
 //! Adaptive light/dark color tokens matching the macOS Software Factory dashboard aesthetic.
 
 use factory_core::ProjectColor;
-use nsh_core::prelude::{AdaptiveColor, rgb};
+use nsh_core::prelude::{AdaptiveColor, rgb, rgba};
 
 pub(crate) fn canvas_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xFAFAFB), rgb(0x111317))
@@ -93,6 +93,26 @@ pub(crate) fn provider_bar_fill() -> AdaptiveColor {
 
 pub(crate) fn rank_badge_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0xECEEF2), rgb(0x2B303A))
+}
+
+pub(crate) fn prefs_tab_active_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xE6E8EC), rgb(0x262B35))
+}
+
+pub(crate) fn provider_badge_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xECEEF2), rgb(0x282D37))
+}
+
+pub(crate) fn provider_badge_selected_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgba(0xFFFFFF2E), rgba(0xFFFFFF2E))
+}
+
+pub(crate) fn destructive_text() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD93025), rgb(0xF87171))
+}
+
+pub(crate) fn switch_off_bg() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0xD1D5DB), rgb(0x3B4252))
 }
 
 pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {

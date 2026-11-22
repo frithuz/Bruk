@@ -5,14 +5,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, ErrorCode, params};
+use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
 use thiserror::Error;
 
-use crate::model::{Project, ProjectId};
+use crate::{
+    model::{Project, ProjectId},
+    preferences::AppPreferences,
+};
 
 const APP_CONFIG_DIR: &str = "software-factory";
 const DB_FILE_NAME: &str = "factory.db";
 const DB_PATH_ENV: &str = "SOFTWARE_FACTORY_DB_PATH";
+const PREFERENCES_KEY: &str = "app_preferences";
 
 /// Errors returned when opening or mutating the local SQLite project database.
 #[derive(Debug, Error)]
@@ -33,6 +37,8 @@ pub enum StorageError {
     },
     #[error("sqlite error: {0}")]
     Sqlite(#[from] rusqlite::Error),
+    #[error("preferences serialization error: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 /// Resolves the default SQLite database path inside the user's config folder.
@@ -119,6 +125,11 @@ impl ProjectDatabase {
                  default_branch TEXT NOT NULL DEFAULT 'main',
                  description    TEXT NOT NULL DEFAULT '',
                  created_at     INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS app_settings (
+                 key        TEXT PRIMARY KEY,
+                 value_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
              );",
         )?;
         Ok(())
@@ -211,6 +222,36 @@ impl ProjectDatabase {
             .execute("DELETE FROM projects WHERE id = ?1", params![id as i64])?;
         Ok(affected > 0)
     }
+
+    /// Loads persisted application preferences from SQLite, if saved previously.
+    pub fn load_preferences(&self) -> Result<Option<AppPreferences>, StorageError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![PREFERENCES_KEY],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match raw {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Saves application preferences as JSON in SQLite.
+    pub fn save_preferences(&self, preferences: &AppPreferences) -> Result<(), StorageError> {
+        let json = serde_json::to_string(preferences)?;
+        self.conn.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at)
+             VALUES (?1, ?2, unixepoch())
+             ON CONFLICT(key) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 updated_at = unixepoch()",
+            params![PREFERENCES_KEY, json],
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -296,5 +337,32 @@ mod tests {
             path.file_name().and_then(|name| name.to_str()),
             Some("factory.db")
         );
+    }
+
+    #[test]
+    fn persists_app_preferences_across_reopen() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+
+        {
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            assert_eq!(db.load_preferences().unwrap(), None);
+
+            let mut prefs = AppPreferences::sample();
+            prefs.appearance.mode = crate::AppearanceMode::Dark;
+            prefs
+                .make_default_openrouter_key("openrouter-acme")
+                .unwrap();
+            prefs
+                .add_openrouter_key("Sandbox", "sk-or-v1-abcd1234ef56", "50", "openrouter/auto")
+                .unwrap();
+            db.save_preferences(&prefs).unwrap();
+        }
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let loaded = reopened.load_preferences().unwrap().unwrap();
+        assert_eq!(loaded.appearance.mode, crate::AppearanceMode::Dark);
+        assert!(loaded.openrouter_key("openrouter-acme").unwrap().is_default);
+        assert_eq!(loaded.openrouter_keys.len(), 3);
     }
 }
