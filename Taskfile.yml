@@ -45,13 +45,14 @@ tasks:
       - cargo build --workspace --release {{.CLI_ARGS}}
 
   package:
-    desc: Package a standalone macOS .app bundle (.nsh/out/Software Factory.app)
+    desc: Package a standalone macOS .app bundle (.nsh/out/Bruk.app)
     aliases: [package:macos]
     preconditions:
       - sh: '[ -x "{{.NSH_BIN}}" ]'
         msg: "nsh CLI not found. Run `task nsh:install` first."
     cmds:
       - '"{{.NSH_BIN}}" package --target macos {{.CLI_ARGS}}'
+      - bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
 
   package:run:
     desc: Package and launch the standalone macOS .app bundle
@@ -59,7 +60,9 @@ tasks:
       - sh: '[ -x "{{.NSH_BIN}}" ]'
         msg: "nsh CLI not found. Run `task nsh:install` first."
     cmds:
-      - '"{{.NSH_BIN}}" package --target macos --run {{.CLI_ARGS}}'
+      - '"{{.NSH_BIN}}" package --target macos {{.CLI_ARGS}}'
+      - bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
+      - open ".nsh/out/Bruk.app"
 
   package:universal:
     desc: Package a universal (arm64 + x86_64) macOS .app bundle
@@ -68,6 +71,7 @@ tasks:
         msg: "nsh CLI not found. Run `task nsh:install` first."
     cmds:
       - '"{{.NSH_BIN}}" package --target macos --arch universal {{.CLI_ARGS}}'
+      - bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
 
   test:
     desc: Run all unit tests and headless Native Shell UI tests

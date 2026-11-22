@@ -1,4 +1,47 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#0284c7"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="26" font-weight="600" fill="#ffffff">SF</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="512" y1="0" x2="512" y2="819.2" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#22362e"/>
+      <stop offset="100%" stop-color="#0d1210"/>
+    </linearGradient>
+    <radialGradient id="light-glow" cx="512" cy="176" r="130" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#bbe08e" stop-opacity="0.45"/>
+      <stop offset="55%" stop-color="#bbe08e" stop-opacity="0.14"/>
+      <stop offset="100%" stop-color="#bbe08e" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="light-glass" x1="475" y1="124" x2="549" y2="228" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#dcf4bc"/>
+      <stop offset="55%" stop-color="#bbe08e"/>
+      <stop offset="100%" stop-color="#98c46a"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="512" y1="0" x2="512" y2="1024" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="50%" stop-color="#ffffff" stop-opacity="0.06"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0.14"/>
+    </linearGradient>
+    <filter id="tree-shadow" x="-15%" y="-15%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.48"/>
+    </filter>
+    <filter id="orb-shadow" x="-60%" y="-60%" width="220%" height="220%">
+      <feDropShadow dx="0" dy="8" stdDeviation="20" flood-color="#bbe08e" flood-opacity="0.55"/>
+    </filter>
+    <clipPath id="squircle">
+      <rect x="0" y="0" width="1024" height="1024" rx="230" ry="230"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#squircle)">
+    <rect width="1024" height="1024" fill="url(#bg)"/>
+    <circle cx="512" cy="176" r="130" fill="url(#light-glow)"/>
+    <g filter="url(#orb-shadow)">
+      <circle cx="512" cy="176" r="52" fill="url(#light-glass)"/>
+      <circle cx="512" cy="176" r="50.5" fill="none" stroke="#ffffff" stroke-opacity="0.35" stroke-width="3"/>
+    </g>
+    <g transform="translate(0,-16)" fill="none" stroke="#ede7d8" stroke-width="52" stroke-linecap="round" stroke-linejoin="round" filter="url(#tree-shadow)">
+      <polyline points="402,421 512,322 622,421"/>
+      <polyline points="337,614.5 512,457 687,614.5"/>
+      <polyline points="272,808 512,592 752,808"/>
+      <line x1="512" y1="736" x2="512" y2="860"/>
+    </g>
+    <rect x="3" y="3" width="1018" height="1018" rx="227" ry="227" fill="none" stroke="url(#rim)" stroke-width="6"/>
+  </g>
 </svg>

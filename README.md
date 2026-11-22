@@ -45,8 +45,8 @@ task ci              # Run fmt:check, lint, test, and build
 task db:path         # Show the active SQLite database path
 task nsh:install     # Install/update the Native Shell CLI (v0.6.1)
 task run:nsh         # Run with Native Shell CLI
-task package         # Build .nsh/out/Software Factory.app
-task package:run     # Build and launch .nsh/out/Software Factory.app
+task package         # Build .nsh/out/Bruk.app
+task package:run     # Build and launch .nsh/out/Bruk.app
 task package:universal # Build a universal (arm64 + x86_64) macOS .app bundle
 ```
 
