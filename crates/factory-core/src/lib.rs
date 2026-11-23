@@ -17,6 +17,7 @@ pub mod machines;
 pub mod model;
 pub mod preferences;
 pub mod project_settings;
+pub mod runner;
 pub mod step_context;
 pub mod storage;
 pub mod work_queue;
@@ -107,12 +108,18 @@ pub use project_settings::{
     IssueSourceAuthMode, IssueSourceKind, ProjectEnvVar, ProjectIntakeRule, ProjectSandboxMode,
     ProjectSettings, ProjectSettingsError, ProjectSettingsTab, ProjectWorkflowSetting,
 };
+pub use runner::{
+    GateDecision, ParsedStreamEvent, PlannedStepSummary, RunControlHandle, RunOutcomeSummary,
+    RunnerError, RunnerEvent, WorkflowRunRequest, apply_runner_event_to_view_data,
+    collect_git_diffs, execute_workflow_blocking, parse_claude_stream_json_line,
+    parse_codex_json_line, parse_unified_diff, spawn_workflow_run,
+};
 pub use step_context::{
     MaterializedStepContext, StepContextBundle, StepContextError, SubagentContextSpec,
     TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
     compile_step_context, default_step_runtime_dir, materialize_step_context,
 };
-pub use storage::{ProjectDatabase, StorageError, default_db_path};
+pub use storage::{PersistedWorkflowRun, ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{
     GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue,
     WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,

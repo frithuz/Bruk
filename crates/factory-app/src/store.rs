@@ -11,28 +11,43 @@ use std::{
 };
 
 use factory_core::{
-    AGENT_WORKING_LABEL, AgentDef, AgentTaskStepDef, AlwaysAllowScope, AnsweredInboxItem,
-    AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest, AttentionRequestBody,
-    AttentionRequestKind, BrukCatalog, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
-    ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions,
-    CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset,
-    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
-    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
-    FontPreference, GitHubAuth, GitHubFilterClause, InboxFilter, InboxState, IntakeRule,
-    IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
-    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
-    RunExecutionState, RunId, RunStatus, SkillDef, StepTypeKind, ValidationReport,
-    WorkQueueViewMode, Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef,
-    WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef, WorkflowsFilter,
-    WorkflowsSort, add_github_issue_label, detect_git_remote_info, fetch_claude_details,
-    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
-    find_codex_setting_spec, probe_claude_cli, probe_codex_cli, remove_github_issue_label,
-    resolve_claude_binary, resolve_codex_binary, run_claude_auth_login, run_codex_login,
+    AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
+    AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest,
+    AttentionRequestBody, AttentionRequestKind, BrukCatalog, ClaudeCliProbe, ClaudeSettingValue,
+    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue,
+    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy,
+    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
+    DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
+    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, InboxFilter,
+    InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction,
+    LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
+    MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase,
+    ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
+    ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail, RunControlHandle,
+    RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus, RunnerEvent, SkillDef,
+    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
+    WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
+    WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
+    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
+    current_unix_seconds, detect_git_remote_info, fetch_claude_details, fetch_codex_details,
+    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
+    probe_claude_cli, probe_codex_cli, remove_github_issue_label, resolve_claude_binary,
+    resolve_codex_binary, run_claude_auth_login, run_codex_login, spawn_workflow_run,
 };
 
 const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
+
+#[derive(Default)]
+struct RunnerRegistry {
+    active_by_key: BTreeMap<(String, String), RunControlHandle>,
+    gates_by_id: BTreeMap<String, (RunControlHandle, (String, String))>,
+    run_seq: u64,
+}
+
+fn runner_registry() -> &'static Mutex<RunnerRegistry> {
+    static REGISTRY: std::sync::OnceLock<Mutex<RunnerRegistry>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(RunnerRegistry::default()))
+}
 use nsh_core::{
     element::desktop::main_window,
     geometry::{Bounds, Points},
@@ -437,12 +452,62 @@ impl AppState {
                 WorkflowRunViewData::sample_deploy_watch(),
             )
         } else {
+            let persisted_runs = db
+                .as_ref()
+                .and_then(|arc| arc.lock().ok())
+                .and_then(|guard| guard.list_all_workflow_runs().ok())
+                .unwrap_or_default();
+            let dashboard = DashboardDataset::from_persisted_runs(&persisted_runs);
+            let mut runs_detail = BTreeMap::new();
+            let mut active_key = (String::new(), String::new());
+            for run in &persisted_runs {
+                let key = (run.project_name.clone(), run.workflow_name.clone());
+                if active_key.0.is_empty() {
+                    active_key = key.clone();
+                }
+                runs_detail.entry(key).or_insert_with(|| run.view.clone());
+                if let Some(overview) = workflows_overviews.get_mut(&run.project_name)
+                    && let Some(entry) = overview.workflow_mut(&run.workflow_id)
+                {
+                    let dot = match run.status {
+                        RunExecutionState::Succeeded => RunOutcomeDot::Succeeded,
+                        RunExecutionState::Failed | RunExecutionState::Stopped => {
+                            RunOutcomeDot::FailedOrStopped
+                        }
+                        RunExecutionState::Running
+                        | RunExecutionState::Paused
+                        | RunExecutionState::NeedsApproval => RunOutcomeDot::RunningOrWaiting,
+                    };
+                    if entry.last_ten_runs.len() >= 10 {
+                        entry.last_ten_runs.remove(0);
+                    }
+                    entry.last_ten_runs.push(dot);
+                    entry.last_run_caption = format!("Run #{}", run.run_number);
+                    entry.last_run_order = entry.last_run_order.min(run.run_number);
+                    if entry.recent_runs.len() < 5 {
+                        entry.recent_runs.push(WorkflowRecentRun {
+                            run_number: run.run_number,
+                            summary: run.summary.clone(),
+                            status: match run.status {
+                                RunExecutionState::Succeeded => RecentRunStatus::Done,
+                                RunExecutionState::Failed | RunExecutionState::Stopped => {
+                                    RecentRunStatus::Failed
+                                }
+                                RunExecutionState::NeedsApproval => RecentRunStatus::NeedsYou,
+                                RunExecutionState::Running | RunExecutionState::Paused => {
+                                    RecentRunStatus::Running
+                                }
+                            },
+                        });
+                    }
+                }
+            }
             (
-                DashboardDataset::empty(),
+                dashboard,
                 InboxState::empty(),
                 MachinesFleet::empty(),
-                BTreeMap::new(),
-                (String::new(), String::new()),
+                runs_detail,
+                active_key,
                 0,
                 BTreeMap::new(),
                 (String::new(), String::new()),
@@ -1470,24 +1535,34 @@ pub(crate) fn toggle_pause_workflow_run() {
 }
 
 pub(crate) fn stop_workflow_run() {
+    let mut stop_key = None;
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
+        stop_key = Some((project.clone(), workflow.clone()));
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.stop() {
             let run_no = run.run_number;
             s.status_message = Some(format!("Stopped run #{run_no} ({workflow})"));
         }
     });
+    if let Some(key) = stop_key
+        && let Ok(reg) = runner_registry().lock()
+        && let Some(handle) = reg.active_by_key.get(&key)
+    {
+        handle.stop();
+    }
 }
 
 pub(crate) fn steer_workflow_run_step(instruction: &str) -> bool {
     let mut sent = false;
+    let mut steer_key = None;
     state().update(|s| {
         let step_index = s.workflow_run_selected_step;
         let (project, workflow) = s.active_workflow_run_key.clone();
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         match run.steer_step(step_index, instruction) {
             Ok(()) => {
+                steer_key = Some((project, workflow));
                 s.workflow_run_tab = RunDetailTab::Output;
                 s.status_message = Some(format!(
                     "Sent steering instruction to step {}",
@@ -1500,6 +1575,13 @@ pub(crate) fn steer_workflow_run_step(instruction: &str) -> bool {
             }
         }
     });
+    if sent
+        && let Some(key) = steer_key
+        && let Ok(reg) = runner_registry().lock()
+        && let Some(handle) = reg.active_by_key.get(&key)
+    {
+        handle.push_steering(instruction.to_owned());
+    }
     sent
 }
 
@@ -1512,8 +1594,10 @@ pub(crate) fn toggle_workflow_run_budget_pause() {
 }
 
 pub(crate) fn approve_workflow_run_review_gate() {
+    let mut approve_key = None;
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
+        approve_key = Some((project.clone(), workflow.clone()));
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.approve_review_gate() {
             let run_no = run.run_number;
@@ -1521,6 +1605,15 @@ pub(crate) fn approve_workflow_run_review_gate() {
             s.status_message = Some(format!("Approved review gate for run #{run_no}"));
         }
     });
+    if let Some(key) = approve_key {
+        let handle = runner_registry()
+            .lock()
+            .ok()
+            .and_then(|reg| reg.active_by_key.get(&key).cloned());
+        if let Some(h) = handle {
+            h.resolve_gate(GateDecision::Approve { note: None });
+        }
+    }
 }
 
 pub(crate) fn edit_active_workflow() {
@@ -1912,9 +2005,16 @@ fn spawn_github_working_label_update(issue_number: u32, add: bool) {
 
 pub(crate) fn start_work_queue_issue(issue_number: u32) {
     let mut started = false;
+    let mut real_run_args: Option<(String, String, String, u32)> = None;
     state().update(|s| {
         let name = s.selected_project_name();
+        let demo = s.demo_mode;
         let queue = s.ensure_queue_mut(&name);
+        let issue_meta = queue
+            .items
+            .iter()
+            .find(|i| i.issue_number == issue_number)
+            .map(|i| (i.workflow_name.clone(), i.title.clone()));
         match queue.start_issue(issue_number) {
             Ok(run_number) => {
                 s.work_queue_selected_issue = Some(issue_number);
@@ -1923,6 +2023,9 @@ pub(crate) fn start_work_queue_issue(issue_number: u32) {
                 ));
                 s.persist_active_work_queue();
                 started = true;
+                if !demo && let Some((wf_name, title)) = issue_meta {
+                    real_run_args = Some((name, wf_name, title, issue_number));
+                }
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1931,6 +2034,15 @@ pub(crate) fn start_work_queue_issue(issue_number: u32) {
     });
     if started {
         spawn_github_working_label_update(issue_number, true);
+    }
+    if let Some((project_name, wf_name, title, issue_no)) = real_run_args {
+        let _ = spawn_real_workflow_run(
+            &project_name,
+            &wf_name,
+            &format!("Issue #{issue_no}: {title}"),
+            Some(issue_no),
+            false,
+        );
     }
 }
 
@@ -2789,6 +2901,7 @@ pub(crate) fn inbox_let_agent_decide() {
 
 pub(crate) fn inbox_approve_review() {
     let mut closed_id = None;
+    let mut note_for_runner = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
             return;
@@ -2796,18 +2909,26 @@ pub(crate) fn inbox_approve_review() {
         let note = s.inbox_note_draft.clone();
         if let Some(answered) = s.inbox.approve_review(&id, Some(&note)) {
             closed_id = Some(answered.id.clone());
+            note_for_runner = Some(note);
             s.inbox_feedback = Some(format!("Approved review — {}", answered.context_label));
             s.status_message = Some(format!("Approved review for {}", answered.context_label));
             s.sync_inbox_selection_and_drafts();
         }
     });
     if let Some(id) = closed_id {
+        resolve_runner_gate_by_id(
+            &id,
+            GateDecision::Approve {
+                note: note_for_runner.filter(|n| !n.trim().is_empty()),
+            },
+        );
         nsh_core::element::close_notification(id);
     }
 }
 
 pub(crate) fn inbox_request_changes() {
     let mut closed_id = None;
+    let mut note_for_runner = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
             return;
@@ -2815,12 +2936,19 @@ pub(crate) fn inbox_request_changes() {
         let note = s.inbox_note_draft.clone();
         if let Some(answered) = s.inbox.request_changes(&id, Some(&note)) {
             closed_id = Some(answered.id.clone());
+            note_for_runner = Some(note);
             s.inbox_feedback = Some(format!("Requested changes — {}", answered.context_label));
             s.status_message = Some(format!("Requested changes for {}", answered.context_label));
             s.sync_inbox_selection_and_drafts();
         }
     });
     if let Some(id) = closed_id {
+        resolve_runner_gate_by_id(
+            &id,
+            GateDecision::RequestChanges {
+                note: note_for_runner.filter(|n| !n.trim().is_empty()),
+            },
+        );
         nsh_core::element::close_notification(id);
     }
 }
@@ -6233,8 +6361,20 @@ pub(crate) fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
     let mut started = false;
     let id_owned = id.to_owned();
     let summary_owned = summary.to_owned();
+    let mut real_launch: Option<(String, String, String)> = None;
     state().update(|s| {
         let project = s.selected_project_name();
+        if !s.demo_mode {
+            if summary_owned.trim().is_empty() {
+                s.status_message =
+                    Some("Enter a task or issue reference for the ad-hoc run.".to_owned());
+                return;
+            }
+            s.workflows_ad_hoc_open = false;
+            real_launch = Some((project, id_owned.clone(), summary_owned.trim().to_owned()));
+            started = true;
+            return;
+        }
         let overview = s.ensure_workflows_overview_mut(&project);
         let wf_name = overview
             .workflow(&id_owned)
@@ -6251,6 +6391,9 @@ pub(crate) fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
             }
         }
     });
+    if let Some((project, wf_id, prompt)) = real_launch {
+        return spawn_real_workflow_run(&project, &wf_id, &prompt, None, true);
+    }
     started
 }
 
@@ -6861,8 +7004,20 @@ fn slugify_workflow_id(input: &str) -> String {
 pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
     let prompt = summary.to_owned();
     let mut launched = false;
+    let mut real_launch: Option<(String, String, String)> = None;
     state().update(|s| {
         let (project, workflow_id) = s.active_workflow_editor_key.clone();
+        if !s.demo_mode {
+            if prompt.trim().is_empty() {
+                s.status_message =
+                    Some("Enter a task or issue reference for the ad-hoc run.".to_owned());
+                return;
+            }
+            s.workflow_editor_ad_hoc_open = false;
+            real_launch = Some((project, workflow_id, prompt.trim().to_owned()));
+            launched = true;
+            return;
+        }
         let wf_name = s.active_workflow_editor_clone().workflow_name;
         let overview = s.ensure_workflows_overview_mut(&project);
         match overview.launch_ad_hoc_run(&workflow_id, &prompt) {
@@ -6885,7 +7040,395 @@ pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
             }
         }
     });
+    if let Some((project, wf_id, prompt_text)) = real_launch {
+        return spawn_real_workflow_run(&project, &wf_id, &prompt_text, None, true);
+    }
     launched
+}
+
+fn workflow_requires_agent(workflow: &WorkflowDef, catalog: &BrukCatalog) -> bool {
+    nodes_require_agent(&workflow.nodes, catalog)
+}
+
+fn nodes_require_agent(nodes: &[WorkflowNodeDef], catalog: &BrukCatalog) -> bool {
+    nodes.iter().any(|node| match node {
+        WorkflowNodeDef::AgentTask(_) => true,
+        WorkflowNodeDef::Loop(lp) => nodes_require_agent(&lp.steps, catalog),
+        WorkflowNodeDef::Composite(c) => catalog
+            .resolve_composite(&c.uses)
+            .is_some_and(|comp| nodes_require_agent(&comp.nodes, catalog)),
+        _ => false,
+    })
+}
+
+fn resolve_runner_gate_by_id(gate_id: &str, decision: GateDecision) {
+    let entry = runner_registry()
+        .lock()
+        .ok()
+        .and_then(|mut reg| reg.gates_by_id.remove(gate_id));
+    if let Some((handle, _key)) = entry {
+        handle.resolve_gate(decision);
+    }
+}
+
+fn spawn_real_workflow_run(
+    project_name: &str,
+    workflow_id_or_name: &str,
+    prompt: &str,
+    issue_number: Option<u32>,
+    open_run_view: bool,
+) -> bool {
+    let setup = state().with_untracked(|s| {
+        let project = s
+            .factory
+            .projects()
+            .iter()
+            .find(|p| p.name == project_name)
+            .cloned()?;
+        let catalog = s
+            .catalogs
+            .get(project_name)
+            .cloned()
+            .unwrap_or_else(|| BrukCatalog::load_for_project(&project.root_path));
+        let workflow = catalog
+            .resolve_workflow_by_id_or_name(workflow_id_or_name)?
+            .clone();
+        let settings = s
+            .project_settings
+            .get(project_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                ProjectSettings::empty(
+                    &project.name,
+                    &project.root_path.display().to_string(),
+                    &project.default_branch,
+                )
+            });
+
+        let run_number =
+            s.db.as_ref()
+                .and_then(|arc| arc.lock().ok())
+                .and_then(|db| db.next_run_number_for_project(project.id).ok())
+                .unwrap_or(1);
+
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        let claude_binary = resolve_claude_binary(
+            s.preferences.claude.custom_cli_path.as_deref(),
+            path_env.as_deref(),
+        )
+        .ok();
+        let codex_binary = s.preferences.codex.as_ref().and_then(|cx| {
+            resolve_codex_binary(cx.custom_cli_path.as_deref(), path_env.as_deref()).ok()
+        });
+        let source_codex_home = Some(
+            s.preferences
+                .codex
+                .as_ref()
+                .map(|cx| factory_core::expand_tilde(&cx.config_dir))
+                .unwrap_or_else(|| factory_core::expand_tilde("~/.codex")),
+        );
+
+        let github_auth = s.resolve_github_auth_for_project(project_name).ok();
+        let github_repo = if settings.github_repo.trim().is_empty() {
+            None
+        } else {
+            Some(settings.github_repo.clone())
+        };
+
+        let mut project_env = BTreeMap::new();
+        for ev in &settings.env_vars {
+            if !ev.key.trim().is_empty() {
+                project_env.insert(ev.key.clone(), ev.value.clone());
+            }
+        }
+        let mut inputs = BTreeMap::new();
+        inputs.insert("prompt".to_owned(), prompt.to_owned());
+        if let Some(issue_no) = issue_number {
+            inputs.insert("issue.number".to_owned(), issue_no.to_string());
+        }
+
+        let seq = runner_registry()
+            .lock()
+            .map(|mut reg| {
+                reg.run_seq += 1;
+                reg.run_seq
+            })
+            .unwrap_or(1);
+        let run_id = format!("run-{}-{seq}", current_unix_seconds());
+        let started_at = current_unix_seconds();
+
+        Some((
+            WorkflowRunRequest {
+                run_id,
+                run_number,
+                project_id: project.id,
+                project_name: project.name.clone(),
+                project_root: project.root_path.clone(),
+                default_branch: project.default_branch.clone(),
+                workflow,
+                catalog,
+                inputs,
+                issue_number,
+                github_repo,
+                github_auth,
+                default_provider: settings.default_provider,
+                default_sandbox: settings.sandbox_mode,
+                model_override: if settings.model_override.trim().is_empty() {
+                    None
+                } else {
+                    Some(settings.model_override.clone())
+                },
+                claude_binary,
+                claude_default_model: Some(s.preferences.claude.default_model.clone()),
+                claude_settings: s.preferences.claude_spawn_settings.clone(),
+                codex_binary,
+                codex_default_model: s
+                    .preferences
+                    .codex
+                    .as_ref()
+                    .map(|cx| cx.default_model.clone()),
+                codex_settings: s.preferences.codex_spawn_settings.clone(),
+                source_codex_home,
+                use_isolated_worktrees: settings.use_isolated_worktrees,
+                branch_prefix: settings.branch_prefix.clone(),
+                open_prs_as_draft: settings.open_prs_as_draft,
+                link_pr_closes_issue: settings.link_pr_closes_issue,
+                project_env,
+                runtime_root: None,
+                budget_limit_cents: settings.per_run_budget_cents,
+            },
+            started_at,
+        ))
+    });
+
+    let Some((request, started_at)) = setup else {
+        if open_run_view {
+            state().update(|s| {
+                s.status_message = Some(format!(
+                    "Could not resolve workflow '{workflow_id_or_name}' for '{project_name}'"
+                ));
+            });
+        }
+        return false;
+    };
+
+    // When triggered implicitly from the work queue without a configured provider CLI binary,
+    // keep the queue transition intact instead of immediately failing and yanking the working label.
+    if !open_run_view
+        && request.claude_binary.is_none()
+        && request.codex_binary.is_none()
+        && workflow_requires_agent(&request.workflow, &request.catalog)
+    {
+        return false;
+    }
+
+    let run_id = request.run_id.clone();
+    let run_number = request.run_number;
+    let project_id = request.project_id;
+    let proj_name = request.project_name.clone();
+    let wf_id = request.workflow.id.clone();
+    let wf_name = request.workflow.name.clone();
+    let default_provider_label = request.default_provider.label().to_owned();
+    let budget_limit_cents = request.budget_limit_cents;
+    let run_key = (proj_name.clone(), wf_name.clone());
+
+    let (control, rx) = spawn_workflow_run(request);
+    if let Ok(mut reg) = runner_registry().lock() {
+        reg.active_by_key.insert(run_key.clone(), control.clone());
+    }
+
+    state().update(|s| {
+        let mut initial_view = WorkflowRunViewData::empty(&proj_name, &wf_name);
+        initial_view.run_number = run_number;
+        initial_view.execution_state = RunExecutionState::Running;
+        initial_view.subtitle = format!("Starting run #{run_number}…");
+        s.workflow_runs_detail.insert(run_key.clone(), initial_view);
+        s.active_workflow_run_key = run_key.clone();
+        s.workflow_run_selected_step = 0;
+        s.workflow_run_tab = RunDetailTab::Output;
+        if open_run_view {
+            s.active_view = ActiveView::WorkflowRun;
+            s.status_message = Some(format!("Started run #{run_number} ({wf_name})"));
+        }
+    });
+
+    // Pump runner events onto the reactive store thread without blocking UI rendering.
+    let rx_shared = Arc::new(Mutex::new(rx));
+    let control_for_gates = control;
+    Owner::detached().run(|| {
+        spawn(async move {
+            loop {
+                let rx_clone = rx_shared.clone();
+                let next_event = spawn_blocking_task(move || {
+                    rx_clone.lock().ok().and_then(|guard| guard.recv().ok())
+                })
+                .await;
+
+                let Some(event) = next_event else {
+                    break;
+                };
+
+                let is_finished = matches!(event, RunnerEvent::RunFinished { .. });
+                if let RunnerEvent::ApprovalRequested {
+                    ref gate_id,
+                    ref step_title,
+                    ref prompt,
+                    ref branch_name,
+                    ref base_branch,
+                    ref diff_summary,
+                    ..
+                } = event
+                {
+                    if let Ok(mut reg) = runner_registry().lock() {
+                        reg.gates_by_id.insert(
+                            gate_id.clone(),
+                            (control_for_gates.clone(), run_key.clone()),
+                        );
+                    }
+                    let req = AttentionRequest {
+                        id: gate_id.clone(),
+                        kind: AttentionRequestKind::Review,
+                        agent: AgentBadge::Claude,
+                        project_name: proj_name.clone(),
+                        workflow_name: wf_name.clone(),
+                        context_label: wf_name.clone(),
+                        run_number,
+                        machine_name: "This Mac".to_owned(),
+                        inbox_title: step_title.clone(),
+                        inbox_subtitle: prompt.clone(),
+                        menubar_title: format!("{proj_name} · {step_title}"),
+                        menubar_subtitle: format!("{wf_name} #{run_number}"),
+                        waiting_minutes: 0,
+                        past_reminder_threshold: false,
+                        status_pill: "Waiting for review".to_owned(),
+                        why_text: prompt.clone(),
+                        deadline_badge: None,
+                        timeout_footer: "Waiting for operator decision".to_owned(),
+                        note_placeholder: "Optional review note…".to_owned(),
+                        body: AttentionRequestBody::Review(ReviewDetail {
+                            summary: prompt.clone(),
+                            branch: branch_name.clone(),
+                            base_branch: base_branch.clone(),
+                            tests_summary: "Workflow paused at approval gate".to_owned(),
+                            files: diff_summary.clone(),
+                        }),
+                    };
+                    state().update(|s| {
+                        s.inbox.pending.insert(0, req);
+                        if s.inbox_selected_id.is_none() {
+                            s.inbox_selected_id = s.inbox.default_selected_id();
+                        }
+                        s.sync_inbox_selection_and_drafts();
+                    });
+                }
+
+                let mut finished_issue_cleanup = None;
+                state().update(|s| {
+                    let view = s
+                        .workflow_runs_detail
+                        .entry(run_key.clone())
+                        .or_insert_with(|| WorkflowRunViewData::empty(&proj_name, &wf_name));
+                    apply_runner_event_to_view_data(view, &event, budget_limit_cents);
+                    s.workflow_run_selected_step = view.active_step_index;
+
+                    if let RunnerEvent::RunFinished {
+                        status,
+                        total_duration_ms,
+                        total_tokens,
+                        total_cost_cents,
+                        ref summary,
+                        ..
+                    } = event
+                    {
+                        let view_snapshot = view.clone();
+                        let provider_name = if view_snapshot.active_provider_name.trim().is_empty()
+                        {
+                            default_provider_label.clone()
+                        } else {
+                            view_snapshot.active_provider_name.clone()
+                        };
+                        let persisted = PersistedWorkflowRun {
+                            id: run_id.clone(),
+                            project_id,
+                            project_name: proj_name.clone(),
+                            workflow_id: wf_id.clone(),
+                            workflow_name: wf_name.clone(),
+                            run_number,
+                            status,
+                            provider: provider_name,
+                            issue_number,
+                            branch_name: view_snapshot.branch_name.clone(),
+                            total_tokens,
+                            total_cost_cents,
+                            duration_ms: total_duration_ms,
+                            summary: summary.clone(),
+                            view: view_snapshot,
+                            started_at,
+                            finished_at: Some(current_unix_seconds()),
+                        };
+                        if let Some(db_arc) = s.db.as_ref()
+                            && let Ok(db) = db_arc.lock()
+                        {
+                            let _ = db.save_workflow_run(&persisted);
+                            if let Ok(all_runs) = db.list_all_workflow_runs() {
+                                s.dashboard_dataset =
+                                    DashboardDataset::from_persisted_runs(&all_runs);
+                            }
+                        }
+
+                        if let Some(overview) = s.workflows_overviews.get_mut(&proj_name)
+                            && let Some(entry) = overview.workflow_mut(&wf_id)
+                        {
+                            let dot = match status {
+                                RunExecutionState::Succeeded => RunOutcomeDot::Succeeded,
+                                RunExecutionState::Failed | RunExecutionState::Stopped => {
+                                    RunOutcomeDot::FailedOrStopped
+                                }
+                                _ => RunOutcomeDot::RunningOrWaiting,
+                            };
+                            if entry.last_ten_runs.len() >= 10 {
+                                entry.last_ten_runs.remove(0);
+                            }
+                            entry.last_ten_runs.push(dot);
+                            entry.last_run_caption = format!("Run #{run_number} · just now");
+                            entry.last_run_order = 0;
+                            entry.recent_runs.insert(
+                                0,
+                                WorkflowRecentRun {
+                                    run_number,
+                                    summary: summary.clone(),
+                                    status: match status {
+                                        RunExecutionState::Succeeded => RecentRunStatus::Done,
+                                        _ => RecentRunStatus::Failed,
+                                    },
+                                },
+                            );
+                            entry.recent_runs.truncate(5);
+                        }
+
+                        if let Some(issue_no) = issue_number {
+                            finished_issue_cleanup = Some(issue_no);
+                        }
+                        s.status_message = Some(summary.clone());
+                    }
+                });
+
+                if let Some(issue_no) = finished_issue_cleanup {
+                    spawn_github_working_label_update(issue_no, false);
+                }
+
+                if is_finished {
+                    if let Ok(mut reg) = runner_registry().lock() {
+                        reg.active_by_key.remove(&run_key);
+                        reg.gates_by_id.retain(|_, (_, k)| *k != run_key);
+                    }
+                    break;
+                }
+            }
+        });
+    });
+
+    true
 }
 
 #[cfg(test)]

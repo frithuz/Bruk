@@ -1319,9 +1319,10 @@ fn inspector_ad_hoc_card(
     let wf_id = workflow.id.clone();
     let start = move || {
         let prompt = ad_hoc_summary.get_untracked();
-        if store::launch_overview_ad_hoc_run(&wf_id, &prompt) {
+        if !prompt.trim().is_empty() {
             ad_hoc_summary.set(String::new());
         }
+        let _ = store::launch_overview_ad_hoc_run(&wf_id, &prompt);
     };
 
     view()

@@ -360,6 +360,132 @@ impl DashboardDataset {
         }
     }
 
+    /// Aggregates real persisted workflow runs into live Dashboard telemetry.
+    pub fn from_persisted_runs(runs: &[crate::storage::PersistedWorkflowRun]) -> Self {
+        if runs.is_empty() {
+            return Self::empty();
+        }
+
+        let mut total_cost_cents = 0u64;
+        let mut total_duration_ms = 0u64;
+        let mut by_provider: BTreeMap<String, u64> = BTreeMap::new();
+        // (succeeded, failed, total, tokens, cost)
+        let mut by_project: BTreeMap<String, (u32, u32, u32, u64, u64)> = BTreeMap::new();
+
+        for run in runs {
+            total_cost_cents = total_cost_cents.saturating_add(run.total_cost_cents);
+            total_duration_ms = total_duration_ms.saturating_add(run.duration_ms);
+            let prov_key = if run.provider.trim().is_empty() {
+                "Claude".to_owned()
+            } else {
+                run.provider.clone()
+            };
+            *by_provider.entry(prov_key).or_insert(0) += run.total_tokens;
+
+            let proj = by_project
+                .entry(run.project_name.clone())
+                .or_insert((0, 0, 0, 0, 0));
+            match run.status {
+                crate::workflow_run::RunExecutionState::Succeeded => proj.0 += 1,
+                crate::workflow_run::RunExecutionState::Failed
+                | crate::workflow_run::RunExecutionState::Stopped => proj.1 += 1,
+                _ => {}
+            }
+            proj.2 += 1;
+            proj.3 = proj.3.saturating_add(run.total_tokens);
+            proj.4 = proj.4.saturating_add(run.total_cost_cents);
+        }
+
+        let project_rows: Vec<ProjectActivityRow> = by_project
+            .iter()
+            .map(
+                |(name, (succeeded, failed, total, _tokens, cost))| ProjectActivityRow {
+                    project_name: name.clone(),
+                    source: "Local runner".to_owned(),
+                    color: ProjectColor::for_project_name(name),
+                    issues_resolved: *succeeded,
+                    prs_merged: 0,
+                    runs: *total,
+                    succeeded: *succeeded,
+                    failed: *failed,
+                    est_cost_cents: *cost,
+                },
+            )
+            .collect();
+
+        let providers: Vec<ProviderUsage> = by_provider
+            .into_iter()
+            .map(|(name, tokens)| ProviderUsage {
+                provider_name: name,
+                tokens,
+            })
+            .collect();
+
+        let mut sorted_runs: Vec<&crate::storage::PersistedWorkflowRun> = runs.iter().collect();
+        sorted_runs.sort_by_key(|a| std::cmp::Reverse(a.total_tokens));
+        let highest_token_runs: Vec<HighTokenRun> = sorted_runs
+            .into_iter()
+            .take(5)
+            .enumerate()
+            .map(|(idx, run)| HighTokenRun {
+                rank: (idx + 1) as u8,
+                title: format!("{} #{}", run.workflow_name, run.run_number),
+                project_name: run.project_name.clone(),
+                subtitle: run.provider.clone(),
+                tokens: run.total_tokens,
+                est_cost_cents: run.total_cost_cents,
+                duration_minutes: ((run.duration_ms as f64 / 60_000.0).ceil() as u32).max(1),
+                outcome_note: run.summary.clone(),
+            })
+            .collect();
+
+        let bucket_entries: Vec<(String, u64)> = by_project
+            .iter()
+            .map(|(name, (_, _, _, tokens, _))| (name.clone(), *tokens))
+            .collect();
+        let total_tokens: u64 = bucket_entries.iter().map(|(_, t)| *t).sum();
+        let chart_max = total_tokens.max(1000);
+        let working_tenths = ((total_duration_ms as f64 / 360_000.0).round() as u32).max(1);
+
+        let empty_wait = WaitMetrics {
+            median_answer_minutes: 0,
+            longest_wait_minutes: 0,
+            total_waiting_tenths_hours: 0,
+            requests_answered: 0,
+            permissions: 0,
+            questions: 0,
+            reviews: 0,
+            timed_out: 0,
+        };
+        let period = PeriodData {
+            offset: 0,
+            period_label: "This week".to_owned(),
+            date_range_label: format!(
+                "{} recorded run{}",
+                runs.len(),
+                if runs.len() == 1 { "" } else { "s" }
+            ),
+            issues_delta_prev: 0,
+            prs_delta_prev: 0,
+            tokens_delta_pct: 0,
+            billed_cost_cents: total_cost_cents,
+            working_time_tenths_hours: working_tenths,
+            chart_max_tokens: chart_max,
+            buckets: vec![("Recent".to_owned(), bucket_entries)],
+            providers,
+            project_rows,
+            highest_token_runs,
+            wait_metrics: empty_wait,
+            insights: Vec::new(),
+        };
+        let mut monthly = period.clone();
+        monthly.period_label = "This month".to_owned();
+        Self {
+            weekly: vec![period],
+            monthly: vec![monthly],
+        }
+    }
+
     /// Creates a rich multi-period dataset matching the reference dashboard layout.
     pub fn sample() -> Self {
         Self {

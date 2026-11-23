@@ -13,7 +13,30 @@ use crate::{
     preferences::AppPreferences,
     project_settings::ProjectSettings,
     work_queue::ProjectWorkQueue,
+    workflow_run::{RunExecutionState, WorkflowRunViewData},
 };
+
+/// Persisted record of a real workflow run stored in SQLite.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedWorkflowRun {
+    pub id: String,
+    pub project_id: ProjectId,
+    pub project_name: String,
+    pub workflow_id: String,
+    pub workflow_name: String,
+    pub run_number: u32,
+    pub status: RunExecutionState,
+    pub provider: String,
+    pub issue_number: Option<u32>,
+    pub branch_name: String,
+    pub total_tokens: u64,
+    pub total_cost_cents: u64,
+    pub duration_ms: u64,
+    pub summary: String,
+    pub view: WorkflowRunViewData,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+}
 
 const APP_CONFIG_DIR: &str = "software-factory";
 const DB_FILE_NAME: &str = "factory.db";
@@ -150,6 +173,25 @@ impl ProjectDatabase {
                  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                  value_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS workflow_runs (
+                 id               TEXT PRIMARY KEY,
+                 project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 project_name     TEXT NOT NULL,
+                 workflow_id      TEXT NOT NULL,
+                 workflow_name    TEXT NOT NULL,
+                 run_number       INTEGER NOT NULL,
+                 status           TEXT NOT NULL,
+                 provider         TEXT NOT NULL,
+                 issue_number     INTEGER,
+                 branch_name      TEXT NOT NULL DEFAULT '',
+                 total_tokens     INTEGER NOT NULL DEFAULT 0,
+                 total_cost_cents INTEGER NOT NULL DEFAULT 0,
+                 duration_ms      INTEGER NOT NULL DEFAULT 0,
+                 summary          TEXT NOT NULL DEFAULT '',
+                 view_json        TEXT NOT NULL,
+                 started_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+                 finished_at      INTEGER
              );",
         )?;
         Ok(())
@@ -401,6 +443,125 @@ impl ProjectDatabase {
         )?;
         Ok(())
     }
+
+    /// Returns the next sequential run number for `project_id`.
+    pub fn next_run_number_for_project(&self, project_id: ProjectId) -> Result<u32, StorageError> {
+        let max_no: Option<i64> = self.conn.query_row(
+            "SELECT MAX(run_number) FROM workflow_runs WHERE project_id = ?1",
+            params![project_id as i64],
+            |row| row.get(0),
+        )?;
+        Ok((max_no.unwrap_or(0) + 1) as u32)
+    }
+
+    /// Inserts or updates a real workflow run snapshot and telemetry record in SQLite.
+    pub fn save_workflow_run(&self, run: &PersistedWorkflowRun) -> Result<(), StorageError> {
+        let status_json = serde_json::to_string(&run.status)?;
+        let view_json = serde_json::to_string(&run.view)?;
+        self.conn.execute(
+            "INSERT INTO workflow_runs (
+                 id, project_id, project_name, workflow_id, workflow_name, run_number,
+                 status, provider, issue_number, branch_name, total_tokens, total_cost_cents,
+                 duration_ms, summary, view_json, started_at, finished_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT(id) DO UPDATE SET
+                 status = excluded.status,
+                 provider = excluded.provider,
+                 branch_name = excluded.branch_name,
+                 total_tokens = excluded.total_tokens,
+                 total_cost_cents = excluded.total_cost_cents,
+                 duration_ms = excluded.duration_ms,
+                 summary = excluded.summary,
+                 view_json = excluded.view_json,
+                 finished_at = excluded.finished_at",
+            params![
+                run.id,
+                run.project_id as i64,
+                run.project_name,
+                run.workflow_id,
+                run.workflow_name,
+                run.run_number as i64,
+                status_json,
+                run.provider,
+                run.issue_number.map(i64::from),
+                run.branch_name,
+                run.total_tokens as i64,
+                run.total_cost_cents as i64,
+                run.duration_ms as i64,
+                run.summary,
+                view_json,
+                run.started_at,
+                run.finished_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Loads persisted workflow runs across all projects, newest first.
+    pub fn list_all_workflow_runs(&self) -> Result<Vec<PersistedWorkflowRun>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, project_name, workflow_id, workflow_name, run_number,
+                    status, provider, issue_number, branch_name, total_tokens, total_cost_cents,
+                    duration_ms, summary, view_json, started_at, finished_at
+             FROM workflow_runs
+             ORDER BY started_at DESC, run_number DESC",
+        )?;
+        let rows = stmt.query_map([], map_workflow_run_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Loads persisted workflow runs for one project, newest first.
+    pub fn list_workflow_runs_for_project(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Vec<PersistedWorkflowRun>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, project_name, workflow_id, workflow_name, run_number,
+                    status, provider, issue_number, branch_name, total_tokens, total_cost_cents,
+                    duration_ms, summary, view_json, started_at, finished_at
+             FROM workflow_runs
+             WHERE project_id = ?1
+             ORDER BY started_at DESC, run_number DESC",
+        )?;
+        let rows = stmt.query_map(params![project_id as i64], map_workflow_run_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+fn map_workflow_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedWorkflowRun> {
+    let status_raw: String = row.get(6)?;
+    let view_raw: String = row.get(14)?;
+    let status: RunExecutionState =
+        serde_json::from_str(&status_raw).unwrap_or(RunExecutionState::Stopped);
+    let view: WorkflowRunViewData =
+        serde_json::from_str(&view_raw).unwrap_or_else(|_| WorkflowRunViewData::empty("", ""));
+    Ok(PersistedWorkflowRun {
+        id: row.get(0)?,
+        project_id: row.get::<_, i64>(1)? as ProjectId,
+        project_name: row.get(2)?,
+        workflow_id: row.get(3)?,
+        workflow_name: row.get(4)?,
+        run_number: row.get::<_, i64>(5)? as u32,
+        status,
+        provider: row.get(7)?,
+        issue_number: row.get::<_, Option<i64>>(8)?.map(|n| n as u32),
+        branch_name: row.get(9)?,
+        total_tokens: row.get::<_, i64>(10)? as u64,
+        total_cost_cents: row.get::<_, i64>(11)? as u64,
+        duration_ms: row.get::<_, i64>(12)? as u64,
+        summary: row.get(13)?,
+        view,
+        started_at: row.get(15)?,
+        finished_at: row.get(16)?,
+    })
 }
 
 #[cfg(test)]
@@ -761,5 +922,50 @@ mod tests {
             None
         );
         assert_eq!(reopened.load_project_work_queue(project_id).unwrap(), None);
+    }
+
+    #[test]
+    fn persists_and_lists_workflow_runs_with_cascade_delete() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+        let project_id = {
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            let project = db
+                .register_project("billing-api", "/Users/dev/billing-api", "main", "")
+                .unwrap();
+            assert_eq!(db.next_run_number_for_project(project.id).unwrap(), 1);
+            let run = PersistedWorkflowRun {
+                id: "run-1".to_owned(),
+                project_id: project.id,
+                project_name: "billing-api".to_owned(),
+                workflow_id: "fix-issue".to_owned(),
+                workflow_name: "Fix issue".to_owned(),
+                run_number: 1,
+                status: RunExecutionState::Succeeded,
+                provider: "Claude".to_owned(),
+                issue_number: Some(42),
+                branch_name: "agent/issue-42-run-1".to_owned(),
+                total_tokens: 1500,
+                total_cost_cents: 12,
+                duration_ms: 4200,
+                summary: "Completed 'Fix issue' (2 steps)".to_owned(),
+                view: WorkflowRunViewData::empty("billing-api", "Fix issue"),
+                started_at: 1_700_000_000,
+                finished_at: Some(1_700_000_004),
+            };
+            db.save_workflow_run(&run).unwrap();
+            assert_eq!(db.next_run_number_for_project(project.id).unwrap(), 2);
+            project.id
+        };
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let runs = reopened.list_workflow_runs_for_project(project_id).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].total_tokens, 1500);
+        assert_eq!(runs[0].issue_number, Some(42));
+        assert_eq!(reopened.list_all_workflow_runs().unwrap().len(), 1);
+
+        assert!(reopened.delete_project(project_id).unwrap());
+        assert!(reopened.list_all_workflow_runs().unwrap().is_empty());
     }
 }

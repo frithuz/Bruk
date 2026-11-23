@@ -769,9 +769,10 @@ fn version_history_card(doc: &WorkflowEditorDocument) -> impl IntoElement {
 fn editor_ad_hoc_card(workflow_name: &str, ad_hoc_prompt: Signal<String>) -> impl IntoElement {
     let start = move || {
         let prompt = ad_hoc_prompt.get_untracked();
-        if store::launch_editor_ad_hoc_run(&prompt) {
+        if !prompt.trim().is_empty() {
             ad_hoc_prompt.set(String::new());
         }
+        let _ = store::launch_editor_ad_hoc_run(&prompt);
     };
 
     view()

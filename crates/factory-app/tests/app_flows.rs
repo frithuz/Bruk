@@ -3219,3 +3219,54 @@ fn real_project_loads_layered_agents_bruk_catalog_and_copy_on_edit_saves_yaml() 
         .unwrap();
     assert!(app.screen().shows("Project"));
 }
+
+#[test]
+fn real_workflow_run_executes_shell_and_approval_gate_via_inbox_and_persists_to_sqlite() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("runner-repo");
+
+    std::fs::create_dir_all(repo_dir.join(".agents/bruk/workflows")).unwrap();
+    std::fs::write(
+        repo_dir.join(".agents/bruk/workflows/shell-and-approve.yaml"),
+        "id: shell-and-approve\nname: Shell And Approve\ndescription: Runs a real shell command then waits in Inbox\ntriggers:\n  work_queue: false\n  ad_hoc: true\nnodes:\n  - kind: shell_command\n    id: hello\n    name: Run check\n    command: echo 'hello from real runner'\n  - kind: approval_gate\n    id: gate\n    name: Final approval\n    prompt: Please approve the real run\n",
+    )
+    .unwrap();
+
+    let mut app = start_with_db(db_path.clone());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Register a local repository").unwrap();
+    app.type_text("text:Project name", "runner-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Save Project]").unwrap();
+    app.wait_for("Registered project 'runner-repo'").unwrap();
+
+    // Launch real ad-hoc run from Workflows Overview.
+    app.press("id:sidebar-workflows-1").unwrap();
+    app.wait_for("Shell And Approve").unwrap();
+    app.press("id:wfo-row-shell-and-approve").unwrap();
+    app.press("id:wfo-inspector-adhoc").unwrap();
+    app.wait_for("id:wfo-adhoc-input").unwrap();
+    app.type_text("id:wfo-adhoc-input", "Verify end-to-end runner")
+        .unwrap();
+    app.press("id:wfo-adhoc-start").unwrap();
+
+    // Runner executes the shell step and pauses on the Approval Gate, posting to Inbox.
+    app.wait_for("Review required").unwrap();
+    app.press("id:sidebar-inbox-btn").unwrap();
+    app.wait_for("Final approval").unwrap();
+    app.wait_for("Please approve the real run").unwrap();
+
+    // Approve directly from Inbox -> unblocks the runner and completes the workflow!
+    app.press("id:inbox-approve-review").unwrap();
+    app.wait_for("Completed 'Shell And Approve' (2 steps)")
+        .unwrap();
+
+    // Verify persistence in SQLite.
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let runs = db.list_all_workflow_runs().unwrap();
+    assert_eq!(runs.len(), 1);
+    assert_eq!(runs[0].workflow_id, "shell-and-approve");
+    assert_eq!(runs[0].status, factory_core::RunExecutionState::Succeeded);
+}
