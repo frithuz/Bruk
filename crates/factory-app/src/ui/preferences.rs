@@ -19,6 +19,7 @@ use crate::{
     store::{self, GeneralFlag},
     ui::{
         claude_spawn_settings::{ClaudeSpawnUiState, claude_spawn_settings_card},
+        codex_spawn_settings::{CodexSpawnUiState, codex_spawn_settings_card},
         icons, palette,
     },
 };
@@ -230,6 +231,7 @@ fn providers_tab() -> impl IntoElement {
     let draft_cap = signal(String::new());
     let draft_model = signal(String::new());
     let claude_spawn_ui = ClaudeSpawnUiState::new();
+    let codex_spawn_ui = CodexSpawnUiState::new();
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
@@ -257,6 +259,7 @@ fn providers_tab() -> impl IntoElement {
                         draft_cap,
                         draft_model,
                         claude_spawn_ui,
+                        codex_spawn_ui,
                     )),
             )
             .child(
@@ -626,6 +629,7 @@ fn providers_detail_column(
     draft_cap: Signal<String>,
     draft_model: Signal<String>,
     claude_spawn_ui: ClaudeSpawnUiState,
+    codex_spawn_ui: CodexSpawnUiState,
 ) -> impl IntoElement {
     view()
         .flex_1()
@@ -668,6 +672,7 @@ fn providers_detail_column(
                     draft_primary,
                     draft_model,
                     claude_spawn_ui,
+                    codex_spawn_ui,
                 )
                 .into_element()
             } else {
@@ -678,6 +683,7 @@ fn providers_detail_column(
                     draft_primary,
                     draft_model,
                     claude_spawn_ui,
+                    codex_spawn_ui,
                 )
                 .into_element()
             }
@@ -1315,6 +1321,7 @@ fn cli_account_detail_pane(
     draft_cli_path: Signal<String>,
     draft_model: Signal<String>,
     claude_spawn_ui: ClaudeSpawnUiState,
+    codex_spawn_ui: CodexSpawnUiState,
 ) -> impl IntoElement {
     let provider = account.provider;
     let is_claude = provider == ProviderKind::Claude;
@@ -1759,6 +1766,10 @@ fn cli_account_detail_pane(
         .child(when(
             move || is_claude,
             move || claude_spawn_settings_card(claude_spawn_ui),
+        ))
+        .child(when(
+            move || is_codex,
+            move || codex_spawn_settings_card(codex_spawn_ui),
         ))
         .child(
             grouped_card("Used by")

@@ -421,6 +421,7 @@ mod tests {
         assert_eq!(migrated.claude.default_model, "sonnet");
         assert_eq!(migrated.openrouter_keys.len(), 1);
         assert!(migrated.claude_spawn_settings.is_empty());
+        assert!(migrated.codex_spawn_settings.is_empty());
     }
 
     #[test]
@@ -483,6 +484,77 @@ mod tests {
         assert_eq!(
             loaded.claude_spawn_settings.extra_cli_args,
             "--max-turns 15"
+        );
+    }
+
+    #[test]
+    fn persists_codex_spawn_settings_across_reopen() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+
+        {
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            let mut prefs = AppPreferences::empty();
+            prefs
+                .codex_spawn_settings
+                .set_from_text("cli.sandbox", "workspace-write")
+                .unwrap();
+            prefs
+                .codex_spawn_settings
+                .set_value(
+                    "sandbox_workspace_write.network_access",
+                    crate::CodexSettingValue::Bool(true),
+                )
+                .unwrap();
+            prefs
+                .codex_spawn_settings
+                .set_from_text(
+                    "sandbox_workspace_write.writable_roots",
+                    "/tmp/cache, /opt/tools",
+                )
+                .unwrap();
+            prefs
+                .codex_spawn_settings
+                .set_env_var("NO_COLOR", "1")
+                .unwrap();
+            prefs
+                .codex_spawn_settings
+                .set_extra_cli_args("--ephemeral")
+                .unwrap();
+            prefs
+                .codex_spawn_settings
+                .set_extra_config_overrides("custom_flag = true")
+                .unwrap();
+            db.save_preferences(&prefs).unwrap();
+        }
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let loaded = reopened.load_preferences().unwrap().unwrap();
+        assert_eq!(loaded.codex_spawn_settings.override_count(), 6);
+        assert_eq!(
+            loaded.codex_spawn_settings.get("cli.sandbox"),
+            Some(&crate::CodexSettingValue::String(
+                "workspace-write".to_owned()
+            ))
+        );
+        assert_eq!(
+            loaded
+                .codex_spawn_settings
+                .get("sandbox_workspace_write.network_access"),
+            Some(&crate::CodexSettingValue::Bool(true))
+        );
+        assert_eq!(
+            loaded
+                .codex_spawn_settings
+                .env_vars
+                .get("NO_COLOR")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(loaded.codex_spawn_settings.extra_cli_args, "--ephemeral");
+        assert_eq!(
+            loaded.codex_spawn_settings.extra_config_overrides,
+            "custom_flag = true"
         );
     }
 }

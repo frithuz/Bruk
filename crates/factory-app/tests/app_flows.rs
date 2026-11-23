@@ -2570,3 +2570,274 @@ echo '{"loggedIn":true,"authMethod":"claude.ai","email":"spawn-user@example.com"
         Some("1")
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn codex_spawn_settings_in_preferences_configure_preview_filter_persist_and_reset() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":false,"authMethod":"none","configDirectory":"/tmp/.claude"}'
+exit 1
+"#,
+    );
+    write_fake_claude(
+        &bin_dir,
+        "codex",
+        r#"#!/bin/sh
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{"id":1,"result":{"userAgent":"bruk/0.171.0","codexHome":"/Users/spawn/.codex"}}'
+      ;;
+    *'"method":"account/read"'*)
+      echo '{"id":2,"result":{"account":{"type":"chatgpt","email":"codex-spawn@example.com","planType":"pro"},"requiresOpenaiAuth":true}}'
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      echo '{"id":2,"result":{"ordinaryUsageAllowed":true,"rateLimits":null}}'
+      ;;
+    *'"method":"model/list"'*)
+      echo '{"id":3,"result":{"data":[]}}'
+      ;;
+  esac
+done
+"#,
+    );
+
+    {
+        let mut app =
+            start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+        app.press_key("mod+,").unwrap();
+        app.wait_for("No Codex account configured").unwrap();
+
+        // Register Codex so its detail pane (including Spawn Settings) is active.
+        app.press("role:button[Add Account]").unwrap();
+        app.wait_for("Add Codex CLI account...").unwrap();
+        app.press("role:button[Add Codex CLI account...]").unwrap();
+        app.wait_for("Add Codex CLI account").unwrap();
+        app.press("id:prefs-new-codex-submit").unwrap();
+
+        app.wait_for("codex-spawn@example.com").unwrap();
+        app.wait_for("Spawn Settings").unwrap();
+        assert!(app.screen().shows("All defaults"));
+
+        // Collapsible <details>-style sections start collapsed so all 11 groups are scannable.
+        assert!(app.screen().shows("Launch & CLI"));
+        assert!(app.screen().shows("Models & Reasoning"));
+        assert!(app.screen().shows("Sandbox & Shell"));
+        assert!(app.screen().shows("Feature Flags"));
+        assert!(app.screen().shows("Environment & Raw"));
+        assert!(!app.screen().shows("Managed Git Worktree"));
+
+        // 1. Expand "Launch & CLI" and configure CLI flags.
+        app.press("id:prefs-codex-spawn-section-cli-flags").unwrap();
+        app.wait_for("Managed Git Worktree").unwrap();
+
+        app.press("id:prefs-codex-spawn-cli-sandbox-workspace-write")
+            .unwrap();
+        app.wait_for("1 override").unwrap();
+
+        app.press("id:prefs-codex-spawn-cli-worktree-on").unwrap();
+        app.wait_for("2 overrides").unwrap();
+
+        app.press("id:prefs-codex-spawn-cli-profile-edit").unwrap();
+        app.wait_for("id:prefs-codex-spawn-cli-profile-input")
+            .unwrap();
+        app.type_text("id:prefs-codex-spawn-cli-profile-input", "fast")
+            .unwrap();
+        app.press("id:prefs-codex-spawn-cli-profile-save").unwrap();
+        app.wait_for("3 overrides").unwrap();
+
+        // Collapse Launch & CLI again and confirm its rows hide.
+        app.press("id:prefs-codex-spawn-section-cli-flags").unwrap();
+        assert!(!app.screen().shows("Managed Git Worktree"));
+
+        // 2. Expand Models & Reasoning and configure reasoning effort.
+        app.press("id:prefs-codex-spawn-section-models").unwrap();
+        app.wait_for("Reasoning Effort").unwrap();
+        app.press("id:prefs-codex-spawn-model-reasoning-effort-edit")
+            .unwrap();
+        app.wait_for("id:prefs-codex-spawn-model-reasoning-effort-opt-high")
+            .unwrap();
+        app.press("id:prefs-codex-spawn-model-reasoning-effort-opt-high")
+            .unwrap();
+        app.wait_for("4 overrides").unwrap();
+
+        // 3. Expand Sandbox & Shell and enable network access + test validation in MCP port.
+        app.press("id:prefs-codex-spawn-section-sandbox").unwrap();
+        app.wait_for("Workspace-Write Network Access").unwrap();
+        app.press("id:prefs-codex-spawn-sandbox-workspace-write-network-access-on")
+            .unwrap();
+        app.wait_for("5 overrides").unwrap();
+
+        app.press("id:prefs-codex-spawn-section-mcp-plugins-hooks")
+            .unwrap();
+        app.wait_for("MCP OAuth Callback Port").unwrap();
+        app.press("id:prefs-codex-spawn-mcp-oauth-callback-port-edit")
+            .unwrap();
+        app.wait_for("id:prefs-codex-spawn-mcp-oauth-callback-port-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-codex-spawn-mcp-oauth-callback-port-input",
+            "99999",
+        )
+        .unwrap();
+        app.press("id:prefs-codex-spawn-mcp-oauth-callback-port-save")
+            .unwrap();
+        app.wait_for("invalid value for 'mcp_oauth_callback_port': must be at most 65535")
+            .unwrap();
+
+        app.clear("id:prefs-codex-spawn-mcp-oauth-callback-port-input")
+            .unwrap();
+        app.type_text("id:prefs-codex-spawn-mcp-oauth-callback-port-input", "8484")
+            .unwrap();
+        app.press("id:prefs-codex-spawn-mcp-oauth-callback-port-save")
+            .unwrap();
+        app.wait_for("6 overrides").unwrap();
+
+        // 4. Global search hides non-matching groups and auto-expands Feature Flags for memories.
+        app.type_text("id:prefs-codex-spawn-search", "features.memories")
+            .unwrap();
+        app.wait_for("Memories Feature").unwrap();
+        assert!(app.screen().shows("Feature Flags"));
+        assert!(!app.screen().shows("Launch & CLI"));
+        assert!(!app.screen().shows("Models & Reasoning"));
+        assert!(!app.screen().shows("Sandbox & Shell"));
+        assert!(!app.screen().shows("Environment & Raw"));
+
+        app.press("id:prefs-codex-spawn-features-memories-on")
+            .unwrap();
+        app.wait_for("7 overrides").unwrap();
+        app.press("id:prefs-codex-spawn-clear-filter").unwrap();
+        app.wait_for("Launch & CLI").unwrap();
+
+        // 5. Expand Environment & Raw, confirm check_for_update_on_startup=false is always enforced,
+        // and add a preset env var + extra CLI args + extra -c config override.
+        app.press("id:prefs-codex-spawn-section-env-raw").unwrap();
+        app.wait_for("Process Environment Variables").unwrap();
+        assert!(app.screen().shows("check_for_update_on_startup"));
+        assert!(app.screen().shows("Always enforced"));
+        app.press("id:prefs-codex-spawn-env-preset-no-color")
+            .unwrap();
+        app.wait_for("id:prefs-codex-spawn-env-save").unwrap();
+        app.press("id:prefs-codex-spawn-env-save").unwrap();
+        app.wait_for("8 overrides").unwrap();
+        assert!(app.screen().shows("NO_COLOR"));
+
+        app.press("id:prefs-codex-spawn-extra-args-edit").unwrap();
+        app.wait_for("id:prefs-codex-spawn-extra-args-input")
+            .unwrap();
+        app.type_text("id:prefs-codex-spawn-extra-args-input", "--ephemeral")
+            .unwrap();
+        app.press("id:prefs-codex-spawn-extra-args-save").unwrap();
+        app.wait_for("9 overrides").unwrap();
+
+        app.press("id:prefs-codex-spawn-extra-config-edit").unwrap();
+        app.wait_for("id:prefs-codex-spawn-extra-config-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-codex-spawn-extra-config-input",
+            "future_option = true",
+        )
+        .unwrap();
+        app.press("id:prefs-codex-spawn-extra-config-save").unwrap();
+        app.wait_for("10 overrides").unwrap();
+
+        // 6. Toggle Preview Command and confirm preview sections appear.
+        app.press("id:prefs-codex-spawn-preview-toggle").unwrap();
+        app.wait_for("Resolved spawn invocation").unwrap();
+        assert!(app.screen().shows("Generated -c config.toml overrides"));
+        assert!(
+            app.screen()
+                .matches("id:prefs-codex-spawn-preview-cmd")
+                .unwrap()
+        );
+        assert!(
+            app.screen()
+                .matches("id:prefs-codex-spawn-preview-config")
+                .unwrap()
+        );
+
+        // 7. Toggle "Modified only" to inspect only groups & settings with active overrides.
+        app.press("id:prefs-codex-spawn-modified-only").unwrap();
+        app.wait_for("Showing 10 active override(s) across 6 group(s)")
+            .unwrap();
+        assert!(app.screen().shows("Launch & CLI"));
+        assert!(app.screen().shows("Models & Reasoning"));
+        assert!(app.screen().shows("Sandbox & Shell"));
+        assert!(app.screen().shows("MCP, Plugins & Hooks"));
+        assert!(app.screen().shows("Feature Flags"));
+        assert!(app.screen().shows("Environment & Raw"));
+        assert!(!app.screen().shows("Interface & TUI"));
+        assert!(!app.screen().shows("Approvals & Permissions"));
+
+        app.press_window_close("preferences").unwrap();
+    }
+
+    // Verify persisted SQLite preferences build the exact Codex spawn plan.
+    {
+        let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+        let saved = db.load_preferences().unwrap().unwrap();
+        assert_eq!(saved.codex_spawn_settings.override_count(), 10);
+        let plan = saved
+            .build_codex_spawn_plan(&factory_core::CodexSpawnOptions::default())
+            .unwrap();
+        let preview = plan.preview_command_line();
+        assert!(preview.contains("NO_COLOR=1"));
+        assert!(preview.contains("-c check_for_update_on_startup=false"));
+        assert!(preview.contains("--sandbox workspace-write"));
+        assert!(preview.contains("--worktree"));
+        assert!(preview.contains("--profile fast"));
+        assert!(preview.contains("--ephemeral"));
+        let config_pretty = plan.config_overrides_pretty().unwrap();
+        assert!(config_pretty.contains("model_reasoning_effort = \"high\""));
+        assert!(config_pretty.contains("sandbox_workspace_write.network_access = true"));
+        assert!(config_pretty.contains("mcp_oauth_callback_port = 8484"));
+        assert!(config_pretty.contains("features.memories = true"));
+        assert!(config_pretty.contains("future_option = true"));
+    }
+
+    // Reopen against the same SQLite DB and verify all 10 overrides persisted, then Reset All.
+    let mut reopened =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("role:button[Codex]").unwrap();
+    reopened.press("role:button[Codex]").unwrap();
+    reopened.wait_for("10 overrides").unwrap();
+    reopened
+        .press("id:prefs-codex-spawn-preview-toggle")
+        .unwrap();
+    reopened.wait_for("Resolved spawn invocation").unwrap();
+    assert!(
+        reopened
+            .screen()
+            .shows("Generated -c config.toml overrides")
+    );
+
+    reopened.press("id:prefs-codex-spawn-reset-all").unwrap();
+    reopened.wait_for("All defaults").unwrap();
+    assert!(
+        !reopened
+            .screen()
+            .shows("Generated -c config.toml overrides")
+    );
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let after_reset = db.load_preferences().unwrap().unwrap();
+    assert!(after_reset.codex_spawn_settings.is_empty());
+    let reset_plan = after_reset
+        .build_codex_spawn_plan(&factory_core::CodexSpawnOptions::default())
+        .unwrap();
+    assert!(
+        reset_plan
+            .args
+            .windows(2)
+            .any(|w| w == ["-c", "check_for_update_on_startup=false"])
+    );
+}

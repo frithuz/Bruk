@@ -7,6 +7,7 @@
 pub mod claude_cli;
 pub mod claude_settings;
 pub mod codex_cli;
+pub mod codex_settings;
 pub mod dashboard;
 pub mod engine;
 pub mod inbox;
@@ -41,6 +42,14 @@ pub use codex_cli::{
     CODEX_BINARY_NAME, CodexBinaryError, CodexCliDetails, CodexCliProbe, fetch_codex_details,
     parse_codex_account_stream, parse_codex_details_stream, probe_codex_cli,
     probe_codex_cli_from_env, resolve_codex_binary, resolve_codex_binary_from_env, run_codex_login,
+};
+pub use codex_settings::{
+    CODEX_DISABLE_UPDATE_CHECK_ARG, CODEX_DISABLE_UPDATE_CHECK_KEY,
+    CODEX_DISABLE_UPDATE_CHECK_VALUE, CODEX_ENV_PRESETS, CODEX_SETTING_SPECS, CodexEnvPreset,
+    CodexSettingCategory, CodexSettingKind, CodexSettingSpec, CodexSettingTarget,
+    CodexSettingValue, CodexSettingsError, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
+    apply_mandatory_codex_spawn_args, build_codex_command, build_codex_spawn_plan,
+    codex_setting_specs_for_category, find_codex_setting_spec, new_codex_subcommand,
 };
 pub use dashboard::{
     DashboardDataset, DashboardGranularity, DashboardInsight, DashboardQuery, DashboardSnapshot,

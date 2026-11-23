@@ -13,7 +13,7 @@ use std::{
     fs,
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -23,9 +23,12 @@ use chrono::DateTime;
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::claude_cli::{
-    ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow, clamp_percent,
-    default_severity_for_used, expand_tilde, is_executable_file, metadata_is_executable,
+use crate::{
+    claude_cli::{
+        ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow, clamp_percent,
+        default_severity_for_used, expand_tilde, is_executable_file, metadata_is_executable,
+    },
+    codex_settings::new_codex_subcommand,
 };
 
 /// Default executable filename searched on `PATH`.
@@ -173,8 +176,7 @@ pub fn probe_codex_cli_from_env(custom_path: Option<&str>) -> CodexCliProbe {
 
 /// Runs `codex login` so the user can authenticate their system Codex CLI account.
 pub fn run_codex_login(binary_path: &Path) -> Result<(), String> {
-    let output = Command::new(binary_path)
-        .args(["login"])
+    let output = new_codex_subcommand(binary_path, &["login"])
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("Failed to start Codex sign-in: {err}"))?;
@@ -238,8 +240,7 @@ fn run_app_server_session(
     expected_ids: &[u64],
     timeout: Duration,
 ) -> Result<(String, String), String> {
-    let mut child = Command::new(binary_path)
-        .args(["app-server", "--stdio"])
+    let mut child = new_codex_subcommand(binary_path, &["app-server", "--stdio"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -314,7 +315,8 @@ fn run_app_server_session(
     }
 
     if !stdout_closed && !expected_set.is_subset(&received_ids) {
-        let mut batch = String::from("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\n");
+        let mut batch =
+            String::from("{\"jsonrpc\":\"2.0\",\"method\":\"initialized\",\"params\":{}}\n");
         for req in post_init_requests {
             batch.push_str(req);
             batch.push('\n');
@@ -508,7 +510,8 @@ pub fn parse_codex_details_stream(stdout: &str, stderr: &str) -> CodexCliDetails
                         extra_usage_note: None,
                     });
                 } else {
-                    details.warning = Some(format!("Could not fetch usage limits: {}", err.message));
+                    details.warning =
+                        Some(format!("Could not fetch usage limits: {}", err.message));
                 }
             }
         } else if id == RPC_MODELS_ID {
@@ -1237,5 +1240,57 @@ echo '{"id":2,"result":{"account":null,"requiresOpenaiAuth":true}}'
             resolve_codex_binary(Some("/nonexistent/path/to/codex"), None),
             Err(CodexBinaryError::CustomPathNotFound(_))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn all_codex_cli_invocations_disable_startup_update_check() {
+        let temp = TempDir::new().unwrap();
+        let log_file = temp.path().join("args.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "ARGS=$*" >> "{log}"
+if [ "$1" = "login" ]; then
+  exit 0
+fi
+while IFS= read -r line; do
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo '{{"id":1,"result":{{"codexHome":"/tmp/.codex"}}}}'
+      ;;
+    *'"method":"account/read"'*)
+      echo '{{"id":2,"result":{{"account":{{"type":"chatgpt","email":"env@example.com","planType":"pro"}},"requiresOpenaiAuth":true}}}}'
+      ;;
+    *'"method":"account/rateLimits/read"'*)
+      echo '{{"id":2,"result":{{"ordinaryUsageAllowed":true,"rateLimits":null}}}}'
+      ;;
+    *'"method":"model/list"'*)
+      echo '{{"id":3,"result":{{"data":[]}}}}'
+      ;;
+  esac
+done
+"#,
+            log = log_file.display()
+        );
+        let codex_bin = write_fake_codex_script(temp.path(), "codex", &script, true);
+
+        let probe = probe_codex_cli(Some(codex_bin.to_str().unwrap()), None);
+        assert!(matches!(probe, CodexCliProbe::Authenticated { .. }));
+        run_codex_login(&codex_bin).unwrap();
+        let details = fetch_codex_details(&codex_bin);
+        assert_eq!(details.warning, None);
+
+        let logged = fs::read_to_string(&log_file).unwrap();
+        let lines: Vec<&str> = logged.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(
+            lines[0],
+            "ARGS=app-server --stdio -c check_for_update_on_startup=false"
+        );
+        assert_eq!(lines[1], "ARGS=login -c check_for_update_on_startup=false");
+        assert_eq!(
+            lines[2],
+            "ARGS=app-server --stdio -c check_for_update_on_startup=false"
+        );
     }
 }

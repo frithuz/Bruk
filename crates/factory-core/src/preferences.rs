@@ -12,6 +12,10 @@ use crate::{
         build_claude_spawn_plan,
     },
     codex_cli::{CODEX_BINARY_NAME, CodexCliDetails, CodexCliProbe},
+    codex_settings::{
+        CodexSettingsError, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
+        build_codex_spawn_plan,
+    },
 };
 
 /// Top-level toolbar tabs inside the macOS Preferences window.
@@ -511,6 +515,8 @@ pub struct AppPreferences {
     pub claude_spawn_settings: ClaudeSpawnSettings,
     #[serde(default)]
     pub codex: Option<CliAccount>,
+    #[serde(default)]
+    pub codex_spawn_settings: CodexSpawnSettings,
     pub openrouter_keys: Vec<OpenRouterKey>,
     pub machines: MachinesSettings,
     pub extensions: ExtensionsSettings,
@@ -559,6 +565,7 @@ impl AppPreferences {
             },
             claude_spawn_settings: ClaudeSpawnSettings::default(),
             codex: None,
+            codex_spawn_settings: CodexSpawnSettings::default(),
             openrouter_keys: Vec::new(),
             machines: MachinesSettings::default(),
             extensions: ExtensionsSettings::empty(),
@@ -709,6 +716,7 @@ impl AppPreferences {
                 test_state: ConnectionTestState::Works,
                 used_by_projects: vec!["api-gateway".to_owned(), "mobile-app".to_owned()],
             }),
+            codex_spawn_settings: CodexSpawnSettings::default(),
             openrouter_keys: vec![
                 OpenRouterKey {
                     id: "openrouter-personal".to_owned(),
@@ -1304,6 +1312,29 @@ impl AppPreferences {
             return true;
         };
         toggle_account_model_family(codex, family)
+    }
+
+    /// Builds a resolved [`CodexSpawnPlan`] using the Codex account's binary, default model,
+    /// and all custom [`CodexSpawnSettings`] configured in Preferences.
+    pub fn build_codex_spawn_plan(
+        &self,
+        options: &CodexSpawnOptions,
+    ) -> Result<CodexSpawnPlan, CodexSettingsError> {
+        let binary = self
+            .codex
+            .as_ref()
+            .and_then(|c| c.custom_cli_path.as_deref())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                self.codex
+                    .as_ref()
+                    .map(|c| c.cli_binary.trim())
+                    .filter(|s| !s.is_empty())
+            })
+            .unwrap_or("codex");
+        let default_model = self.codex.as_ref().map(|c| c.default_model.as_str());
+        build_codex_spawn_plan(binary, default_model, &self.codex_spawn_settings, options)
     }
 
     /// Toggles an extension entry by id.
