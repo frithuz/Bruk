@@ -13,25 +13,27 @@ use std::{
 use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
     AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, BrukCatalog, ClaudeCliProbe, ClaudeSettingValue,
-    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue,
-    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy,
-    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
-    DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
-    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, InboxFilter,
+    AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome, CatalogLoadOptions,
+    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
+    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
+    CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery,
+    DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor,
+    EditorSelection, ExitField, ExitOperator, FactoryState, FontPreference, GateDecision,
+    GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter,
     InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction,
     LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
     MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase,
     ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
     ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail, RunControlHandle,
     RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus, RunnerEvent, SkillDef,
-    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
+    StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
     WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
     WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
-    current_unix_seconds, detect_git_remote_info, fetch_claude_details, fetch_codex_details,
-    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    probe_claude_cli, probe_codex_cli, remove_github_issue_label, resolve_claude_binary,
+    clone_repository, current_unix_seconds, detect_git_remote_info, display_with_tilde,
+    fetch_claude_details, fetch_codex_details, fetch_github_open_issues_with_filter,
+    find_claude_setting_spec, find_codex_setting_spec, parse_clone_source, probe_claude_cli,
+    probe_codex_cli, project_dir_name, remove_github_issue_label, resolve_claude_binary,
     resolve_codex_binary, run_claude_auth_login, run_codex_login, spawn_workflow_run,
 };
 
@@ -126,11 +128,26 @@ fn spawn_blocking_task<T: Send + 'static>(
     ThreadOneshot { state }
 }
 
+/// First-launch choice of where the Bruk folder lives.
+#[derive(Clone)]
+struct HomeSetupDraft {
+    environment: HomeEnvironment,
+    root_input: String,
+    legacy_database: Option<std::path::PathBuf>,
+    import_legacy: bool,
+    error: Option<String>,
+}
+
 #[derive(Clone)]
 struct AppState {
     factory: FactoryState,
     db: Option<Arc<Mutex<ProjectDatabase>>>,
     db_path_display: String,
+    home: Option<BrukHome>,
+    home_setup: Option<HomeSetupDraft>,
+    clone_source_input: String,
+    clone_name_input: String,
+    clone_in_progress: bool,
     demo_mode: bool,
     using_sample_projects: bool,
     saved_real_preferences: Option<AppPreferences>,
@@ -222,16 +239,75 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::from_database_result_with_path(
-            ProjectDatabase::open_default(),
-            ClaudePathLookup::SystemPath,
-        )
+        Self::from_environment(HomeEnvironment::system(), ClaudePathLookup::SystemPath)
     }
 }
 
+/// Loads a project's definitions catalog, caching git modules in the Bruk folder.
+fn load_catalog(home: Option<&BrukHome>, project_root: &Path) -> BrukCatalog {
+    let options = CatalogLoadOptions {
+        module_cache_dir: home.map(BrukHome::module_cache_dir),
+        ..CatalogLoadOptions::default()
+    };
+    BrukCatalog::load_for_project_with_options(project_root, &options)
+}
+
 impl AppState {
+    /// Opens the Bruk folder this machine is configured for, or waits for first-launch setup.
+    fn from_environment(
+        environment: Result<HomeEnvironment, HomeError>,
+        claude_path_lookup: ClaudePathLookup,
+    ) -> Self {
+        match environment {
+            Ok(environment) => match environment.resolve() {
+                HomeResolution::Ready(home) => Self::from_home(home, claude_path_lookup),
+                HomeResolution::NeedsSetup { suggested_root } => {
+                    Self::awaiting_home_setup(environment, &suggested_root, claude_path_lookup)
+                }
+            },
+            Err(err) => Self::from_database_result_with_path(
+                Err(StorageError::Home(err)),
+                None,
+                claude_path_lookup,
+            ),
+        }
+    }
+
+    fn from_home(home: BrukHome, claude_path_lookup: ClaudePathLookup) -> Self {
+        let result = ProjectDatabase::open_home(&home);
+        Self::from_database_result_with_path(result, Some(home), claude_path_lookup)
+    }
+
+    fn awaiting_home_setup(
+        environment: HomeEnvironment,
+        suggested_root: &Path,
+        claude_path_lookup: ClaudePathLookup,
+    ) -> Self {
+        let mut state = Self::build_for_mode(
+            None,
+            "Not set up yet".to_owned(),
+            Vec::new(),
+            AppPreferences::empty(),
+            false,
+            None,
+            None,
+            claude_path_lookup,
+            None,
+        );
+        let legacy_database = environment.legacy_database();
+        state.home_setup = Some(HomeSetupDraft {
+            root_input: display_with_tilde(suggested_root),
+            import_legacy: legacy_database.is_some(),
+            legacy_database,
+            environment,
+            error: None,
+        });
+        state
+    }
+
     fn from_database_result_with_path(
         result: Result<ProjectDatabase, factory_core::StorageError>,
+        home: Option<BrukHome>,
         claude_path_lookup: ClaudePathLookup,
     ) -> Self {
         let (db, db_path_display, persisted_projects, persisted_prefs, status_message, reg_error) =
@@ -284,6 +360,7 @@ impl AppState {
             status_message,
             reg_error,
             claude_path_lookup,
+            home,
         )
     }
 
@@ -297,6 +374,7 @@ impl AppState {
         status_message: Option<String>,
         registration_error: Option<String>,
         claude_path_lookup: ClaudePathLookup,
+        home: Option<BrukHome>,
     ) -> Self {
         let (preferences, saved_real_preferences) = if demo_mode {
             let mut real_copy = persisted_prefs.clone();
@@ -384,7 +462,7 @@ impl AppState {
                     }
                 }
 
-                let catalog = BrukCatalog::load_for_project(&project.root_path);
+                let catalog = load_catalog(home.as_ref(), &project.root_path);
                 settings.sync_workflows_from_catalog(&catalog);
 
                 let loaded_queue = db
@@ -524,6 +602,11 @@ impl AppState {
             factory,
             db,
             db_path_display,
+            home,
+            home_setup: None,
+            clone_source_input: String::new(),
+            clone_name_input: String::new(),
+            clone_in_progress: false,
             demo_mode,
             using_sample_projects,
             saved_real_preferences,
@@ -611,6 +694,19 @@ impl AppState {
             sidebar_visible: true,
             status_message,
             registration_error,
+        }
+    }
+
+    /// Where new projects are cloned: the custom directory from preferences, or the Bruk
+    /// folder's `projects/`.
+    fn projects_dir(&self) -> Option<std::path::PathBuf> {
+        let general = &self.preferences.general;
+        match self.home.as_ref() {
+            Some(home) => Some(general.projects_dir(home)),
+            None if !general.projects_dir_follows_home() => {
+                Some(factory_core::expand_tilde(&general.default_projects_dir))
+            }
+            None => None,
         }
     }
 
@@ -776,7 +872,7 @@ impl AppState {
         }
         let catalog = self
             .project_root_by_name(project_name)
-            .map(BrukCatalog::load_for_project)
+            .map(|root| load_catalog(self.home.as_ref(), &root))
             .unwrap_or_else(BrukCatalog::builtin_only);
         let overview = ProjectWorkflowsOverview::from_catalog(project_name, &catalog);
         if let Some(settings) = self.project_settings.get_mut(project_name) {
@@ -1081,7 +1177,7 @@ fn state() -> Signal<AppState> {
     global::<AppState>()
 }
 
-/// Initializes the per-surface store using the default SQLite DB in the user config folder.
+/// Initializes the per-surface store from the Bruk folder configured on this machine.
 pub(crate) fn init_default() {
     let appearance = state().with_untracked(|s| s.preferences.appearance.clone());
     apply_appearance_settings(&appearance);
@@ -1099,13 +1195,293 @@ pub(crate) fn init_with_database_path_and_claude_path(
     path: &Path,
     claude_path_lookup: ClaudePathLookup,
 ) {
-    let loaded =
-        AppState::from_database_result_with_path(ProjectDatabase::open(path), claude_path_lookup);
+    let loaded = AppState::from_database_result_with_path(
+        ProjectDatabase::open(path),
+        Some(BrukHome::with_database_path(path)),
+        claude_path_lookup,
+    );
+    install_state(loaded);
+}
+
+/// Initializes the per-surface store by resolving the Bruk folder from an explicit environment
+/// (first-launch setup runs when no folder is configured there).
+pub(crate) fn init_with_home_environment(
+    environment: HomeEnvironment,
+    claude_path_lookup: ClaudePathLookup,
+) {
+    install_state(AppState::from_environment(
+        Ok(environment),
+        claude_path_lookup,
+    ));
+}
+
+fn install_state(loaded: AppState) {
     let appearance = loaded.preferences.appearance.clone();
     state().set(loaded);
     apply_appearance_settings(&appearance);
     refresh_claude_details_async();
     refresh_codex_details_async();
+}
+
+// --- Bruk folder ------------------------------------------------------------------------
+
+pub(crate) fn needs_home_setup() -> bool {
+    state().with(|s| s.home_setup.is_some())
+}
+
+pub(crate) fn home_setup_root_input() -> String {
+    state().with(|s| {
+        s.home_setup
+            .as_ref()
+            .map(|d| d.root_input.clone())
+            .unwrap_or_default()
+    })
+}
+
+pub(crate) fn set_home_setup_root_input(value: &str) {
+    state().update(|s| {
+        if let Some(draft) = s.home_setup.as_mut() {
+            draft.root_input = value.to_owned();
+            draft.error = None;
+        }
+    });
+}
+
+/// Whether the folder typed in setup already holds a Bruk database (it will be reused as-is).
+pub(crate) fn home_setup_target_has_database() -> bool {
+    state().with(|s| {
+        s.home_setup.as_ref().is_some_and(|d| {
+            let trimmed = d.root_input.trim();
+            !trimmed.is_empty()
+                && BrukHome::at(factory_core::expand_tilde(trimmed)).is_initialized()
+        })
+    })
+}
+
+pub(crate) fn home_setup_legacy_database() -> Option<String> {
+    state().with(|s| {
+        s.home_setup
+            .as_ref()
+            .and_then(|d| d.legacy_database.as_deref())
+            .map(display_with_tilde)
+    })
+}
+
+pub(crate) fn home_setup_import_legacy() -> bool {
+    state().with(|s| s.home_setup.as_ref().is_some_and(|d| d.import_legacy))
+}
+
+pub(crate) fn toggle_home_setup_import_legacy() {
+    state().update(|s| {
+        if let Some(draft) = s.home_setup.as_mut() {
+            draft.import_legacy = !draft.import_legacy;
+        }
+    });
+}
+
+pub(crate) fn home_setup_error() -> Option<String> {
+    state().with(|s| s.home_setup.as_ref().and_then(|d| d.error.clone()))
+}
+
+/// Creates (or adopts) the chosen Bruk folder, then loads the app from it.
+pub(crate) fn complete_home_setup() {
+    let Some((draft, claude_path_lookup)) = state().with_untracked(|s| {
+        s.home_setup
+            .clone()
+            .map(|draft| (draft, s.claude_path_lookup.clone()))
+    }) else {
+        return;
+    };
+    match draft
+        .environment
+        .set_up(&draft.root_input, draft.import_legacy)
+    {
+        Ok(setup) => {
+            let root_display = display_with_tilde(setup.home.root());
+            let mut loaded = AppState::from_home(setup.home, claude_path_lookup);
+            if loaded.status_message.is_none() {
+                loaded.status_message = Some(
+                    match (&setup.imported_from, setup.adopted_existing) {
+                        (Some(legacy), _) => format!(
+                            "Bruk folder ready at {root_display} · imported projects and preferences from {}",
+                            display_with_tilde(legacy)
+                        ),
+                        (None, true) => format!("Using existing Bruk folder at {root_display}"),
+                        (None, false) => format!("Bruk folder ready at {root_display}"),
+                    },
+                );
+            }
+            install_state(loaded);
+        }
+        Err(err) => state().update(|s| {
+            if let Some(draft) = s.home_setup.as_mut() {
+                draft.error = Some(err.to_string());
+            }
+        }),
+    }
+}
+
+/// Paths inside the active Bruk folder: (folder, database, cloned projects, run workspaces).
+pub(crate) fn home_paths_display() -> Option<(String, String, String, String)> {
+    state().with(|s| {
+        s.home.as_ref().map(|home| {
+            (
+                display_with_tilde(home.root()),
+                display_with_tilde(home.database_path()),
+                display_with_tilde(&home.projects_dir()),
+                display_with_tilde(&home.runs_dir()),
+            )
+        })
+    })
+}
+
+pub(crate) fn home_root() -> Option<std::path::PathBuf> {
+    state().with_untracked(|s| s.home.as_ref().map(|home| home.root().to_path_buf()))
+}
+
+pub(crate) fn home_root_display() -> String {
+    state().with(|s| {
+        s.home
+            .as_ref()
+            .map(|home| display_with_tilde(home.root()))
+            .unwrap_or_else(|| "Unavailable".to_owned())
+    })
+}
+
+/// Whether a project's clone lives in the Bruk folder (as opposed to an external clone).
+pub(crate) fn project_is_managed(id: ProjectId) -> bool {
+    state().with(|s| {
+        let Some(home) = s.home.as_ref() else {
+            return false;
+        };
+        s.factory
+            .project(id)
+            .is_some_and(|project| home.is_managed_project(&project.root_path))
+    })
+}
+
+// --- Cloning projects into the Bruk folder ----------------------------------------------
+
+pub(crate) fn clear_registration_error() {
+    state().update(|s| s.registration_error = None);
+}
+
+pub(crate) fn clone_source_input() -> String {
+    state().with(|s| s.clone_source_input.clone())
+}
+
+fn suggested_clone_name(source: &str) -> String {
+    parse_clone_source(source)
+        .map(|parsed| parsed.suggested_name)
+        .unwrap_or_default()
+}
+
+/// Updates the repository field, keeping the project name in step with it until the user
+/// types a name of their own.
+pub(crate) fn set_clone_source_input(value: &str) {
+    state().update(|s| {
+        let name_follows_source = s.clone_name_input.trim().is_empty()
+            || s.clone_name_input == suggested_clone_name(&s.clone_source_input);
+        s.clone_source_input = value.to_owned();
+        if name_follows_source {
+            s.clone_name_input = suggested_clone_name(value);
+        }
+    });
+}
+
+pub(crate) fn clone_name_input() -> String {
+    state().with(|s| s.clone_name_input.clone())
+}
+
+pub(crate) fn set_clone_name_input(value: &str) {
+    state().update(|s| s.clone_name_input = value.to_owned());
+}
+
+pub(crate) fn clone_in_progress() -> bool {
+    state().with(|s| s.clone_in_progress)
+}
+
+pub(crate) fn clone_destination_caption() -> String {
+    state().with(|s| {
+        let Some(projects_dir) = s.home.as_ref().and(s.projects_dir()) else {
+            return "The Bruk folder is not available.".to_owned();
+        };
+        let name = s.clone_name_input.trim();
+        if name.is_empty() {
+            format!("Clones into {}/", display_with_tilde(&projects_dir))
+        } else {
+            format!(
+                "Clones into {}",
+                display_with_tilde(&projects_dir.join(project_dir_name(name)))
+            )
+        }
+    })
+}
+
+/// Clones the repository typed in the Clone form into the default projects directory
+/// (`<Bruk folder>/projects` unless changed in Preferences) on a background thread, then
+/// registers it with the branch the clone checked out.
+pub(crate) fn clone_and_register_project() {
+    let mut job = None;
+    state().update(|s| {
+        if s.clone_in_progress {
+            return;
+        }
+        let Some(home) = s.home.clone() else {
+            s.registration_error = Some("The Bruk folder is not available.".to_owned());
+            return;
+        };
+        let source = match parse_clone_source(&s.clone_source_input) {
+            Ok(source) => source,
+            Err(err) => {
+                s.registration_error = Some(err.to_string());
+                return;
+            }
+        };
+        let name = match s.clone_name_input.trim() {
+            "" => source.suggested_name.clone(),
+            typed => typed.to_owned(),
+        };
+        let destination = s
+            .preferences
+            .general
+            .projects_dir(&home)
+            .join(project_dir_name(&name));
+        s.clone_in_progress = true;
+        s.registration_error = None;
+        s.status_message = Some(format!(
+            "Cloning {} into {}…",
+            source.url,
+            display_with_tilde(&destination)
+        ));
+        job = Some((name, source.url, destination));
+    });
+
+    let Some((name, url, destination)) = job else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result = spawn_blocking_task(move || clone_repository(&url, &destination)).await;
+            state().update(|s| s.clone_in_progress = false);
+            match result {
+                Ok(cloned) => {
+                    let path = cloned.path.display().to_string();
+                    if register_project_with_branch(&name, &path, &cloned.default_branch) {
+                        state().update(|s| {
+                            s.clone_source_input.clear();
+                            s.clone_name_input.clear();
+                        });
+                    }
+                }
+                Err(err) => state().update(|s| {
+                    let message = err.to_string();
+                    s.registration_error = Some(message.clone());
+                    s.status_message = Some(message);
+                }),
+            }
+        });
+    });
 }
 
 pub(crate) fn demo_mode() -> bool {
@@ -1120,6 +1496,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
         }
         let db = s.db.clone();
         let db_path_display = s.db_path_display.clone();
+        let home = s.home.clone();
         let prev_active_view = s.active_view;
         let prev_sidebar_visible = s.sidebar_visible;
         let prev_prefs_open = s.preferences_open;
@@ -1162,6 +1539,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
             status,
             None,
             claude_path_lookup,
+            home,
         );
         next.sidebar_visible = prev_sidebar_visible;
         next.preferences_open = prev_prefs_open;
@@ -1693,6 +2071,10 @@ pub(crate) fn sidebar_provider_statuses() -> Vec<(String, &'static str, bool)> {
 
 /// Persists a new project in SQLite and adds it to the reactive factory state.
 pub(crate) fn register_project(name: &str, path: &str) -> bool {
+    register_project_with_branch(name, path, "main")
+}
+
+fn register_project_with_branch(name: &str, path: &str, default_branch: &str) -> bool {
     let mut created = false;
     state().update(|s| {
         let Some(db_arc) = s.db.as_ref() else {
@@ -1701,7 +2083,7 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
         };
 
         let result = match db_arc.lock() {
-            Ok(db) => db.register_project(name, path, "main", ""),
+            Ok(db) => db.register_project(name, path, default_branch, ""),
             Err(_) => {
                 s.registration_error = Some("SQLite database lock poisoned.".to_owned());
                 return;
@@ -1732,7 +2114,7 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                     if let Some(detected) = detect_git_remote_info(Path::new(&saved_path)) {
                         clean.apply_detected_git_remote(&detected);
                     }
-                    let catalog = BrukCatalog::load_for_project(Path::new(&saved_path));
+                    let catalog = load_catalog(s.home.as_ref(), Path::new(&saved_path));
                     clean.sync_workflows_from_catalog(&catalog);
                     (clean, Some(catalog))
                 };
@@ -1831,6 +2213,12 @@ pub(crate) fn open_or_register_project_path(path: &Path) -> bool {
 pub(crate) fn remove_project(id: ProjectId) {
     state().update(|s| {
         let project_name = s.factory.project(id).map(|p| p.name.clone());
+        let managed_clone = s
+            .home
+            .as_ref()
+            .zip(s.factory.project(id))
+            .filter(|(home, project)| home.is_managed_project(&project.root_path))
+            .map(|(_, project)| display_with_tilde(&project.root_path));
         if !s.using_sample_projects
             && let Some(db_arc) = s.db.as_ref()
             && let Ok(db) = db_arc.lock()
@@ -1851,7 +2239,12 @@ pub(crate) fn remove_project(id: ProjectId) {
         }
         s.registration_error = None;
         if let Some(name) = project_name {
-            s.status_message = Some(format!("Removed project '{name}'"));
+            s.status_message = Some(match managed_clone {
+                Some(clone_path) => {
+                    format!("Removed project '{name}'. Its clone is still at {clone_path}.")
+                }
+                None => format!("Removed project '{name}'"),
+            });
         }
     });
 }
@@ -4899,14 +5292,38 @@ pub(crate) fn set_default_landing_view(view: DefaultLandingView) {
     });
 }
 
+/// Sets where new projects are cloned. An empty value, or the Bruk folder's own `projects/`,
+/// is stored as "follow the Bruk folder" so it keeps tracking the folder chosen at setup.
 pub(crate) fn set_default_projects_dir(dir: &str) {
     state().update(|s| {
         let trimmed = dir.trim();
-        if !trimmed.is_empty() {
-            s.preferences.general.default_projects_dir = trimmed.to_owned();
-            s.persist_preferences();
-        }
+        let follows_home = trimmed.is_empty()
+            || s.home
+                .as_ref()
+                .is_some_and(|home| factory_core::expand_tilde(trimmed) == home.projects_dir());
+        s.preferences.general.default_projects_dir = if follows_home {
+            String::new()
+        } else {
+            trimmed.to_owned()
+        };
+        s.persist_preferences();
     });
+}
+
+/// The folder new projects are cloned into, shortened with `~` for display.
+pub(crate) fn default_projects_dir_display() -> String {
+    state().with(|s| {
+        s.projects_dir()
+            .map(|dir| display_with_tilde(&dir))
+            .unwrap_or_default()
+    })
+}
+
+/// The default projects directory, when it exists on disk (used to start folder pickers there).
+pub(crate) fn default_projects_dir_path() -> Option<std::path::PathBuf> {
+    state()
+        .with_untracked(AppState::projects_dir)
+        .filter(|dir| dir.is_dir())
 }
 
 pub(crate) fn toggle_general_flag(flag: GeneralFlag) {
@@ -7089,7 +7506,7 @@ fn spawn_real_workflow_run(
             .catalogs
             .get(project_name)
             .cloned()
-            .unwrap_or_else(|| BrukCatalog::load_for_project(&project.root_path));
+            .unwrap_or_else(|| load_catalog(s.home.as_ref(), &project.root_path));
         let workflow = catalog
             .resolve_workflow_by_id_or_name(workflow_id_or_name)?
             .clone();
@@ -7155,6 +7572,7 @@ fn spawn_real_workflow_run(
             })
             .unwrap_or(1);
         let run_id = format!("run-{}-{seq}", current_unix_seconds());
+        let runtime_root = s.home.as_ref().map(|home| home.run_dir(&run_id));
         let started_at = current_unix_seconds();
 
         Some((
@@ -7194,7 +7612,7 @@ fn spawn_real_workflow_run(
                 open_prs_as_draft: settings.open_prs_as_draft,
                 link_pr_closes_issue: settings.link_pr_closes_issue,
                 project_env,
-                runtime_root: None,
+                runtime_root,
                 budget_limit_cents: settings.per_run_budget_cents,
             },
             started_at,
@@ -7446,6 +7864,7 @@ mod tests {
         // Default fresh DB has Demo Mode disabled and empty data everywhere.
         let clean = AppState::from_database_result_with_path(
             ProjectDatabase::open(&db_path),
+            Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
         );
         assert!(!clean.demo_mode);
@@ -7464,6 +7883,7 @@ mod tests {
 
         let mut demo = AppState::from_database_result_with_path(
             ProjectDatabase::open(&db_path),
+            Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
         );
         assert!(demo.demo_mode);
@@ -7494,6 +7914,7 @@ mod tests {
 
         let restored = AppState::from_database_result_with_path(
             ProjectDatabase::open(&db_path),
+            Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
         );
         assert!(!restored.demo_mode);

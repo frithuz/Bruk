@@ -1,14 +1,15 @@
-//! SQLite persistence for tracked projects stored in the user's config folder.
+//! SQLite persistence for tracked projects, stored as `bruk.db` in the Bruk folder.
 
 use std::{
-    env, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
-use rusqlite::{Connection, ErrorCode, OptionalExtension, params};
+use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
 use thiserror::Error;
 
 use crate::{
+    bruk_home::{BrukHome, HomeError},
     model::{Project, ProjectId},
     preferences::AppPreferences,
     project_settings::ProjectSettings,
@@ -38,9 +39,6 @@ pub struct PersistedWorkflowRun {
     pub finished_at: Option<i64>,
 }
 
-const APP_CONFIG_DIR: &str = "software-factory";
-const DB_FILE_NAME: &str = "factory.db";
-const DB_PATH_ENV: &str = "SOFTWARE_FACTORY_DB_PATH";
 const PREFERENCES_KEY: &str = "app_preferences";
 
 /// Errors returned when opening or mutating the local SQLite project database.
@@ -52,8 +50,8 @@ pub enum StorageError {
     EmptyProjectPath,
     #[error("a project is already registered for repository path '{0}'")]
     DuplicateRepositoryPath(PathBuf),
-    #[error("could not determine user config directory")]
-    ConfigDirUnavailable,
+    #[error("{0}")]
+    Home(#[from] HomeError),
     #[error("failed to create database directory '{path}': {source}")]
     CreateDir {
         path: PathBuf,
@@ -66,34 +64,6 @@ pub enum StorageError {
     Json(#[from] serde_json::Error),
 }
 
-/// Resolves the default SQLite database path inside the user's config folder.
-///
-/// Resolution order:
-/// 1. `SOFTWARE_FACTORY_DB_PATH` environment variable (explicit override)
-/// 2. `$XDG_CONFIG_HOME/software-factory/factory.db` when `XDG_CONFIG_HOME` is set
-/// 3. The platform user config directory (`dirs::config_dir()` ->
-///    `~/Library/Application Support/software-factory/factory.db` on macOS)
-pub fn default_db_path() -> Result<PathBuf, StorageError> {
-    if let Ok(explicit) = env::var(DB_PATH_ENV) {
-        let trimmed = explicit.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed));
-        }
-    }
-
-    if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
-        let trimmed = xdg.trim();
-        if !trimmed.is_empty() {
-            return Ok(PathBuf::from(trimmed)
-                .join(APP_CONFIG_DIR)
-                .join(DB_FILE_NAME));
-        }
-    }
-
-    let config_dir = dirs::config_dir().ok_or(StorageError::ConfigDirUnavailable)?;
-    Ok(config_dir.join(APP_CONFIG_DIR).join(DB_FILE_NAME))
-}
-
 /// Persistent SQLite store for tracking registered projects on this machine.
 pub struct ProjectDatabase {
     conn: Connection,
@@ -101,10 +71,32 @@ pub struct ProjectDatabase {
 }
 
 impl ProjectDatabase {
-    /// Opens (creating if needed) the SQLite database in the user's config folder.
-    pub fn open_default() -> Result<Self, StorageError> {
-        let path = default_db_path()?;
-        Self::open(path)
+    /// Opens (creating if needed) `bruk.db` in a Bruk folder, creating the folder layout too.
+    pub fn open_home(home: &BrukHome) -> Result<Self, StorageError> {
+        home.ensure_layout()?;
+        Self::open(home.database_path())
+    }
+
+    /// Copies the database at `source` into a new file at `destination` without modifying
+    /// `source`. Uses `VACUUM INTO`, so pending WAL contents are included.
+    pub fn copy_database(source: &Path, destination: &Path) -> Result<(), StorageError> {
+        if let Some(parent) = destination.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|source| StorageError::CreateDir {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+        }
+        let conn = Connection::open_with_flags(
+            source,
+            OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
+        conn.execute(
+            "VACUUM INTO ?1",
+            params![destination.to_string_lossy().into_owned()],
+        )?;
+        Ok(())
     }
 
     /// Opens (creating parent directories and schema if needed) a SQLite database at `path`.
@@ -641,12 +633,25 @@ mod tests {
     }
 
     #[test]
-    fn resolves_default_db_path_inside_config_folder() {
-        let path = default_db_path().unwrap();
-        assert_eq!(
-            path.file_name().and_then(|name| name.to_str()),
-            Some("factory.db")
-        );
+    fn opens_bruk_db_inside_home_and_copies_databases() {
+        let temp = TempDir::new().unwrap();
+        let home = BrukHome::at(temp.path().join("Bruk"));
+        {
+            let db = ProjectDatabase::open_home(&home).unwrap();
+            assert_eq!(db.path(), Some(temp.path().join("Bruk/bruk.db").as_path()));
+            db.register_project("web-app", "/repo/web-app", "main", "")
+                .unwrap();
+        }
+        assert!(home.projects_dir().is_dir());
+        assert!(home.runs_dir().is_dir());
+
+        let copy_path = temp.path().join("copy").join("bruk.db");
+        ProjectDatabase::copy_database(home.database_path(), &copy_path).unwrap();
+        let copy = ProjectDatabase::open(&copy_path).unwrap();
+        assert_eq!(copy.list_projects().unwrap()[0].name, "web-app");
+        // The source is untouched and still opens.
+        let original = ProjectDatabase::open(home.database_path()).unwrap();
+        assert_eq!(original.list_projects().unwrap().len(), 1);
     }
 
     #[test]
@@ -697,6 +702,41 @@ mod tests {
         assert!(migrated.extensions.entries.is_empty());
         assert_eq!(migrated.appearance.mode, crate::AppearanceMode::Dark);
         assert_eq!(migrated.general.default_projects_dir, "~/code");
+    }
+
+    #[test]
+    fn migrates_old_default_projects_dir_into_bruk_folder_but_keeps_custom_dirs() {
+        let home = BrukHome::at("/Users/dev/Bruk");
+        let db = ProjectDatabase::open_in_memory().unwrap();
+
+        let mut untouched = AppPreferences::empty();
+        untouched.schema_version = 3;
+        untouched.general.default_projects_dir = "~/src".to_owned();
+        db.save_preferences(&untouched).unwrap();
+        let migrated = db.load_preferences().unwrap().unwrap();
+        assert_eq!(
+            migrated.schema_version,
+            crate::preferences::PREFERENCES_SCHEMA_VERSION
+        );
+        assert!(migrated.general.projects_dir_follows_home());
+        assert_eq!(
+            migrated.general.projects_dir(&home),
+            Path::new("/Users/dev/Bruk/projects")
+        );
+
+        let mut custom = AppPreferences::empty();
+        custom.schema_version = 3;
+        custom.general.default_projects_dir = "/Volumes/work/repos".to_owned();
+        db.save_preferences(&custom).unwrap();
+        let kept = db.load_preferences().unwrap().unwrap();
+        assert_eq!(kept.general.default_projects_dir, "/Volumes/work/repos");
+        assert_eq!(
+            kept.general.projects_dir(&home),
+            Path::new("/Volumes/work/repos")
+        );
+
+        // Fresh preferences follow the Bruk folder from the start.
+        assert!(AppPreferences::empty().general.projects_dir_follows_home());
     }
 
     #[test]

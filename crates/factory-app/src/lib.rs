@@ -19,7 +19,8 @@ fn native(registry: &mut Registry) {
 
 /// Root component mounted by `cargo run`, `nsh run`, and `nsh package`.
 ///
-/// Opens the SQLite database in the user's config folder and loads tracked projects.
+/// Opens the Bruk folder (`~/Bruk` by default) and loads tracked projects, or shows
+/// first-launch setup when no folder has been chosen yet.
 #[component]
 pub fn App() -> impl IntoElement {
     store::init_default();
@@ -61,6 +62,58 @@ pub fn root_with_db_path_and_menubar_popover(db_path: PathBuf) -> Root {
     })
 }
 
+/// Builds a Native Shell [`Root`] that resolves the Bruk folder from an explicit
+/// [`factory_core::HomeEnvironment`] instead of this machine's, so first-launch setup can be
+/// exercised in isolated tests. `path_env` is the `PATH` used for provider CLI discovery.
+pub fn root_with_home_environment(
+    environment: factory_core::HomeEnvironment,
+    path_env: OsString,
+) -> Root {
+    let props = AppWithHomeProps {
+        env_override: environment.env_override.map(path_string),
+        default_root: path_string(environment.default_root),
+        locator_path: path_string(environment.locator_path),
+        legacy_database_paths: environment
+            .legacy_database_paths
+            .into_iter()
+            .map(path_string)
+            .collect(),
+        claude_path_env: path_env.to_string_lossy().into_owned(),
+    };
+    Root::new::<AppWithHome>(move || props.clone())
+}
+
+fn path_string(path: PathBuf) -> String {
+    path.to_string_lossy().into_owned()
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct AppWithHomeProps {
+    env_override: Option<String>,
+    default_root: String,
+    locator_path: String,
+    legacy_database_paths: Vec<String>,
+    claude_path_env: String,
+}
+
+#[component]
+fn AppWithHome(props: AppWithHomeProps) -> impl IntoElement {
+    store::init_with_home_environment(
+        factory_core::HomeEnvironment {
+            env_override: props.env_override.as_ref().map(PathBuf::from),
+            default_root: PathBuf::from(&props.default_root),
+            locator_path: PathBuf::from(&props.locator_path),
+            legacy_database_paths: props
+                .legacy_database_paths
+                .iter()
+                .map(PathBuf::from)
+                .collect(),
+        },
+        store::ClaudePathLookup::ExplicitPath(OsString::from(&props.claude_path_env)),
+    );
+    app_surface()
+}
+
 #[derive(Clone, PartialEq, Props)]
 struct AppWithDbProps {
     db_path: String,
@@ -98,7 +151,11 @@ fn app_surface() -> impl IntoElement {
         .flex_1()
         .bg(move || theme().background)
         .text_color(move || theme().foreground)
-        .child(ui::shell())
+        .child(when(
+            store::needs_home_setup,
+            ui::home_setup::home_setup_view,
+        ))
+        .child(when(|| !store::needs_home_setup(), ui::shell))
         .child(ui::menubar::menubar_popover_window())
         .child(ui::preferences::preferences_window())
 }

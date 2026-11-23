@@ -2625,7 +2625,11 @@ fn inline_single_field_editor(
 // --- General Tab ------------------------------------------------------------------------
 
 fn general_tab() -> impl IntoElement {
-    let projects_dir_draft = signal(store::preferences().general.default_projects_dir);
+    let projects_dir_draft = signal(store::default_projects_dir_display());
+    let apply_projects_dir = move |value: &str| {
+        store::set_default_projects_dir(value);
+        projects_dir_draft.set(store::default_projects_dir_display());
+    };
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
@@ -2664,21 +2668,21 @@ fn general_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(setting_row(
                                 "Default projects directory",
-                                "Starting folder when registering local repositories.",
+                                "Where Bruk clones new projects. Clear it to use projects/ in your Bruk folder.",
                                 view()
                                     .flex_row()
                                     .items_center()
                                     .gap(px(8.0))
                                     .child(
                                         input()
+                                            .test_id("prefs-default-projects-dir")
                                             .value(move || projects_dir_draft.get())
                                             .on_change(move |v: &str| {
                                                 projects_dir_draft.set(v.to_owned())
                                             })
-                                            .on_submit(move |v: &str| {
-                                                store::set_default_projects_dir(v)
-                                            })
-                                            .w(px(180.0))
+                                            .on_submit(move |v: &str| apply_projects_dir(v))
+                                            .placeholder("~/Bruk/projects")
+                                            .w(px(240.0))
                                             .app_class("font-mono")
                                             .px(px(9.0))
                                             .py(px(6.0))
@@ -2689,9 +2693,7 @@ fn general_tab() -> impl IntoElement {
                                             .text_color(palette::text_primary()),
                                     )
                                     .child(secondary_button("Apply", move || {
-                                        store::set_default_projects_dir(
-                                            &projects_dir_draft.get_untracked(),
-                                        );
+                                        apply_projects_dir(&projects_dir_draft.get_untracked());
                                     })),
                             )),
                     )
@@ -4662,20 +4664,44 @@ fn advanced_tab() -> impl IntoElement {
             .gap(px(16.0))
             .child(dynamic(move || {
                 let prefs = store::preferences().advanced;
-                let db_path = store::db_path_display();
+                let unavailable = || "Unavailable".to_owned();
+                let (home_root, db_path, projects_dir, runs_dir) = store::home_paths_display()
+                    .unwrap_or_else(|| {
+                        (unavailable(), store::db_path_display(), unavailable(), unavailable())
+                    });
 
                 view()
                     .gap(px(16.0))
                     .child(
-                        grouped_card("Storage & Isolation")
+                        grouped_card("Bruk Folder")
+                            .child(card_divider())
+                            .child(setting_row(
+                                "Location",
+                                home_root,
+                                button()
+                                    .accessibility_label("Show Bruk Folder in Finder")
+                                    .on_press(reveal_bruk_folder)
+                                    .px(px(12.0))
+                                    .py(px(6.0))
+                                    .rounded(px(7.0))
+                                    .border_1()
+                                    .border_color(palette::border_color())
+                                    .bg(palette::control_bg())
+                                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                    .active(|s| s.opacity(0.8))
+                                    .child(
+                                        text("Show in Finder")
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::text_primary()),
+                                    ),
+                            ))
                             .child(card_divider())
                             .child(static_row("SQLite database", db_path, true))
                             .child(card_divider())
-                            .child(static_row(
-                                "Provider CLI configs",
-                                prefs.isolated_cli_root.clone(),
-                                true,
-                            )),
+                            .child(static_row("Cloned projects", projects_dir, true))
+                            .child(card_divider())
+                            .child(static_row("Run workspaces", runs_dir, true)),
                     )
                     .child(
                         grouped_card("Diagnostics & Worktrees")
@@ -4733,6 +4759,21 @@ fn advanced_tab() -> impl IntoElement {
                     )
             })),
     )
+}
+
+fn reveal_bruk_folder() {
+    let Some(root) = store::home_root() else {
+        return;
+    };
+    let answer = nsh_core::element::reveal_path(root.clone());
+    spawn(async move {
+        if let Err(err) = answer.await {
+            store::set_status_message(format!(
+                "Could not show '{}' in Finder: {err}",
+                root.display()
+            ));
+        }
+    });
 }
 
 // --- Shared macOS Settings Primitives ---------------------------------------------------

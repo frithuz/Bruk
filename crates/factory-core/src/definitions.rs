@@ -305,7 +305,7 @@ pub enum ModuleFetchPolicy {
 #[derive(Debug, Clone, Default)]
 pub struct CatalogLoadOptions {
     pub module_fetch_policy: ModuleFetchPolicy,
-    /// Override cache directory for git modules (defaults to Bruk's app-support `modules/` dir).
+    /// Override cache directory for git modules (defaults to `<Bruk folder>/cache/modules`).
     pub module_cache_dir: Option<PathBuf>,
 }
 
@@ -1888,13 +1888,15 @@ fn resolve_module_directory(
     }
 }
 
-/// Default machine cache directory for fetched git modules (never holds user-authored definitions).
+/// Default cache directory for fetched git modules: `<Bruk folder>/cache/modules`
+/// (never holds user-authored definitions).
 pub fn default_module_cache_dir() -> Result<PathBuf, CatalogError> {
-    let base = dirs::config_dir().ok_or_else(|| CatalogError::ModuleLoad {
-        name: "cache".to_owned(),
-        message: "could not determine application support directory".to_owned(),
-    })?;
-    Ok(base.join("software-factory").join("modules"))
+    crate::bruk_home::resolve_system_home()
+        .map(|home| home.module_cache_dir())
+        .ok_or_else(|| CatalogError::ModuleLoad {
+            name: "cache".to_owned(),
+            message: "the Bruk folder has not been set up yet".to_owned(),
+        })
 }
 
 fn run_git(cwd: &Path, args: &[&str]) -> Result<(), String> {

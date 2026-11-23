@@ -3,6 +3,7 @@
 mod claude_spawn_settings;
 mod codex_spawn_settings;
 mod dashboard;
+pub(crate) mod home_setup;
 mod icons;
 pub(crate) mod inbox;
 mod machines;
@@ -216,7 +217,9 @@ fn header_title_block() -> impl IntoElement {
                         )
                     }
                 }
-                ActiveView::RegisterProject => "Track local repositories in SQLite".to_owned(),
+                ActiveView::RegisterProject => {
+                    "Clone into your Bruk folder or link an existing clone".to_owned()
+                }
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| format!("{} · {}", p.default_branch, p.root_path.display()))
                     .unwrap_or_else(|| "Select a project to run workflows".to_owned()),

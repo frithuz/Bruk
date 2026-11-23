@@ -3,7 +3,7 @@
 version: '3'
 
 vars:
-  MACOS_DB_DEFAULT: '{{.HOME}}/Library/Application Support/software-factory/factory.db'
+  BRUK_LOCATOR: '{{.HOME}}/Library/Application Support/Bruk/location'
   NSH_VERSION: 'v0.6.1'
   NSH_BIN:
     sh: command -v nsh 2>/dev/null || echo "{{.HOME}}/.local/bin/nsh"
@@ -117,16 +117,16 @@ tasks:
       - task: build
 
   db:path:
-    desc: Print the active SQLite database path
+    desc: Print the active Bruk folder database path
     silent: true
     cmds:
       - |
-        if [ -n "${SOFTWARE_FACTORY_DB_PATH:-}" ]; then
-          echo "$SOFTWARE_FACTORY_DB_PATH"
-        elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
-          echo "$XDG_CONFIG_HOME/software-factory/factory.db"
+        if [ -n "${BRUK_HOME:-}" ]; then
+          echo "$BRUK_HOME/bruk.db"
+        elif [ -s "{{.BRUK_LOCATOR}}" ]; then
+          echo "$(head -n 1 "{{.BRUK_LOCATOR}}")/bruk.db"
         else
-          echo "{{.MACOS_DB_DEFAULT}}"
+          echo "{{.HOME}}/Bruk/bruk.db"
         fi
 
   clean:

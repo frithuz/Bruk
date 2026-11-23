@@ -466,11 +466,13 @@ fn open_new_project() {
 }
 
 fn open_project_dialog() {
-    let answer = pick_paths(
-        OpenDialog::folders()
-            .title("Open Project Folder")
-            .button_label("Open Project"),
-    );
+    let mut dialog = OpenDialog::folders()
+        .title("Open Project Folder")
+        .button_label("Open Project");
+    if let Some(dir) = store::default_projects_dir_path() {
+        dialog = dialog.directory(dir);
+    }
+    let answer = pick_paths(dialog);
     spawn(async move {
         if let Ok(Some(paths)) = answer.await
             && let Some(chosen) = paths.into_iter().next()

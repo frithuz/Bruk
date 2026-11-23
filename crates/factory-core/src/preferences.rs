@@ -1,9 +1,12 @@
 //! Application preferences, provider account configuration, and validation logic.
 
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    bruk_home::BrukHome,
     claude_cli::{
         ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
     },
@@ -322,6 +325,8 @@ impl OpenRouterKey {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GeneralSettings {
     pub default_landing_view: DefaultLandingView,
+    /// Where Bruk clones new projects. Empty means `<Bruk folder>/projects`, so the default
+    /// follows whichever folder was chosen at setup.
     pub default_projects_dir: String,
     pub confirm_before_cancel: bool,
     pub notify_on_human_gate: bool,
@@ -333,7 +338,7 @@ impl Default for GeneralSettings {
     fn default() -> Self {
         Self {
             default_landing_view: DefaultLandingView::Dashboard,
-            default_projects_dir: "~/src".to_owned(),
+            default_projects_dir: String::new(),
             confirm_before_cancel: true,
             notify_on_human_gate: true,
             notify_on_run_failure: true,
@@ -341,6 +346,25 @@ impl Default for GeneralSettings {
         }
     }
 }
+
+impl GeneralSettings {
+    /// The folder new projects are cloned into: the custom directory if one is set, otherwise
+    /// `projects/` inside the Bruk folder.
+    pub fn projects_dir(&self, home: &BrukHome) -> PathBuf {
+        match self.default_projects_dir.trim() {
+            "" => home.projects_dir(),
+            custom => crate::claude_cli::expand_tilde(custom),
+        }
+    }
+
+    /// Whether the default projects directory follows the Bruk folder (no custom directory set).
+    pub fn projects_dir_follows_home(&self) -> bool {
+        self.default_projects_dir.trim().is_empty()
+    }
+}
+
+/// Built-in default for `default_projects_dir` before projects moved into the Bruk folder.
+const LEGACY_DEFAULT_PROJECTS_DIR: &str = "~/src";
 
 /// Default embedded UI font family name.
 pub const DEFAULT_UI_FONT_FAMILY: &str = "Atkinson Hyperlegible Next";
@@ -516,7 +540,6 @@ impl ExtensionsSettings {
 /// Advanced storage, logging, and diagnostic settings.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AdvancedSettings {
-    pub isolated_cli_root: String,
     pub verbose_step_logs: bool,
     pub keep_worktrees_on_failure: bool,
     pub log_retention_days: u32,
@@ -525,8 +548,6 @@ pub struct AdvancedSettings {
 impl Default for AdvancedSettings {
     fn default() -> Self {
         Self {
-            isolated_cli_root: "~/Library/Application Support/software-factory/providers"
-                .to_owned(),
             verbose_step_logs: false,
             keep_worktrees_on_failure: true,
             log_retention_days: 30,
@@ -559,7 +580,7 @@ pub enum PreferencesError {
 /// - Version 3 makes the Codex CLI provider opt-in (`Option<CliAccount>`); v2
 ///   rows that only carried the default unconnected Codex placeholder are cleared
 ///   automatically while preserving Claude, OpenRouter, and all other settings.
-pub const PREFERENCES_SCHEMA_VERSION: u32 = 3;
+pub const PREFERENCES_SCHEMA_VERSION: u32 = 4;
 
 /// Complete persisted application preferences aggregate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -838,6 +859,13 @@ impl AppPreferences {
                 .is_some_and(|codex| !codex.connected && codex.used_by_projects.is_empty())
         {
             self.codex = None;
+        }
+        if self.schema_version < 4
+            && self.general.default_projects_dir.trim() == LEGACY_DEFAULT_PROJECTS_DIR
+        {
+            // The untouched old default moves into the Bruk folder; a directory the user
+            // picked themselves is kept.
+            self.general.default_projects_dir.clear();
         }
         self.schema_version = PREFERENCES_SCHEMA_VERSION;
         true

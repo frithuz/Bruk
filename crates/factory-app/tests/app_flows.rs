@@ -146,13 +146,14 @@ fn registers_project_in_sqlite_and_reloads_on_restart() {
     {
         let mut app = start_with_db(db_path.clone());
         app.press("role:button[Register Project]").unwrap();
-        app.wait_for("Register a local repository").unwrap();
-        assert!(!app.screen().enabled("role:button[Save Project]").unwrap());
+        app.wait_for("Add a project").unwrap();
+        app.press("id:register-mode-link").unwrap();
+        assert!(!app.screen().enabled("role:button[Link Project]").unwrap());
 
         app.type_text("text:Project name", "billing-api").unwrap();
         app.type_text("text:Repository path", "/workspace/billing-api")
             .unwrap();
-        app.press("role:button[Save Project]").unwrap();
+        app.press("role:button[Link Project]").unwrap();
         app.wait_for("Registered project 'billing-api'").unwrap();
         assert!(app.screen().shows("/workspace/billing-api"));
 
@@ -160,7 +161,7 @@ fn registers_project_in_sqlite_and_reloads_on_restart() {
         app.type_text("text:Project name", "billing-dup").unwrap();
         app.type_text("text:Repository path", "/workspace/billing-api")
             .unwrap();
-        app.press("role:button[Save Project]").unwrap();
+        app.press("role:button[Link Project]").unwrap();
         app.wait_for(
             "a project is already registered for repository path '/workspace/billing-api'",
         )
@@ -184,12 +185,13 @@ fn opens_registered_project_and_runs_workflow_to_completion() {
 
     // Open project registration, save a project, then open its workspace.
     app.press("role:button[Register Project]").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
 
     app.type_text("text:Project name", "payments").unwrap();
     app.type_text("text:Repository path", "/workspace/payments")
         .unwrap();
-    app.press("role:button[Save Project]").unwrap();
+    app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'payments'").unwrap();
 
     app.press("role:button[Open Workspace]").unwrap();
@@ -278,7 +280,7 @@ fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
         assert!(app.screen().shows("GitHub Issues & Pull Requests  v1.2.0"));
 
         app.press("id:prefs-tab-advanced").unwrap();
-        app.wait_for("Provider CLI configs").unwrap();
+        app.wait_for("Run workspaces").unwrap();
 
         // Close the secondary Preferences window cleanly.
         app.press_window_close("preferences").unwrap();
@@ -363,7 +365,7 @@ fn application_menu_shortcuts_navigate_views_toggle_sidebar_and_control_runs() {
 
     // File › New Project… (⇧⌘N) opens project registration.
     app.press_key("mod+shift+n").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
 
     // Run › Run History (⌘Y) opens the project workspace.
     app.press_key("mod+y").unwrap();
@@ -1751,11 +1753,12 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     // Register a real local project without Demo Mode enabled.
     app.press("id:dashboard-empty-register-project").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
     app.type_text("text:Project name", "my-service").unwrap();
     app.type_text("text:Repository path", "/workspace/my-service")
         .unwrap();
-    app.press("role:button[Save Project]").unwrap();
+    app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'my-service'").unwrap();
 
     // Dashboard now shows empty card states for the tracked project without fake telemetry.
@@ -2073,11 +2076,12 @@ fn codex_provider_is_unregistered_by_default_and_can_be_added_and_removed() {
 
         // Register a project so we can also check Project Settings › Providers.
         app.press("id:dashboard-empty-register-project").unwrap();
-        app.wait_for("Register a local repository").unwrap();
+        app.wait_for("Add a project").unwrap();
+        app.press("id:register-mode-link").unwrap();
         app.type_text("text:Project name", "my-service").unwrap();
         app.type_text("text:Repository path", "/workspace/my-service")
             .unwrap();
-        app.press("role:button[Save Project]").unwrap();
+        app.press("role:button[Link Project]").unwrap();
         app.wait_for("Registered project 'my-service'").unwrap();
 
         // Project Settings › Providers must not show Codex as if it were registered.
@@ -2978,11 +2982,12 @@ exit 0
 
         // Register the real git repository.
         app.press("id:dashboard-empty-register-project").unwrap();
-        app.wait_for("Register a local repository").unwrap();
+        app.wait_for("Add a project").unwrap();
+        app.press("id:register-mode-link").unwrap();
         app.type_text("text:Project name", "billing-api").unwrap();
         app.type_text("text:Repository path", &repo_dir.display().to_string())
             .unwrap();
-        app.press("role:button[Save Project]").unwrap();
+        app.press("role:button[Link Project]").unwrap();
         app.wait_for("Registered project 'billing-api'").unwrap();
 
         // Project Settings should auto-detect `acme/billing-api` from git origin.
@@ -3103,11 +3108,12 @@ exit 0
 
     // Register a project and open Issues & intake settings.
     app.press("id:dashboard-empty-register-project").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
     app.type_text("text:Project name", "filters-demo").unwrap();
     app.type_text("text:Repository path", "/workspace/filters-demo")
         .unwrap();
-    app.press("role:button[Save Project]").unwrap();
+    app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'filters-demo'").unwrap();
 
     app.press("id:sidebar-project-settings-1").unwrap();
@@ -3179,11 +3185,12 @@ fn real_project_loads_layered_agents_bruk_catalog_and_copy_on_edit_saves_yaml() 
 
     let mut app = start_with_db(db_path);
     app.press("id:dashboard-empty-register-project").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
     app.type_text("text:Project name", "catalog-repo").unwrap();
     app.type_text("text:Repository path", &repo_dir.display().to_string())
         .unwrap();
-    app.press("role:button[Save Project]").unwrap();
+    app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'catalog-repo'").unwrap();
 
     // Workflows overview shows Built-in workflows + Module workflow with layer badges.
@@ -3235,11 +3242,12 @@ fn real_workflow_run_executes_shell_and_approval_gate_via_inbox_and_persists_to_
 
     let mut app = start_with_db(db_path.clone());
     app.press("id:dashboard-empty-register-project").unwrap();
-    app.wait_for("Register a local repository").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
     app.type_text("text:Project name", "runner-repo").unwrap();
     app.type_text("text:Repository path", &repo_dir.display().to_string())
         .unwrap();
-    app.press("role:button[Save Project]").unwrap();
+    app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'runner-repo'").unwrap();
 
     // Launch real ad-hoc run from Workflows Overview.
@@ -3269,4 +3277,260 @@ fn real_workflow_run_executes_shell_and_approval_gate_via_inbox_and_persists_to_
     assert_eq!(runs.len(), 1);
     assert_eq!(runs[0].workflow_id, "shell-and-approve");
     assert_eq!(runs[0].status, factory_core::RunExecutionState::Succeeded);
+}
+
+fn isolated_home_environment(temp: &std::path::Path) -> factory_core::HomeEnvironment {
+    factory_core::HomeEnvironment {
+        env_override: None,
+        default_root: temp.join("home").join("Bruk"),
+        locator_path: temp.join("support").join("Bruk").join("location"),
+        legacy_database_paths: vec![
+            temp.join("support")
+                .join("software-factory")
+                .join("factory.db"),
+        ],
+    }
+}
+
+fn start_with_home_environment(environment: factory_core::HomeEnvironment) -> Headless {
+    let mut config = EngineConfig::new(factory_app::root_with_home_environment(
+        environment,
+        OsString::new(),
+    ));
+    config.environment.os = Os::MacOs;
+    config.viewport = Size::new(px(1360.0), px(920.0));
+    Headless::start(config).unwrap()
+}
+
+#[test]
+fn first_launch_sets_up_custom_bruk_folder_imports_legacy_data_and_remembers_it() {
+    let temp = TempDir::new().unwrap();
+    let environment = isolated_home_environment(temp.path());
+    let legacy_db = environment.legacy_database_paths[0].clone();
+    {
+        let db = factory_core::ProjectDatabase::open(&legacy_db).unwrap();
+        db.register_project("legacy-api", "/workspace/legacy-api", "main", "")
+            .unwrap();
+    }
+    let custom_root = temp.path().join("Data").join("Bruk");
+
+    {
+        let mut app = start_with_home_environment(environment.clone());
+        app.wait_for("Welcome to Bruk").unwrap();
+        assert!(
+            app.screen()
+                .shows("Import existing projects and preferences")
+        );
+        assert!(app.screen().shows("Create Bruk Folder"));
+
+        app.clear("id:home-setup-root").unwrap();
+        app.type_text("id:home-setup-root", &custom_root.display().to_string())
+            .unwrap();
+        app.press("id:home-setup-continue").unwrap();
+        app.wait_for(&format!(
+            "Bruk folder ready at {} · imported projects and preferences from {}",
+            factory_core::display_with_tilde(&custom_root),
+            factory_core::display_with_tilde(&legacy_db),
+        ))
+        .unwrap();
+        app.wait_for("legacy-api").unwrap();
+        assert!(!app.screen().shows("Welcome to Bruk"));
+    }
+
+    assert!(custom_root.join("bruk.db").is_file());
+    assert!(custom_root.join("projects").is_dir());
+    assert!(custom_root.join("runs").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(&environment.locator_path)
+            .unwrap()
+            .trim(),
+        custom_root.display().to_string()
+    );
+    assert!(!environment.default_root.exists());
+    assert!(legacy_db.is_file(), "legacy database must be left in place");
+
+    // Relaunching opens the remembered folder directly.
+    let mut reopened = start_with_home_environment(environment);
+    reopened.wait_for("legacy-api").unwrap();
+    assert!(!reopened.screen().shows("Welcome to Bruk"));
+}
+
+#[test]
+fn first_launch_default_folder_without_legacy_data_skips_import() {
+    let temp = TempDir::new().unwrap();
+    let environment = isolated_home_environment(temp.path());
+
+    let mut app = start_with_home_environment(environment.clone());
+    app.wait_for("Welcome to Bruk").unwrap();
+    assert!(
+        !app.screen()
+            .shows("Import existing projects and preferences")
+    );
+    app.press("id:home-setup-continue").unwrap();
+    app.wait_for("Dashboard").unwrap();
+
+    assert!(environment.default_root.join("bruk.db").is_file());
+    assert!(
+        !environment.locator_path.exists(),
+        "the default folder needs no locator file"
+    );
+}
+
+/// Creates a git repository with one commit on `trunk` to clone from.
+fn init_origin_repo(origin: &std::path::Path) -> PathBuf {
+    use std::process::{Command, Stdio};
+
+    std::fs::create_dir_all(origin).unwrap();
+    let git = |args: &[&str]| {
+        assert!(
+            Command::new("git")
+                .args(args)
+                .current_dir(origin)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap()
+                .success(),
+            "git {args:?} failed"
+        );
+    };
+    git(&["init", "-b", "trunk"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    std::fs::write(origin.join("README.md"), "# billing-api\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-m", "init"]);
+    origin.to_path_buf()
+}
+
+#[test]
+fn clones_repository_into_bruk_folder_registers_it_and_keeps_clone_on_remove() {
+    let temp = TempDir::new().unwrap();
+    let home_root = temp.path().join("Bruk");
+    let db_path = home_root.join("bruk.db");
+    let origin = init_origin_repo(&temp.path().join("origin").join("billing-api"));
+
+    let clone = home_root.join("projects").join("billing-api");
+    let origin_str = origin.display().to_string();
+
+    let mut app = start_with_db(db_path.clone());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    assert!(
+        !app.screen()
+            .enabled("role:button[Clone Repository]")
+            .unwrap()
+    );
+
+    // The project name follows the repository name and previews the destination.
+    app.type_text("id:register-clone-source", &origin_str)
+        .unwrap();
+    app.wait_for(&format!(
+        "Clones into {}",
+        factory_core::display_with_tilde(&clone)
+    ))
+    .unwrap();
+    app.press("role:button[Clone Repository]").unwrap();
+    app.wait_for("Registered project 'billing-api'").unwrap();
+    assert!(app.screen().shows("In Bruk folder"));
+    assert!(clone.join("README.md").is_file());
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let projects = db.list_projects().unwrap();
+    assert_eq!(projects.len(), 1);
+    assert_eq!(projects[0].root_path, clone);
+    assert_eq!(projects[0].default_branch, "trunk");
+
+    // Cloning into an occupied folder is refused with guidance.
+    app.type_text("id:register-clone-source", &origin_str)
+        .unwrap();
+    app.press("role:button[Clone Repository]").unwrap();
+    app.wait_for(&format!(
+        "'{}' already exists. Link it as an existing clone or choose another project name.",
+        clone.display()
+    ))
+    .unwrap();
+
+    // Removing the project leaves the clone on disk.
+    app.press("role:button[Remove]").unwrap();
+    app.wait_for(&format!(
+        "Removed project 'billing-api'. Its clone is still at {}.",
+        factory_core::display_with_tilde(&clone)
+    ))
+    .unwrap();
+    assert!(clone.join("README.md").is_file());
+}
+
+#[test]
+fn default_projects_dir_follows_bruk_folder_and_redirects_clones_when_changed() {
+    let temp = TempDir::new().unwrap();
+    let home_root = temp.path().join("Bruk");
+    let db_path = home_root.join("bruk.db");
+    let origin = init_origin_repo(&temp.path().join("origin").join("billing-api"));
+    let origin_str = origin.display().to_string();
+    let custom_dir = temp.path().join("src");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+    let saved_projects_dir = || {
+        factory_core::ProjectDatabase::open(&db_path)
+            .unwrap()
+            .load_preferences()
+            .unwrap()
+            .map(|prefs| prefs.general.default_projects_dir)
+    };
+
+    let mut app = start_with_db(db_path.clone());
+
+    // By default, clones land in the Bruk folder's projects/.
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.wait_for(&format!(
+        "Clones into {}/",
+        factory_core::display_with_tilde(&home_root.join("projects"))
+    ))
+    .unwrap();
+
+    // Point the default projects directory somewhere else in Preferences › General.
+    app.press_key("mod+,").unwrap();
+    app.press("id:prefs-tab-general").unwrap();
+    app.wait_for("Default projects directory").unwrap();
+    app.clear("id:prefs-default-projects-dir").unwrap();
+    app.type_text(
+        "id:prefs-default-projects-dir",
+        &custom_dir.display().to_string(),
+    )
+    .unwrap();
+    app.press("role:button[Apply]").unwrap();
+    assert_eq!(
+        saved_projects_dir().as_deref(),
+        Some(custom_dir.display().to_string().as_str())
+    );
+    app.press_window_close("preferences").unwrap();
+
+    // Clones now go to the custom directory.
+    app.type_text("id:register-clone-source", &origin_str)
+        .unwrap();
+    let custom_clone = custom_dir.join("billing-api");
+    app.wait_for(&format!(
+        "Clones into {}",
+        factory_core::display_with_tilde(&custom_clone)
+    ))
+    .unwrap();
+    app.press("role:button[Clone Repository]").unwrap();
+    app.wait_for("Registered project 'billing-api'").unwrap();
+    assert!(custom_clone.join("README.md").is_file());
+    assert!(!home_root.join("projects").join("billing-api").exists());
+
+    // Clearing the field goes back to following the Bruk folder.
+    app.press_key("mod+,").unwrap();
+    app.press("id:prefs-tab-general").unwrap();
+    app.wait_for("Default projects directory").unwrap();
+    app.clear("id:prefs-default-projects-dir").unwrap();
+    app.press("role:button[Apply]").unwrap();
+    assert_eq!(saved_projects_dir().as_deref(), Some(""));
+    app.press_window_close("preferences").unwrap();
+    app.wait_for(&format!(
+        "Clones into {}/",
+        factory_core::display_with_tilde(&home_root.join("projects"))
+    ))
+    .unwrap();
 }

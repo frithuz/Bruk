@@ -421,13 +421,12 @@ pub fn materialize_step_context(
     })
 }
 
-/// Default out-of-repo runtime directory for a workflow run step.
+/// Default out-of-repo runtime directory for a workflow run step: `<Bruk folder>/runs/<run-id>/`,
+/// or the system temp directory when no Bruk folder has been set up.
 pub fn default_step_runtime_dir(run_id: &str, step_index: usize) -> PathBuf {
-    let base = dirs::config_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("software-factory")
-        .join("runs")
-        .join(run_id);
+    let base = crate::bruk_home::resolve_system_home()
+        .map(|home| home.run_dir(run_id))
+        .unwrap_or_else(|| std::env::temp_dir().join("bruk-runs").join(run_id));
     base.join(format!("step-{step_index:03}"))
 }
 

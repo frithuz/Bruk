@@ -8,17 +8,39 @@ A native macOS desktop application built in **Rust** with **[Native Shell (`nsh`
 
 This repository is a Cargo workspace split into two crates:
 
-- **`crates/factory-core`** — Pure Rust domain model, SQLite project persistence (`ProjectDatabase` stored in the user's config folder), and workflow execution engine (`Project`, `Workflow`, `WorkflowStep`, `WorkflowRun`, `StepExecutor`, and `FactoryState`), independent of UI/AppKit so workflows can be tested or reused from a CLI or daemon.
-- **`crates/factory-app`** — Native Shell (`nsh-core`, `nsh-base`, `nsh-platform-macos`) macOS AppKit desktop application providing a dedicated Project Registration view (persisted to SQLite with a native folder picker), project & workflow sidebar, task launcher, run list, and step/log inspector.
+- **`crates/factory-core`** — Pure Rust domain model, the Bruk folder (`BrukHome`), SQLite project persistence (`ProjectDatabase`), and workflow execution engine (`Project`, `Workflow`, `WorkflowStep`, `WorkflowRun`, `StepExecutor`, and `FactoryState`), independent of UI/AppKit so workflows can be tested or reused from a CLI or daemon.
+- **`crates/factory-app`** — Native Shell (`nsh-core`, `nsh-base`, `nsh-platform-macos`) macOS AppKit desktop application providing first-launch setup, a Project Registration view (clone into the Bruk folder or link an existing clone), project & workflow sidebar, task launcher, run list, and step/log inspector.
 - **`nsh.json`** — Native Shell manifest pointing at `crates/factory-app` and its `App` root component.
 
-## Local Project Database
+## The Bruk Folder
 
-Registered projects are persisted in SQLite at:
+Everything Bruk stores lives in one folder, `~/Bruk` by default:
 
-- macOS default: `~/Library/Application Support/software-factory/factory.db`
-- XDG override: `$XDG_CONFIG_HOME/software-factory/factory.db`
-- Explicit override: `SOFTWARE_FACTORY_DB_PATH`
+```text
+~/Bruk/
+├── bruk.db           SQLite: projects, preferences, project settings, secrets, run history
+├── projects/<name>/  Repositories Bruk cloned for you
+├── runs/<run-id>/    Per-run step bundles and isolated git worktrees
+└── cache/modules/    Git modules fetched for .agents/bruk/bruk.yaml
+```
+
+On first launch Bruk asks where to create this folder. Picking anything other than `~/Bruk`
+is remembered in `~/Library/Application Support/Bruk/location` (one line, the folder's path).
+Choosing a folder that already contains `bruk.db` reuses it as-is.
+
+Projects come in two kinds:
+
+- **Cloned** — Bruk runs `git clone` into the default projects directory, which is
+  `projects/<name>` in the Bruk folder unless changed in Preferences › General (accepts any git
+  URL, scp-style address, local path, or GitHub `owner/repo` shorthand).
+- **External** — a clone you already have stays where it is; Bruk only records its path.
+
+Removing a project from Bruk never deletes its files.
+
+Data from the old location (`~/Library/Application Support/software-factory/factory.db`) is
+offered for a one-time import during setup; the original file is left untouched.
+
+Set `BRUK_HOME` to use a specific folder and skip setup (handy for development).
 
 ## Prerequisites
 
@@ -42,7 +64,7 @@ task test:ui         # Run factory-app headless UI tests
 task fmt             # Format Rust code
 task lint            # Run Clippy with -D warnings
 task ci              # Run fmt:check, lint, test, and build
-task db:path         # Show the active SQLite database path
+task db:path         # Show the active Bruk folder database path
 task nsh:install     # Install/update the Native Shell CLI (v0.6.1)
 task run:nsh         # Run with Native Shell CLI
 task package         # Build .nsh/out/Bruk.app

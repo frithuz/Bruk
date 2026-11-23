@@ -4,6 +4,7 @@
 //! workflow orchestration, persistence, and agent integrations can be tested
 //! and reused across the macOS app, CLI tools, or background daemons.
 
+pub mod bruk_home;
 pub mod claude_cli;
 pub mod claude_settings;
 pub mod codex_cli;
@@ -25,6 +26,11 @@ pub mod workflow_editor;
 pub mod workflow_run;
 pub mod workflows_overview;
 
+pub use bruk_home::{
+    BRUK_HOME_ENV, BrukHome, CloneError, CloneSource, ClonedRepository, DEFAULT_HOME_DIR_NAME,
+    HOME_DATABASE_FILE, HomeEnvironment, HomeError, HomeResolution, HomeSetup, clone_repository,
+    display_with_tilde, parse_clone_source, project_dir_name, resolve_system_home,
+};
 pub use claude_cli::{
     CLAUDE_BINARY_NAME, ClaudeBinaryError, ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption,
     ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow, expand_tilde, fetch_claude_details,
@@ -119,7 +125,7 @@ pub use step_context::{
     TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
     compile_step_context, default_step_runtime_dir, materialize_step_context,
 };
-pub use storage::{PersistedWorkflowRun, ProjectDatabase, StorageError, default_db_path};
+pub use storage::{PersistedWorkflowRun, ProjectDatabase, StorageError};
 pub use work_queue::{
     GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue,
     WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
