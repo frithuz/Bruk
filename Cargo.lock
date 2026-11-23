@@ -740,6 +740,9 @@ dependencies = [
  "nsh-engine",
  "nsh-platform-macos",
  "nsh-testing",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
  "tempfile",
 ]
 

@@ -1,18 +1,20 @@
 //! Software Factory macOS desktop UI built with Native Shell (`nsh`).
 
+mod fonts;
 mod menu;
 mod store;
 mod ui;
 
 use std::{ffi::OsString, path::PathBuf};
 
+pub use fonts::{EMBEDDED_FONTS, default_tokens, tokens_for_appearance, with_embedded_fonts};
 use nsh_base::theme;
 use nsh_core::{element::Root, prelude::*};
 
 /// Registers this crate's Native Shell UI set (`nsh.json` `"rust"`).
 #[native_module("software-factory/native")]
 fn native(registry: &mut Registry) {
-    registry.register::<App>();
+    registry.register::<App>().assets(assets!());
 }
 
 /// Root component mounted by `cargo run`, `nsh run`, and `nsh package`.

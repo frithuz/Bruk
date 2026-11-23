@@ -6,7 +6,9 @@ fn main() -> impl std::process::Termination {
 
     env_logger::init();
     platform::run_app(
-        platform::AppSource::Rust(platform::Root::of::<factory_app::App>()),
+        platform::AppSource::Rust(factory_app::with_embedded_fonts(platform::Root::of::<
+            factory_app::App,
+        >())),
         platform::AppOptions {
             title: "Bruk".to_owned(),
             icon: app_icon_path(),

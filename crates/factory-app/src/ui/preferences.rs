@@ -2,7 +2,8 @@
 
 use factory_core::{
     AppearanceMode, ClaudeModelOption, ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow,
-    CliAccount, ConnectionTestState, CoreUpdatePolicy, DefaultLandingView, MachineAgentKind,
+    CliAccount, ConnectionTestState, CoreUpdatePolicy, DEFAULT_MONO_FONT_FAMILY,
+    DEFAULT_UI_FONT_FAMILY, DefaultLandingView, FontPreference, MachineAgentKind,
     MachineConnectionStatus, MachinePlatform, MachineRecord, OpenRouterKey, PreferencesTab,
     ProviderKind, SchemaCompatibility, format_reset_schedule_now, format_whole_or_cents,
     model_family_from_id,
@@ -75,6 +76,7 @@ pub(crate) fn preferences_window() -> impl IntoElement {
         .open(store::preferences_open)
         .on_open_change(|change| {
             if !change.open {
+                store::close_font_picker();
                 store::close_preferences();
             }
         })
@@ -2731,6 +2733,44 @@ fn general_tab() -> impl IntoElement {
 // --- Appearance Tab ---------------------------------------------------------------------
 
 fn appearance_tab() -> impl IntoElement {
+    let initial = store::preferences().appearance;
+    let ui_font_draft = signal(
+        initial
+            .ui_font
+            .custom_family()
+            .unwrap_or_default()
+            .to_owned(),
+    );
+    let mono_font_draft = signal(
+        initial
+            .mono_font
+            .custom_family()
+            .unwrap_or_default()
+            .to_owned(),
+    );
+
+    // Keep the custom family input fields synchronized when a font is chosen in the macOS Fonts panel
+    // or when preferences are reset.
+    effect(move || {
+        let appearance = store::preferences().appearance;
+        let next_ui = appearance
+            .ui_font
+            .custom_family()
+            .unwrap_or_default()
+            .to_owned();
+        if ui_font_draft.get_untracked() != next_ui {
+            ui_font_draft.set(next_ui);
+        }
+        let next_mono = appearance
+            .mono_font
+            .custom_family()
+            .unwrap_or_default()
+            .to_owned();
+        if mono_font_draft.get_untracked() != next_mono {
+            mono_font_draft.set(next_mono);
+        }
+    });
+
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
             .flex_1()
@@ -2770,6 +2810,73 @@ fn appearance_tab() -> impl IntoElement {
                         }));
                 }
 
+                let ui_font_picker = font_preference_picker(
+                    &prefs.ui_font,
+                    (
+                        "prefs-ui-font-default",
+                        "prefs-ui-font-system",
+                        "prefs-ui-font-custom",
+                        "prefs-ui-font-choose",
+                    ),
+                    ui_font_draft,
+                    store::set_ui_font,
+                    store::open_ui_font_picker,
+                );
+                let mono_font_picker = font_preference_picker(
+                    &prefs.mono_font,
+                    (
+                        "prefs-mono-font-default",
+                        "prefs-mono-font-system",
+                        "prefs-mono-font-custom",
+                        "prefs-mono-font-choose",
+                    ),
+                    mono_font_draft,
+                    store::set_mono_font,
+                    store::open_mono_font_picker,
+                );
+
+                let mut typography_card = grouped_card("Typography")
+                    .child(card_divider())
+                    .child(setting_row(
+                        "UI font",
+                        format!(
+                            "Default typeface for menus, labels, and app UI ({DEFAULT_UI_FONT_FAMILY})."
+                        ),
+                        ui_font_picker,
+                    ));
+                if matches!(prefs.ui_font, FontPreference::Custom(_)) {
+                    typography_card = typography_card.child(custom_font_row(
+                        "prefs-ui-font-input",
+                        "prefs-ui-font-apply",
+                        "e.g. Inter, Helvetica Neue",
+                        false,
+                        ui_font_draft,
+                        store::set_ui_font,
+                    ));
+                }
+                typography_card = typography_card.child(card_divider()).child(setting_row(
+                    "Code & monospace font",
+                    format!(
+                        "Monospace typeface for code, logs, commands, and keys ({DEFAULT_MONO_FONT_FAMILY})."
+                    ),
+                    mono_font_picker,
+                ));
+                if matches!(prefs.mono_font, FontPreference::Custom(_)) {
+                    typography_card = typography_card.child(custom_font_row(
+                        "prefs-mono-font-input",
+                        "prefs-mono-font-apply",
+                        "e.g. JetBrains Mono, Menlo",
+                        true,
+                        mono_font_draft,
+                        store::set_mono_font,
+                    ));
+                }
+                typography_card = typography_card.child(card_divider()).child(setting_row(
+                    "Log & code font size",
+                    "Monospace size used for step logs, commands, and API keys.",
+                    size_picker,
+                ));
+
                 view()
                     .gap(px(16.0))
                     .child(
@@ -2781,24 +2888,112 @@ fn appearance_tab() -> impl IntoElement {
                                 mode_picker,
                             )),
                     )
+                    .child(typography_card)
                     .child(
-                        grouped_card("Layout & Typography")
+                        grouped_card("Layout")
                             .child(card_divider())
                             .child(toggle_row(
                                 "Compact navigation sidebar",
                                 "Reduce row spacing in the left navigation rail.",
                                 prefs.compact_sidebar,
                                 store::toggle_compact_sidebar,
-                            ))
-                            .child(card_divider())
-                            .child(setting_row(
-                                "Log & code font size",
-                                "Monospace size used for step logs, commands, and API keys.",
-                                size_picker,
                             )),
                     )
             })),
     )
+}
+
+fn font_preference_picker(
+    current: &FontPreference,
+    (default_id, system_id, custom_id, choose_id): (
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    ),
+    draft: Signal<String>,
+    on_select: fn(FontPreference),
+    on_open_font_panel: fn(),
+) -> impl IntoElement {
+    let is_default = matches!(current, FontPreference::Default);
+    let is_system = matches!(current, FontPreference::System);
+    let is_custom = matches!(current, FontPreference::Custom(_));
+
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .p(px(2.5))
+                .rounded(px(8.0))
+                .bg(palette::segmented_track_bg())
+                .gap(px(2.0))
+                .child(
+                    segment_button("Atkinson", is_default, move || {
+                        on_select(FontPreference::Default)
+                    })
+                    .test_id(default_id),
+                )
+                .child(
+                    segment_button("System", is_system, move || {
+                        on_select(FontPreference::System)
+                    })
+                    .test_id(system_id),
+                )
+                .child(
+                    segment_button("Custom", is_custom, move || {
+                        on_select(FontPreference::Custom(draft.get_untracked()))
+                    })
+                    .test_id(custom_id),
+                ),
+        )
+        .child(secondary_button("Choose…", on_open_font_panel).test_id(choose_id))
+}
+
+fn custom_font_row(
+    input_test_id: &'static str,
+    apply_test_id: &'static str,
+    placeholder: &'static str,
+    monospace: bool,
+    draft: Signal<String>,
+    on_apply: fn(FontPreference),
+) -> impl IntoElement {
+    let mut field = input()
+        .test_id(input_test_id)
+        .value(move || draft.get())
+        .on_change(move |v: &str| draft.set(v.to_owned()))
+        .on_submit(move |v: &str| on_apply(FontPreference::Custom(v.trim().to_owned())))
+        .placeholder(placeholder)
+        .flex_1()
+        .px(px(10.0))
+        .py(px(6.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_inset_bg())
+        .rounded(px(7.0))
+        .text_color(palette::text_primary());
+    if monospace {
+        field = field.app_class("font-mono");
+    }
+
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .pb(px(12.0))
+        .child(field)
+        .child(
+            secondary_button("Apply", move || {
+                let value = draft.get_untracked().trim().to_owned();
+                draft.set(value.clone());
+                on_apply(FontPreference::Custom(value));
+            })
+            .test_id(apply_test_id),
+        )
 }
 
 // --- Machines Tab (matching 22 PreferencesMachines.png) ---------------------------------
@@ -4666,7 +4861,7 @@ fn segment_button(
     label: impl Into<String>,
     active: bool,
     on_press: impl Fn() + 'static,
-) -> impl IntoElement {
+) -> nsh_base::ButtonElement {
     button()
         .on_press(on_press)
         .px(px(11.0))
@@ -4770,7 +4965,7 @@ fn form_field(label: &'static str, control: impl IntoElement) -> impl IntoElemen
         .child(control)
 }
 
-fn secondary_button(label: &'static str, on_press: impl Fn() + 'static) -> impl IntoElement {
+fn secondary_button(label: &'static str, on_press: impl Fn() + 'static) -> nsh_base::ButtonElement {
     button()
         .on_press(on_press)
         .px(px(12.0))

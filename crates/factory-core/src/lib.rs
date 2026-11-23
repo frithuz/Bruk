@@ -75,9 +75,10 @@ pub use model::{
 };
 pub use preferences::{
     AdvancedSettings, AppPreferences, AppearanceMode, AppearanceSettings, CliAccount,
-    ConnectionTestState, DefaultLandingView, ExtensionEntry, ExtensionsSettings, GeneralSettings,
-    MachinesSettings, OpenRouterKey, PreferencesError, PreferencesTab, ProviderKind,
-    format_dollars_cents, format_whole_or_cents,
+    ConnectionTestState, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, DefaultLandingView,
+    ExtensionEntry, ExtensionsSettings, FontPreference, GeneralSettings, MachinesSettings,
+    OpenRouterKey, PreferencesError, PreferencesTab, ProviderKind, format_dollars_cents,
+    format_whole_or_cents,
 };
 pub use project_settings::{
     IssueSourceAuthMode, IssueSourceKind, ProjectEnvVar, ProjectIntakeRule, ProjectSandboxMode,

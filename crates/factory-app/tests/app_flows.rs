@@ -2841,3 +2841,74 @@ done
             .any(|w| w == ["-c", "check_for_update_on_startup=false"])
     );
 }
+
+#[test]
+fn appearance_font_preferences_default_to_atkinson_and_persist_user_overrides() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+
+    {
+        let mut app = start_with_db(db_path.clone());
+        app.press_key("mod+,").unwrap();
+        app.wait_for("id:prefs-tab-appearance").unwrap();
+        app.press("id:prefs-tab-appearance").unwrap();
+        app.wait_for("UI font").unwrap();
+        assert!(app.screen().shows("Code & monospace font"));
+        assert!(
+            app.screen().shows(
+                "Default typeface for menus, labels, and app UI (Atkinson Hyperlegible Next)."
+            )
+        );
+        assert!(app.screen().shows(
+            "Monospace typeface for code, logs, commands, and keys (Atkinson Hyperlegible Mono)."
+        ));
+
+        // Verify native Font Panel picker triggers exist and are safe in headless tests.
+        app.press("id:prefs-ui-font-choose").unwrap();
+        app.press("id:prefs-mono-font-choose").unwrap();
+
+        // Switch UI font to System and Code & monospace font to Custom("JetBrains Mono").
+        app.press("id:prefs-ui-font-system").unwrap();
+        app.press("id:prefs-mono-font-custom").unwrap();
+        app.wait_for("id:prefs-mono-font-input").unwrap();
+        app.type_text("id:prefs-mono-font-input", "JetBrains Mono")
+            .unwrap();
+        app.press("id:prefs-mono-font-apply").unwrap();
+
+        app.press_window_close("preferences").unwrap();
+    }
+
+    // Verify persisted font overrides in SQLite.
+    {
+        let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+        let saved = db.load_preferences().unwrap().unwrap();
+        assert_eq!(
+            saved.appearance.ui_font,
+            factory_core::FontPreference::System
+        );
+        assert_eq!(
+            saved.appearance.mono_font,
+            factory_core::FontPreference::Custom("JetBrains Mono".to_owned())
+        );
+    }
+
+    // Reopen app and verify custom monospace font input stays populated, then switch back to Atkinson.
+    let mut reopened = start_with_db(db_path.clone());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("id:prefs-tab-appearance").unwrap();
+    reopened.press("id:prefs-tab-appearance").unwrap();
+    reopened.wait_for("id:prefs-mono-font-input").unwrap();
+    reopened.press("id:prefs-ui-font-default").unwrap();
+    reopened.press("id:prefs-mono-font-default").unwrap();
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let restored = db.load_preferences().unwrap().unwrap();
+    assert_eq!(
+        restored.appearance.ui_font,
+        factory_core::FontPreference::Default
+    );
+    assert_eq!(
+        restored.appearance.mono_font,
+        factory_core::FontPreference::Default
+    );
+}

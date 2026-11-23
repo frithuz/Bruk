@@ -11,22 +11,22 @@ use std::{
 };
 
 use factory_core::{
-    AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, ClaudeSettingValue,
-    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue,
-    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CoreUpdatePolicy, DashboardDataset,
-    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DeployWatchEntry,
-    DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, InboxFilter,
-    InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
-    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
-    RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport, WorkQueueViewMode,
-    Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun, WorkflowRunViewData,
-    WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort, fetch_claude_details,
-    fetch_codex_details, find_claude_setting_spec, find_codex_setting_spec, probe_claude_cli,
-    probe_codex_cli, resolve_claude_binary, resolve_codex_binary, run_claude_auth_login,
-    run_codex_login,
+    AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings,
+    AttentionRequest, AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe,
+    ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe,
+    CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CoreUpdatePolicy,
+    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
+    FontPreference, InboxFilter, InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction,
+    LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
+    MachinesFleet, NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId,
+    ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
+    ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
+    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowEditorDocument,
+    WorkflowId, WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter,
+    WorkflowsSort, fetch_claude_details, fetch_codex_details, find_claude_setting_spec,
+    find_codex_setting_spec, probe_claude_cli, probe_codex_cli, resolve_claude_binary,
+    resolve_codex_binary, run_claude_auth_login, run_codex_login,
 };
 use nsh_core::{
     element::desktop::main_window,
@@ -847,13 +847,14 @@ fn landing_to_active_view(landing: DefaultLandingView) -> ActiveView {
     }
 }
 
-fn apply_appearance_mode(mode: AppearanceMode) {
-    let appearance = match mode {
+fn apply_appearance_settings(appearance: &AppearanceSettings) {
+    let color_scheme = match appearance.mode {
         AppearanceMode::System => Appearance::System,
         AppearanceMode::Light => Appearance::Light,
         AppearanceMode::Dark => Appearance::Dark,
     };
-    nsh_core::element::set_color_scheme(appearance);
+    nsh_core::element::set_color_scheme(color_scheme);
+    crate::fonts::apply_font_tokens(appearance);
 }
 
 fn state() -> Signal<AppState> {
@@ -862,8 +863,8 @@ fn state() -> Signal<AppState> {
 
 /// Initializes the per-surface store using the default SQLite DB in the user config folder.
 pub(crate) fn init_default() {
-    let mode = state().with_untracked(|s| s.preferences.appearance.mode);
-    apply_appearance_mode(mode);
+    let appearance = state().with_untracked(|s| s.preferences.appearance.clone());
+    apply_appearance_settings(&appearance);
     refresh_claude_details_async();
     refresh_codex_details_async();
 }
@@ -880,9 +881,9 @@ pub(crate) fn init_with_database_path_and_claude_path(
 ) {
     let loaded =
         AppState::from_database_result_with_path(ProjectDatabase::open(path), claude_path_lookup);
-    let mode = loaded.preferences.appearance.mode;
+    let appearance = loaded.preferences.appearance.clone();
     state().set(loaded);
-    apply_appearance_mode(mode);
+    apply_appearance_settings(&appearance);
     refresh_claude_details_async();
     refresh_codex_details_async();
 }
@@ -971,11 +972,11 @@ pub(crate) fn set_demo_mode(enabled: bool) {
             let _ = guard.save_preferences(&to_save);
         }
 
-        appearance_to_apply = Some(next.preferences.appearance.mode);
+        appearance_to_apply = Some(next.preferences.appearance.clone());
         *s = next;
     });
-    if let Some(mode) = appearance_to_apply {
-        apply_appearance_mode(mode);
+    if let Some(appearance) = appearance_to_apply {
+        apply_appearance_settings(&appearance);
     }
     if !enabled {
         refresh_claude_details_async();
@@ -4163,11 +4164,93 @@ pub(crate) fn sign_in_codex() {
 }
 
 pub(crate) fn set_appearance_mode(mode: AppearanceMode) {
+    let mut updated = None;
     state().update(|s| {
         s.preferences.appearance.mode = mode;
+        updated = Some(s.preferences.appearance.clone());
         s.persist_preferences();
     });
-    apply_appearance_mode(mode);
+    if let Some(appearance) = updated {
+        apply_appearance_settings(&appearance);
+    }
+}
+
+pub(crate) fn set_ui_font(font: FontPreference) {
+    let mut updated = None;
+    state().update(|s| {
+        s.preferences.appearance.ui_font = font;
+        updated = Some(s.preferences.appearance.clone());
+        s.persist_preferences();
+    });
+    if let Some(appearance) = updated {
+        apply_appearance_settings(&appearance);
+    }
+}
+
+pub(crate) fn set_mono_font(font: FontPreference) {
+    let mut updated = None;
+    state().update(|s| {
+        s.preferences.appearance.mono_font = font;
+        updated = Some(s.preferences.appearance.clone());
+        s.persist_preferences();
+    });
+    if let Some(appearance) = updated {
+        apply_appearance_settings(&appearance);
+    }
+}
+
+#[derive(Clone, Default)]
+struct FontPickerBridge {
+    channel: crate::fonts::FontPickChannel,
+    listening: bool,
+}
+
+fn ensure_font_picker_channel() -> crate::fonts::FontPickChannel {
+    let bridge = global::<FontPickerBridge>();
+    let (channel, start_listener) = bridge.with_untracked(|b| (b.channel.clone(), !b.listening));
+    if start_listener {
+        bridge.update(|b| b.listening = true);
+        let listener_channel = channel.clone();
+        spawn(async move {
+            loop {
+                let (target, family) = listener_channel.next().await;
+                let pref = crate::fonts::normalize_picked_font(target, &family);
+                match target {
+                    crate::fonts::FontPickerTarget::Ui => set_ui_font(pref),
+                    crate::fonts::FontPickerTarget::Mono => set_mono_font(pref),
+                }
+            }
+        });
+    }
+    channel
+}
+
+pub(crate) fn open_ui_font_picker() {
+    let current = state().with_untracked(|s| {
+        s.preferences
+            .appearance
+            .ui_font
+            .resolve_ui()
+            .map(str::to_owned)
+    });
+    let channel = ensure_font_picker_channel();
+    crate::fonts::open_font_panel(crate::fonts::FontPickerTarget::Ui, current, channel);
+}
+
+pub(crate) fn open_mono_font_picker() {
+    let current = state().with_untracked(|s| {
+        s.preferences
+            .appearance
+            .mono_font
+            .resolve_mono()
+            .map(str::to_owned)
+    });
+    let channel = ensure_font_picker_channel();
+    crate::fonts::open_font_panel(crate::fonts::FontPickerTarget::Mono, current, channel);
+}
+
+pub(crate) fn close_font_picker() {
+    crate::fonts::close_font_panel();
 }
 
 pub(crate) fn toggle_compact_sidebar() {
@@ -4574,7 +4657,7 @@ pub(crate) fn reset_preferences_to_defaults() {
         s.preferences_feedback = Some("Restored default preferences.".to_owned());
         s.persist_preferences();
     });
-    apply_appearance_mode(AppearanceMode::System);
+    apply_appearance_settings(&AppearanceSettings::default());
     refresh_claude_details_async();
     refresh_codex_details_async();
 }
