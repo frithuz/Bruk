@@ -1774,14 +1774,18 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
     assert!(!app.screen().shows("acme/my-service"));
     assert!(!app.screen().shows("Add health-check telemetry"));
 
-    // Workflows overview shows an empty table with template cards ready to start.
+    // Workflows overview inherits built-in catalog workflows with zero fake runs or demo items.
     app.press("id:sidebar-workflows-1").unwrap();
-    app.wait_for("my-service · No workflows yet").unwrap();
-    assert!(app.screen().shows("No workflows yet"));
-    assert!(app.screen().shows("Start from a template"));
-    assert!(!app.screen().shows("Fix issue"));
+    app.wait_for("my-service · 2 workflows · 0 running")
+        .unwrap();
+    assert!(app.screen().shows("Fix issue"));
+    assert!(app.screen().shows("Review a pull request"));
+    assert!(app.screen().shows("Built-in"));
+    assert!(!app.screen().shows("Docs refresh"));
+    assert!(!app.screen().shows("Security audit"));
 
-    // Project Settings for the real project has no fake repo, rules, workflows, or secrets.
+    // Project Settings for the real project has no fake repo, rules, or secrets,
+    // and shows the built-in catalog workflows.
     app.press("id:sidebar-project-settings-1").unwrap();
     app.wait_for("my-service · Issues & intake").unwrap();
     assert!(app.window_state("project-settings").unwrap().is_none());
@@ -1791,10 +1795,8 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
     assert!(!app.screen().shows("acme/my-service"));
 
     app.press("id:ps-tab-workflows").unwrap();
-    app.wait_for(
-        "No workflow files discovered yet. Add definitions in .agents/bruk/workflows/ or create one from Workflows.",
-    )
-    .unwrap();
+    app.wait_for("builtin/workflows/fix-issue.yaml · Intake · 3 steps · Built-in")
+        .unwrap();
     assert!(!app.screen().shows(".agents/bruk/workflows/fix-issue.yaml"));
 
     app.press("id:ps-tab-environment").unwrap();
@@ -3148,4 +3150,72 @@ exit 0
     );
     app.press("id:wq-unmatched-toggle").unwrap();
     app.wait_for("Not assigned to @factory-bot").unwrap();
+}
+
+#[test]
+fn real_project_loads_layered_agents_bruk_catalog_and_copy_on_edit_saves_yaml() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("catalog-repo");
+    let module_dir = temp.path().join("acme-shared");
+
+    std::fs::create_dir_all(module_dir.join("workflows")).unwrap();
+    std::fs::write(
+        module_dir.join("workflows/security-scan.yaml"),
+        "id: security-scan\nname: Security Scan\ndescription: Company security check\nnodes:\n  - kind: agent_task\n    id: audit\n    name: Security review\n    agent: reviewer\n    prompt: Audit diff\n",
+    )
+    .unwrap();
+
+    let bruk_dir = repo_dir.join(".agents/bruk");
+    std::fs::create_dir_all(&bruk_dir).unwrap();
+    std::fs::write(
+        bruk_dir.join("bruk.yaml"),
+        format!(
+            "schema_version: 1\nmodules:\n  - name: acme\n    source:\n      path: {}\n",
+            module_dir.display()
+        ),
+    )
+    .unwrap();
+
+    let mut app = start_with_db(db_path);
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Register a local repository").unwrap();
+    app.type_text("text:Project name", "catalog-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Save Project]").unwrap();
+    app.wait_for("Registered project 'catalog-repo'").unwrap();
+
+    // Workflows overview shows Built-in workflows + Module workflow with layer badges.
+    app.press("id:sidebar-workflows-1").unwrap();
+    app.wait_for("catalog-repo · 3 workflows · 0 running")
+        .unwrap();
+    assert!(app.screen().shows("Fix issue"));
+    assert!(app.screen().shows("Built-in"));
+    assert!(app.screen().shows("Security Scan"));
+    assert!(app.screen().shows("Module · acme"));
+
+    // Open Built-in `Fix issue` in editor, validate, and Save -> copy-on-edit writes `.agents/bruk/workflows/fix-issue.yaml`.
+    app.press("id:wfo-row-fix-issue").unwrap();
+    app.press("id:wfo-inspector-edit").unwrap();
+    app.wait_for("id:wfe-origin-badge").unwrap();
+    assert!(app.screen().shows("Built-in"));
+
+    app.press("id:wfe-header-validate").unwrap();
+    app.wait_for("Valid workflow — 3 steps, ready to run.")
+        .unwrap();
+
+    app.press("id:wfe-header-save").unwrap();
+    app.wait_for("Saved project override 'Fix issue' to .agents/bruk/workflows/fix-issue.yaml")
+        .unwrap();
+    assert!(
+        repo_dir
+            .join(".agents/bruk/workflows/fix-issue.yaml")
+            .is_file()
+    );
+
+    app.press("id:wfe-header-back").unwrap();
+    app.wait_for("catalog-repo · 3 workflows · 0 running")
+        .unwrap();
+    assert!(app.screen().shows("Project"));
 }

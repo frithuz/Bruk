@@ -50,6 +50,31 @@ pub(crate) fn workflows_header_controls() -> impl IntoElement {
                         .text_color(palette::text_primary()),
                 ),
         )
+        .child(when(
+            || !store::demo_mode(),
+            || {
+                button()
+                    .test_id("wfo-header-reload")
+                    .accessibility_label("Reload .agents/bruk")
+                    .on_press(store::reload_active_project_catalog)
+                    .h(px(30.0))
+                    .px(px(10.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text("Reload")
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_primary()),
+                    )
+            },
+        ))
         .child(
             button()
                 .test_id("wfo-header-import")
@@ -749,6 +774,23 @@ fn workflow_table_row(
             .font_weight(FontWeight::SEMIBOLD)
             .text_color(palette::text_primary()),
     );
+    if let Some(badge) = workflow.origin_badge() {
+        title_row = title_row.child(
+            view()
+                .px(px(6.0))
+                .py(px(1.0))
+                .rounded(px(4.5))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .child(
+                    text(badge)
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
     if workflow.is_draft {
         title_row = title_row.child(
             view()
@@ -1057,14 +1099,33 @@ fn inspector_header(
 ) -> impl IntoElement {
     let wf_id_for_editor = workflow.id.clone();
 
+    let mut header_title = view().flex_row().items_center().gap(px(7.0)).child(
+        text(workflow.name.clone())
+            .text_size(px(15.5))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette::text_primary()),
+    );
+    if let Some(badge) = workflow.origin_badge() {
+        header_title = header_title.child(
+            view()
+                .px(px(6.5))
+                .py(px(1.5))
+                .rounded(px(4.5))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .child(
+                    text(badge)
+                        .text_size(px(10.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
+
     view()
         .gap(px(4.0))
-        .child(
-            text(workflow.name.clone())
-                .text_size(px(15.5))
-                .font_weight(FontWeight::SEMIBOLD)
-                .text_color(palette::text_primary()),
-        )
+        .child(header_title)
         .child(
             text(workflow.description.clone())
                 .text_size(px(12.0))

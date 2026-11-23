@@ -120,6 +120,30 @@ fn header_breadcrumb_cluster() -> impl IntoElement {
                 ),
         )
         .child(when(
+            || store::active_workflow_editor().origin.is_some(),
+            || {
+                let badge = store::active_workflow_editor()
+                    .origin
+                    .map(|o| o.badge_label())
+                    .unwrap_or_default();
+                view()
+                    .test_id("wfe-origin-badge")
+                    .ml(px(4.0))
+                    .px(px(7.5))
+                    .py(px(2.5))
+                    .rounded(px(6.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::card_inset_bg())
+                    .child(
+                        text(badge)
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_secondary()),
+                    )
+            },
+        ))
+        .child(when(
             || store::active_workflow_editor().has_unsaved_changes,
             || {
                 view()
@@ -314,6 +338,40 @@ fn left_step_palette() -> impl IntoElement {
             let mut matched_any = false;
 
             for category in PaletteCategory::ALL {
+                if *category == PaletteCategory::Composites && !store::demo_mode() {
+                    let q = query.trim().to_ascii_lowercase();
+                    let catalog_composites: Vec<_> = store::active_catalog_composites()
+                        .into_iter()
+                        .filter(|c| {
+                            q.is_empty()
+                                || c.name.to_ascii_lowercase().contains(&q)
+                                || c.id.to_ascii_lowercase().contains(&q)
+                                || c.description.to_ascii_lowercase().contains(&q)
+                                || "composites".contains(&q)
+                        })
+                        .collect();
+                    if catalog_composites.is_empty() {
+                        continue;
+                    }
+                    matched_any = true;
+                    let mut section = view().gap(px(6.0)).child(
+                        text(category.label())
+                            .px(px(2.0))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_muted()),
+                    );
+                    for comp in catalog_composites {
+                        section = section.child(catalog_composite_palette_card(
+                            comp.id,
+                            comp.name,
+                            format!("{} · {}", comp.origin.badge_label(), comp.description),
+                        ));
+                    }
+                    list = list.child(section);
+                    continue;
+                }
+
                 let items: Vec<StepTypeKind> = StepTypeKind::ALL
                     .iter()
                     .copied()
@@ -352,6 +410,57 @@ fn left_step_palette() -> impl IntoElement {
 
             list
         })))
+}
+
+fn catalog_composite_palette_card(id: String, title: String, subtitle: String) -> impl IntoElement {
+    let test_id = format!("wfe-palette-catalog-comp-{id}");
+    let id_for_press = id.clone();
+    button()
+        .test_id(&test_id)
+        .accessibility_label(format!("Add composite {title}"))
+        .on_press(move || store::add_workflow_editor_catalog_composite(&id_for_press))
+        .rounded(px(8.5))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.85))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(9.0))
+                .px(px(9.0))
+                .py(px(8.0))
+                .child(
+                    view()
+                        .w(px(26.0))
+                        .h(px(26.0))
+                        .rounded(px(6.5))
+                        .flex_shrink_0()
+                        .items_center()
+                        .justify_center()
+                        .bg(palette::editor_palette_badge_bg())
+                        .child(icons::composite_grid(palette::text_muted())),
+                )
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(1.5))
+                        .child(
+                            text(title)
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text(subtitle)
+                                .text_size(px(10.5))
+                                .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
 }
 
 fn palette_step_card(kind: StepTypeKind, is_highlighted: bool) -> impl IntoElement {
@@ -2069,6 +2178,12 @@ fn step_inspector(step_id: &str) -> impl IntoElement {
     let id_detail_lbl = step_id.to_owned();
     let id_detail_val = step_id.to_owned();
     let id_detail_chg = step_id.to_owned();
+    let id_agent_cond = step_id.to_owned();
+    let id_agent_lbl = step_id.to_owned();
+    let id_agent_val = step_id.to_owned();
+    let id_agent_chg = step_id.to_owned();
+    let id_skills_val = step_id.to_owned();
+    let id_skills_chg = step_id.to_owned();
     let id_remove = step_id.to_owned();
 
     view()
@@ -2188,6 +2303,129 @@ fn step_inspector(step_id: &str) -> impl IntoElement {
                                 .text_color(palette::text_primary()),
                         ),
                 )
+                .child(when(
+                    move || {
+                        store::active_workflow_editor()
+                            .find_step(&id_agent_cond)
+                            .is_some_and(|s| {
+                                matches!(s.kind, StepTypeKind::ClaudeTask | StepTypeKind::CodexTask)
+                            })
+                    },
+                    move || {
+                        let lbl = id_agent_lbl.clone();
+                        let val = id_agent_val.clone();
+                        let chg = id_agent_chg.clone();
+                        let skills_val = id_skills_val.clone();
+                        let skills_chg = id_skills_chg.clone();
+                        let trigger = view()
+                            .w_full()
+                            .h(px(32.0))
+                            .px(px(10.0))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::control_bg())
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
+                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                            .child(
+                                text(move || {
+                                    store::active_workflow_editor()
+                                        .find_step(&lbl)
+                                        .and_then(|s| s.agent_ref.clone())
+                                        .unwrap_or_else(|| "None (inline prompt)".to_owned())
+                                })
+                                .text_size(px(12.5))
+                                .text_color(palette::text_primary()),
+                            )
+                            .child(icons::chevron_down(palette::text_muted()));
+
+                        view()
+                            .gap(px(12.0))
+                            .child(
+                                view()
+                                    .gap(px(6.0))
+                                    .child(inspector_field_label("Agent"))
+                                    .child(
+                                        select()
+                                            .test_id("wfe-step-agent")
+                                            .accessibility_label("Step agent")
+                                            .w_full()
+                                            .items(|| {
+                                                let mut items = vec![SelectItem::new(
+                                                    "",
+                                                    "None (inline prompt)",
+                                                )];
+                                                for agent in store::active_catalog_agents() {
+                                                    items.push(SelectItem::new(
+                                                        agent.id.clone(),
+                                                        format!(
+                                                            "{} ({})",
+                                                            agent.name,
+                                                            agent.origin.badge_label()
+                                                        ),
+                                                    ));
+                                                }
+                                                items
+                                            })
+                                            .value(move || {
+                                                let current = store::active_workflow_editor()
+                                                    .find_step(&val)
+                                                    .and_then(|s| s.agent_ref.clone())
+                                                    .unwrap_or_default();
+                                                SelectValue::from(current)
+                                            })
+                                            .on_change(move |value: &Option<SharedString>| {
+                                                let next = value
+                                                    .as_deref()
+                                                    .filter(|s| !s.is_empty());
+                                                store::update_workflow_editor_step_agent(
+                                                    &chg, next,
+                                                );
+                                            })
+                                            .cover(false)
+                                            .placement(Placement::Bottom)
+                                            .align(Align::Start)
+                                            .offset(px(4.0))
+                                            .popup_class("rounded-lg border border-border bg-popover p-1 shadow-md")
+                                            .item_class("px-2.5 py-1.5 rounded-md text-xs text-popover-foreground focus:bg-accent selected:font-medium")
+                                            .trigger(trigger),
+                                    ),
+                            )
+                            .child(
+                                view()
+                                    .gap(px(6.0))
+                                    .child(inspector_field_label("Extra skills (comma-separated)"))
+                                    .child(
+                                        input()
+                                            .test_id("wfe-step-skills")
+                                            .value(move || {
+                                                store::active_workflow_editor()
+                                                    .find_step(&skills_val)
+                                                    .map(|s| s.skills.join(", "))
+                                                    .unwrap_or_default()
+                                            })
+                                            .on_change(move |next: &str| {
+                                                store::update_workflow_editor_step_skills(
+                                                    &skills_chg,
+                                                    next,
+                                                );
+                                            })
+                                            .placeholder("minimal-diffs, test-verification")
+                                            .h(px(32.0))
+                                            .px(px(10.0))
+                                            .rounded(px(7.0))
+                                            .border_1()
+                                            .border_color(palette::border_color())
+                                            .bg(palette::control_bg())
+                                            .text_size(px(12.0))
+                                            .text_color(palette::text_primary()),
+                                    ),
+                            )
+                    },
+                ))
                 .child(
                     view()
                         .pt(px(8.0))

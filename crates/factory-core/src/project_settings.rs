@@ -987,6 +987,42 @@ impl ProjectSettings {
             wf.enabled = !wf.enabled;
         }
     }
+
+    /// Synchronizes discovered workflows from a resolved [`crate::definitions::BrukCatalog`],
+    /// preserving any previously saved per-workflow enabled toggles.
+    pub fn sync_workflows_from_catalog(&mut self, catalog: &crate::definitions::BrukCatalog) {
+        let prev_enabled: std::collections::BTreeMap<String, bool> = self
+            .workflows
+            .iter()
+            .map(|wf| (wf.name.clone(), wf.enabled))
+            .collect();
+        self.workflows = catalog
+            .effective_workflows()
+            .into_iter()
+            .map(|wf| {
+                let trigger_label = if wf.triggers.work_queue {
+                    "Intake"
+                } else {
+                    "Ad-hoc only"
+                };
+                let steps = wf.step_count();
+                let summary = format!(
+                    "{steps} step{} · {}",
+                    if steps == 1 { "" } else { "s" },
+                    wf.origin.badge_label()
+                );
+                ProjectWorkflowSetting {
+                    name: wf.name.clone(),
+                    file_path: wf
+                        .origin
+                        .display_path("workflows", &format!("{}.yaml", wf.id)),
+                    trigger_label: trigger_label.to_owned(),
+                    summary,
+                    enabled: prev_enabled.get(&wf.name).copied().unwrap_or(!wf.draft),
+                }
+            })
+            .collect();
+    }
 }
 
 #[cfg(test)]

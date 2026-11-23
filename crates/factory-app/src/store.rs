@@ -11,24 +11,25 @@ use std::{
 };
 
 use factory_core::{
-    AGENT_WORKING_LABEL, AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode,
-    AppearanceSettings, AttentionRequest, AttentionRequestBody, AttentionRequestKind,
-    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
-    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
-    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
-    DefaultLandingView, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
-    FactoryState, FontPreference, GitHubAuth, GitHubFilterClause, InboxFilter, InboxState,
-    IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
-    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
-    NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
-    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
-    RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
-    WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
-    WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
-    add_github_issue_label, detect_git_remote_info, fetch_claude_details, fetch_codex_details,
-    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    probe_claude_cli, probe_codex_cli, remove_github_issue_label, resolve_claude_binary,
-    resolve_codex_binary, run_claude_auth_login, run_codex_login,
+    AGENT_WORKING_LABEL, AgentDef, AgentTaskStepDef, AlwaysAllowScope, AnsweredInboxItem,
+    AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest, AttentionRequestBody,
+    AttentionRequestKind, BrukCatalog, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
+    ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions,
+    CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset,
+    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
+    FontPreference, GitHubAuth, GitHubFilterClause, InboxFilter, InboxState, IntakeRule,
+    IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
+    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RunDetailTab,
+    RunExecutionState, RunId, RunStatus, SkillDef, StepTypeKind, ValidationReport,
+    WorkQueueViewMode, Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef,
+    WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef, WorkflowsFilter,
+    WorkflowsSort, add_github_issue_label, detect_git_remote_info, fetch_claude_details,
+    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
+    find_codex_setting_spec, probe_claude_cli, probe_codex_cli, remove_github_issue_label,
+    resolve_claude_binary, resolve_codex_binary, run_claude_auth_login, run_codex_login,
 };
 
 const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
@@ -135,6 +136,7 @@ struct AppState {
     work_queue_ad_hoc_open: bool,
     work_queue_unmatched_expanded: bool,
     work_queue_syncing: bool,
+    catalogs: BTreeMap<String, BrukCatalog>,
     workflows_overviews: BTreeMap<String, ProjectWorkflowsOverview>,
     workflows_filter: WorkflowsFilter,
     workflows_sort: WorkflowsSort,
@@ -327,6 +329,7 @@ impl AppState {
         }
 
         let mut work_queues = BTreeMap::new();
+        let mut catalogs = BTreeMap::new();
         let mut workflows_overviews = BTreeMap::new();
         let mut project_settings = BTreeMap::new();
         for project in factory.projects() {
@@ -366,6 +369,9 @@ impl AppState {
                     }
                 }
 
+                let catalog = BrukCatalog::load_for_project(&project.root_path);
+                settings.sync_workflows_from_catalog(&catalog);
+
                 let loaded_queue = db
                     .as_ref()
                     .and_then(|arc| arc.lock().ok())
@@ -382,8 +388,9 @@ impl AppState {
                 work_queues.insert(project.name.clone(), queue);
                 workflows_overviews.insert(
                     project.name.clone(),
-                    ProjectWorkflowsOverview::empty(&project.name),
+                    ProjectWorkflowsOverview::from_catalog(&project.name, &catalog),
                 );
+                catalogs.insert(project.name.clone(), catalog);
                 project_settings.insert(project.name.clone(), settings);
             }
         }
@@ -472,6 +479,7 @@ impl AppState {
             work_queue_ad_hoc_open: false,
             work_queue_unmatched_expanded: false,
             work_queue_syncing: false,
+            catalogs,
             workflows_overviews,
             workflows_filter: WorkflowsFilter::All,
             workflows_sort: WorkflowsSort::LastRun,
@@ -679,6 +687,40 @@ impl AppState {
         let settings = self.active_project_settings_clone();
         let queue = self.ensure_queue_mut(&settings.project_name);
         apply_project_settings_to_queue(&settings, queue);
+    }
+
+    fn project_root_by_name(&self, name: &str) -> Option<std::path::PathBuf> {
+        self.factory
+            .projects()
+            .iter()
+            .find(|project| project.name == name)
+            .map(|project| project.root_path.clone())
+    }
+
+    fn active_catalog_clone(&self) -> BrukCatalog {
+        let name = self.selected_project_name();
+        self.catalogs
+            .get(&name)
+            .cloned()
+            .unwrap_or_else(BrukCatalog::builtin_only)
+    }
+
+    fn reload_catalog_for_project(&mut self, project_name: &str) {
+        if self.demo_mode {
+            return;
+        }
+        let catalog = self
+            .project_root_by_name(project_name)
+            .map(BrukCatalog::load_for_project)
+            .unwrap_or_else(BrukCatalog::builtin_only);
+        let overview = ProjectWorkflowsOverview::from_catalog(project_name, &catalog);
+        if let Some(settings) = self.project_settings.get_mut(project_name) {
+            settings.sync_workflows_from_catalog(&catalog);
+        }
+        self.workflows_overviews
+            .insert(project_name.to_owned(), overview);
+        self.catalogs.insert(project_name.to_owned(), catalog);
+        self.sync_selected_workflow_overview_for_active_project();
     }
 
     fn project_id_by_name(&self, name: &str) -> Option<ProjectId> {
@@ -1587,14 +1629,19 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 } else {
                     s.factory.insert_project(project);
                 }
-                let initial_settings = if demo {
-                    ProjectSettings::for_project(&saved_name, &saved_path, &saved_branch)
+                let (initial_settings, initial_catalog) = if demo {
+                    (
+                        ProjectSettings::for_project(&saved_name, &saved_path, &saved_branch),
+                        None,
+                    )
                 } else {
                     let mut clean = ProjectSettings::empty(&saved_name, &saved_path, &saved_branch);
                     if let Some(detected) = detect_git_remote_info(Path::new(&saved_path)) {
                         clean.apply_detected_git_remote(&detected);
                     }
-                    clean
+                    let catalog = BrukCatalog::load_for_project(Path::new(&saved_path));
+                    clean.sync_workflows_from_catalog(&catalog);
+                    (clean, Some(catalog))
                 };
                 if !demo
                     && (!initial_settings.github_repo.trim().is_empty()
@@ -1623,15 +1670,17 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 s.work_queues
                     .entry(saved_name.clone())
                     .or_insert(initial_queue);
-                s.workflows_overviews
-                    .entry(saved_name.clone())
-                    .or_insert_with(|| {
-                        if demo {
-                            ProjectWorkflowsOverview::for_project(&saved_name)
-                        } else {
-                            ProjectWorkflowsOverview::empty(&saved_name)
-                        }
-                    });
+                if let Some(catalog) = initial_catalog {
+                    s.workflows_overviews.insert(
+                        saved_name.clone(),
+                        ProjectWorkflowsOverview::from_catalog(&saved_name, &catalog),
+                    );
+                    s.catalogs.insert(saved_name.clone(), catalog);
+                } else {
+                    s.workflows_overviews
+                        .entry(saved_name.clone())
+                        .or_insert_with(|| ProjectWorkflowsOverview::for_project(&saved_name));
+                }
                 s.project_settings
                     .entry(saved_name.clone())
                     .or_insert(initial_settings);
@@ -5899,6 +5948,59 @@ pub(crate) fn set_workflows_more_menu_open(open: bool) {
     });
 }
 
+pub(crate) fn reload_active_project_catalog() {
+    state().update(|s| {
+        if s.demo_mode {
+            s.status_message = Some("Demo Mode uses built-in sample workflows".to_owned());
+            return;
+        }
+        let project = s.selected_project_name();
+        if project.is_empty() {
+            return;
+        }
+        s.reload_catalog_for_project(&project);
+        let wf_count = s
+            .catalogs
+            .get(&project)
+            .map(|c| c.effective_workflows().len())
+            .unwrap_or(0);
+        s.status_message = Some(format!(
+            "Reloaded .agents/bruk catalog ({wf_count} workflows)"
+        ));
+    });
+}
+
+pub(crate) fn active_catalog_agents() -> Vec<AgentDef> {
+    state().with(|s| {
+        s.active_catalog_clone()
+            .effective_agents()
+            .into_iter()
+            .cloned()
+            .collect()
+    })
+}
+
+pub(crate) fn active_catalog_composites() -> Vec<CompositeDef> {
+    state().with(|s| {
+        s.active_catalog_clone()
+            .effective_composites()
+            .into_iter()
+            .cloned()
+            .collect()
+    })
+}
+
+#[allow(dead_code)]
+pub(crate) fn active_catalog_skills() -> Vec<SkillDef> {
+    state().with(|s| {
+        s.active_catalog_clone()
+            .effective_skills()
+            .into_iter()
+            .cloned()
+            .collect()
+    })
+}
+
 pub(crate) fn create_overview_workflow(
     name: &str,
     description: &str,
@@ -5911,6 +6013,62 @@ pub(crate) fn create_overview_workflow(
     let label_owned = issue_label.map(str::to_owned);
     state().update(|s| {
         let project = s.selected_project_name();
+        if !s.demo_mode
+            && let Some(project_root) = s.project_root_by_name(&project)
+        {
+            let trimmed_name = name_owned.trim();
+            if trimmed_name.is_empty() {
+                s.status_message = Some("Workflow name cannot be empty".to_owned());
+                return;
+            }
+            let id = slugify_workflow_id(trimmed_name);
+            let label = label_owned
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let wf = WorkflowDef {
+                id: id.clone(),
+                name: trimmed_name.to_owned(),
+                description: desc_owned.trim().to_owned(),
+                draft: as_draft,
+                triggers: WorkflowTriggersDef {
+                    work_queue: label.is_some(),
+                    ad_hoc: true,
+                    issue_labels: label.map(|l| vec![l.to_owned()]).unwrap_or_default(),
+                },
+                inputs: BTreeMap::new(),
+                nodes: vec![WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+                    id: "step_1".to_owned(),
+                    name: "Run task".to_owned(),
+                    agent: Some("implementer".to_owned()),
+                    provider: Some(ProviderKind::Claude),
+                    model: None,
+                    skills: Vec::new(),
+                    prompt: "Complete the requested task: {{ inputs.prompt }}".to_owned(),
+                    inputs: BTreeMap::new(),
+                    outputs: Vec::new(),
+                })],
+                origin: DefinitionOrigin::BuiltIn,
+            };
+            match BrukCatalog::save_project_workflow(&project_root, &wf) {
+                Ok(_) => {
+                    s.reload_catalog_for_project(&project);
+                    s.workflows_selected_id = Some(id);
+                    s.workflows_new_drawer_open = false;
+                    s.workflows_filter = WorkflowsFilter::All;
+                    s.workflows_search.clear();
+                    s.status_message = Some(format!(
+                        "Created workflow '{}' in .agents/bruk/workflows/{}.yaml",
+                        wf.name, wf.id
+                    ));
+                    created = true;
+                }
+                Err(err) => {
+                    s.status_message = Some(format!("Failed to write workflow file: {err}"));
+                }
+            }
+            return;
+        }
         let overview = s.ensure_workflows_overview_mut(&project);
         match overview.create_workflow(&name_owned, &desc_owned, label_owned.as_deref(), as_draft) {
             Ok(id) => {
@@ -5936,6 +6094,72 @@ pub(crate) fn create_overview_workflow(
 pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
     state().update(|s| {
         let project = s.selected_project_name();
+        if !s.demo_mode
+            && let Some(project_root) = s.project_root_by_name(&project)
+        {
+            let catalog = s.active_catalog_clone();
+            let base_id = match template {
+                WorkflowTemplateKind::Blank => "custom-workflow",
+                WorkflowTemplateKind::FixAnIssue => "fix-issue",
+                WorkflowTemplateKind::ReviewPullRequest => "review-pr",
+            };
+            let mut wf = catalog
+                .resolve_workflow(&format!("builtin/{base_id}"))
+                .cloned()
+                .unwrap_or_else(|| WorkflowDef {
+                    id: "custom-workflow".to_owned(),
+                    name: "Custom workflow".to_owned(),
+                    description: "Blank starter workflow".to_owned(),
+                    draft: true,
+                    triggers: WorkflowTriggersDef::default(),
+                    inputs: BTreeMap::new(),
+                    nodes: vec![WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+                        id: "step_1".to_owned(),
+                        name: "Step 1".to_owned(),
+                        agent: Some("planner".to_owned()),
+                        provider: Some(ProviderKind::Claude),
+                        model: None,
+                        skills: Vec::new(),
+                        prompt: "{{ inputs.prompt }}".to_owned(),
+                        inputs: BTreeMap::new(),
+                        outputs: Vec::new(),
+                    })],
+                    origin: DefinitionOrigin::BuiltIn,
+                });
+            let mut candidate = wf.id.clone();
+            let mut suffix = 2u32;
+            while catalog
+                .resolve_workflow(&format!("project/{candidate}"))
+                .is_some()
+            {
+                candidate = format!("{}-{suffix}", wf.id);
+                suffix += 1;
+            }
+            if candidate != wf.id {
+                wf.name = format!("{} ({})", wf.name, suffix - 1);
+                wf.id = candidate.clone();
+            }
+            wf.draft = true;
+            match BrukCatalog::save_project_workflow(&project_root, &wf) {
+                Ok(_) => {
+                    s.reload_catalog_for_project(&project);
+                    s.workflows_selected_id = Some(wf.id.clone());
+                    s.workflows_filter = WorkflowsFilter::All;
+                    s.workflows_search.clear();
+                    s.workflows_editing_selected = false;
+                    s.workflows_ad_hoc_open = false;
+                    s.workflows_more_menu_open = false;
+                    s.status_message = Some(format!(
+                        "Created '{}' in .agents/bruk/workflows/{}.yaml",
+                        wf.name, wf.id
+                    ));
+                }
+                Err(err) => {
+                    s.status_message = Some(format!("Failed to write workflow file: {err}"));
+                }
+            }
+            return;
+        }
         let overview = s.ensure_workflows_overview_mut(&project);
         let id = overview.create_from_template(template);
         let display_name = overview
@@ -6125,6 +6349,49 @@ pub(crate) fn delete_overview_workflow(id: &str) {
     let id_owned = id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
+        if !s.demo_mode
+            && let Some(project_root) = s.project_root_by_name(&project)
+        {
+            let catalog = s.active_catalog_clone();
+            if let Some(wf) = catalog.resolve_workflow(&id_owned)
+                && wf.origin.is_read_only()
+            {
+                s.status_message = Some(format!(
+                    "'{}' comes from {} and is read-only. Edit it to create a project override.",
+                    wf.name,
+                    wf.origin.badge_label()
+                ));
+                s.workflows_more_menu_open = false;
+                return;
+            }
+            match BrukCatalog::delete_project_workflow(&project_root, &id_owned) {
+                Ok(true) => {
+                    s.workflow_editors
+                        .remove(&(project.clone(), id_owned.clone()));
+                    s.reload_catalog_for_project(&project);
+                    s.workflows_more_menu_open = false;
+                    let reverted = s
+                        .active_catalog_clone()
+                        .resolve_workflow(&id_owned)
+                        .map(|wf| wf.origin.badge_label());
+                    s.status_message = Some(match reverted {
+                        Some(layer) => format!(
+                            "Removed project override for '{id_owned}' (reverted to {layer})"
+                        ),
+                        None => {
+                            format!("Deleted workflow '{id_owned}' from .agents/bruk/workflows/")
+                        }
+                    });
+                }
+                Ok(false) => {
+                    s.status_message = Some(format!("Workflow '{id_owned}' was not found on disk"));
+                }
+                Err(err) => {
+                    s.status_message = Some(format!("Failed to delete workflow: {err}"));
+                }
+            }
+            return;
+        }
         let overview = s.ensure_workflows_overview_mut(&project);
         match overview.delete_workflow(&id_owned) {
             Ok(removed_name) => {
@@ -6157,13 +6424,22 @@ pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
     state().update(|s| {
         let project = s.selected_project_name();
         let demo = s.demo_mode;
+        let catalog = if demo {
+            None
+        } else {
+            Some(s.active_catalog_clone())
+        };
         let entry = s
             .workflows_overview_for_name(&project)
             .workflow(&target_id)
             .cloned();
         let key = (project.clone(), target_id.clone());
         s.workflow_editors.entry(key.clone()).or_insert_with(|| {
-            if let Some(entry) = entry {
+            if let Some(cat) = catalog.as_ref()
+                && let Some(wf_def) = cat.resolve_workflow(&target_id)
+            {
+                WorkflowEditorDocument::from_workflow_def(&project, wf_def, cat)
+            } else if let Some(entry) = entry {
                 WorkflowEditorDocument::from_overview_entry_with_demo(&project, &entry, demo)
             } else if demo {
                 WorkflowEditorDocument::for_workflow_name(&project, &target_id)
@@ -6297,6 +6573,39 @@ pub(crate) fn add_workflow_editor_step(kind: StepTypeKind) {
         s.workflow_editor_inspector_visible = true;
         s.workflow_editor_validation = None;
         s.status_message = Some(format!("Added '{title}' step to workflow"));
+    });
+}
+
+pub(crate) fn add_workflow_editor_catalog_composite(composite_id: &str) {
+    let comp_id = composite_id.to_owned();
+    state().update(|s| {
+        let catalog = s.active_catalog_clone();
+        if let Some(composite) = catalog.resolve_composite(&comp_id).cloned() {
+            let name = composite.name.clone();
+            let doc = s.ensure_workflow_editor_mut();
+            doc.add_catalog_composite(&composite);
+            s.workflow_editor_inspector_visible = true;
+            s.workflow_editor_validation = None;
+            s.status_message = Some(format!("Added composite '{name}' to workflow"));
+        }
+    });
+}
+
+pub(crate) fn update_workflow_editor_step_agent(step_id: &str, agent_ref: Option<&str>) {
+    let step_id = step_id.to_owned();
+    let agent_owned = agent_ref.map(str::to_owned);
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .update_step_agent(&step_id, agent_owned.as_deref());
+    });
+}
+
+pub(crate) fn update_workflow_editor_step_skills(step_id: &str, raw_skills: &str) {
+    let step_id = step_id.to_owned();
+    let raw = raw_skills.to_owned();
+    state().update(|s| {
+        s.ensure_workflow_editor_mut()
+            .update_step_skills(&step_id, &raw);
     });
 }
 
@@ -6453,7 +6762,13 @@ pub(crate) fn toggle_workflow_editor_trigger_ad_hoc() {
 
 pub(crate) fn validate_workflow_editor() {
     state().update(|s| {
-        let report = s.active_workflow_editor_clone().validate();
+        let doc = s.active_workflow_editor_clone();
+        let report = if s.demo_mode {
+            doc.validate()
+        } else {
+            let catalog = s.active_catalog_clone();
+            doc.validate_with_catalog(&catalog)
+        };
         let summary = report.summary.clone();
         s.workflow_editor_validation = Some(report);
         s.status_message = Some(summary);
@@ -6463,6 +6778,41 @@ pub(crate) fn validate_workflow_editor() {
 pub(crate) fn save_workflow_editor() {
     state().update(|s| {
         let (project, workflow_id) = s.active_workflow_editor_key.clone();
+        if !s.demo_mode
+            && let Some(project_root) = s.project_root_by_name(&project)
+        {
+            let wf_def = s.ensure_workflow_editor_mut().to_workflow_def();
+            let was_copy_on_edit = s
+                .ensure_workflow_editor_mut()
+                .origin
+                .as_ref()
+                .is_some_and(DefinitionOrigin::is_read_only);
+            match BrukCatalog::save_project_workflow(&project_root, &wf_def) {
+                Ok(saved_path) => {
+                    let doc = s.ensure_workflow_editor_mut();
+                    doc.origin = Some(DefinitionOrigin::Project {
+                        file_path: saved_path,
+                    });
+                    doc.mark_saved();
+                    let wf_name = doc.workflow_name.clone();
+                    let wf_id = wf_def.id.clone();
+                    s.reload_catalog_for_project(&project);
+                    s.workflows_selected_id = Some(wf_id.clone());
+                    s.workflow_editor_validation = None;
+                    s.status_message = Some(if was_copy_on_edit {
+                        format!(
+                            "Saved project override '{wf_name}' to .agents/bruk/workflows/{wf_id}.yaml"
+                        )
+                    } else {
+                        format!("Saved '{wf_name}' to .agents/bruk/workflows/{wf_id}.yaml")
+                    });
+                }
+                Err(err) => {
+                    s.status_message = Some(format!("Failed to save workflow: {err}"));
+                }
+            }
+            return;
+        }
         let (wf_name, step_groups, ad_hoc_allowed) = {
             let doc = s.ensure_workflow_editor_mut();
             doc.mark_saved();
@@ -6486,6 +6836,26 @@ pub(crate) fn save_workflow_editor() {
         s.workflow_editor_validation = None;
         s.status_message = Some(format!("Saved workflow '{wf_name}'"));
     });
+}
+
+fn slugify_workflow_id(input: &str) -> String {
+    let mut out = String::new();
+    let mut prev_dash = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !out.is_empty() {
+            out.push('-');
+            prev_dash = true;
+        }
+    }
+    let trimmed = out.trim_end_matches('-');
+    if trimmed.is_empty() {
+        "workflow".to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
@@ -6590,11 +6960,12 @@ mod tests {
         assert!(restored.inbox.pending.is_empty());
         assert!(restored.machines_fleet.machines.is_empty());
         assert!(restored.queue_for_name("real-app").items.is_empty());
+        let real_workflows = restored.workflows_overview_for_name("real-app").workflows;
+        assert_eq!(real_workflows.len(), 2);
         assert!(
-            restored
-                .workflows_overview_for_name("real-app")
-                .workflows
-                .is_empty()
+            real_workflows
+                .iter()
+                .all(|w| w.origin == Some(DefinitionOrigin::BuiltIn) && w.recent_runs.is_empty())
         );
     }
 }

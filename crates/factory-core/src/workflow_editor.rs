@@ -1,10 +1,21 @@
 //! Visual Workflow Editor domain model, step palette catalog, loop configuration,
 //! validation logic, and mocked fixtures matching `13 WorkflowEditor.png`.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
-use crate::workflows_overview::{
-    WorkflowOverviewEntry, WorkflowStepGroup, WorkflowStepPreview, WorkflowTriggerKind,
+use crate::{
+    definitions::{
+        AgentTaskStepDef, ApprovalGateStepDef, BrukCatalog, CommentOnIssueStepDef, CompositeDef,
+        CompositeStepDef, ConditionStepDef, DefinitionOrigin, LoopExitConditionDef, LoopNodeDef,
+        OpenPullRequestStepDef, SetIssueStatusStepDef, ShellCommandStepDef, WorkflowDef,
+        WorkflowNodeDef, WorkflowTriggersDef,
+    },
+    preferences::ProviderKind,
+    workflows_overview::{
+        WorkflowOverviewEntry, WorkflowStepGroup, WorkflowStepPreview, WorkflowTriggerKind,
+    },
 };
 
 /// Category grouping shown in the left-hand step palette.
@@ -456,6 +467,15 @@ pub struct EditorStep {
     pub actor_badge: String,
     pub subtitle: Option<String>,
     pub detail: String,
+    /// Optional agent reference (`planner`, `builtin/implementer`, `acme/reviewer`) for agent tasks.
+    #[serde(default)]
+    pub agent_ref: Option<String>,
+    /// Optional composite reference (`fix-until-tests-pass`, `acme/deploy`) for composite steps.
+    #[serde(default)]
+    pub composite_ref: Option<String>,
+    /// Extra step-level skills injected alongside the agent's own skills.
+    #[serde(default)]
+    pub skills: Vec<String>,
 }
 
 /// Fallback branch card rendered beside the main flow when a loop runs out of attempts.
@@ -567,6 +587,12 @@ pub struct WorkflowEditorDocument {
     pub project_name: String,
     pub workflow_id: String,
     pub workflow_name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub is_draft: bool,
+    #[serde(default)]
+    pub origin: Option<DefinitionOrigin>,
     pub has_unsaved_changes: bool,
     pub trigger: EditorTriggerConfig,
     pub nodes: Vec<EditorNode>,
@@ -582,6 +608,9 @@ impl WorkflowEditorDocument {
             project_name: project_name.to_owned(),
             workflow_id: "fix-issue".to_owned(),
             workflow_name: "Fix issue".to_owned(),
+            description: String::new(),
+            is_draft: false,
+            origin: None,
             has_unsaved_changes: true,
             trigger: EditorTriggerConfig {
                 work_queue_enabled: true,
@@ -597,6 +626,9 @@ impl WorkflowEditorDocument {
                     actor_badge: "Claude".to_owned(),
                     subtitle: None,
                     detail: "Inspect the linked issue, reproduce the bug, and draft a concise fix plan.".to_owned(),
+                    agent_ref: None,
+                    composite_ref: None,
+                    skills: Vec::new(),
                 }),
                 EditorNode::Loop(EditorLoopBlock {
                     id: "loop-fix-tests".to_owned(),
@@ -627,6 +659,9 @@ impl WorkflowEditorDocument {
                             actor_badge: "Codex".to_owned(),
                             subtitle: Some("reads $loop.previous on attempt 2+".to_owned()),
                             detail: "Apply the planned code change and address any failing test diagnostics from prior attempts.".to_owned(),
+                            agent_ref: None,
+                            composite_ref: None,
+                            skills: Vec::new(),
                         },
                         EditorStep {
                             id: "step-run-tests".to_owned(),
@@ -635,6 +670,9 @@ impl WorkflowEditorDocument {
                             actor_badge: "Shell · npm test".to_owned(),
                             subtitle: None,
                             detail: "npm test".to_owned(),
+                            agent_ref: None,
+                            composite_ref: None,
+                            skills: Vec::new(),
                         },
                     ],
                 }),
@@ -645,6 +683,9 @@ impl WorkflowEditorDocument {
                     actor_badge: "You".to_owned(),
                     subtitle: None,
                     detail: "Pause for human diff review before opening a pull request.".to_owned(),
+                    agent_ref: None,
+                    composite_ref: None,
+                    skills: Vec::new(),
                 }),
                 EditorNode::Step(EditorStep {
                     id: "step-open-pr".to_owned(),
@@ -653,6 +694,9 @@ impl WorkflowEditorDocument {
                     actor_badge: "Claude".to_owned(),
                     subtitle: None,
                     detail: "Push the fix branch and open a pull request referencing the source issue.".to_owned(),
+                    agent_ref: None,
+                    composite_ref: None,
+                    skills: Vec::new(),
                 }),
                 EditorNode::Step(EditorStep {
                     id: "step-comment-issue".to_owned(),
@@ -661,6 +705,9 @@ impl WorkflowEditorDocument {
                     actor_badge: "Issue source".to_owned(),
                     subtitle: None,
                     detail: "Post a summary comment with the pull request link on the originating issue.".to_owned(),
+                    agent_ref: None,
+                    composite_ref: None,
+                    skills: Vec::new(),
                 }),
             ],
             selected: EditorSelection::Loop("loop-fix-tests".to_owned()),
@@ -726,6 +773,9 @@ impl WorkflowEditorDocument {
                         actor_badge: step.actor.clone(),
                         subtitle: None,
                         detail: format!("Execute '{}' via {}.", step.name, step.actor),
+                        agent_ref: None,
+                        composite_ref: None,
+                        skills: Vec::new(),
                     }));
                 }
                 WorkflowStepGroup::Loop { title, steps, .. } => {
@@ -746,6 +796,9 @@ impl WorkflowEditorDocument {
                                 None
                             },
                             detail: format!("Execute '{}' via {}.", child.name, child.actor),
+                            agent_ref: None,
+                            composite_ref: None,
+                            skills: Vec::new(),
                         });
                     }
                     let exit_step_id = inner_steps
@@ -790,6 +843,9 @@ impl WorkflowEditorDocument {
             project_name: project_name.to_owned(),
             workflow_id: entry.id.clone(),
             workflow_name: entry.name.clone(),
+            description: String::new(),
+            is_draft: false,
+            origin: None,
             has_unsaved_changes: false,
             trigger: EditorTriggerConfig {
                 work_queue_enabled,
@@ -827,6 +883,9 @@ impl WorkflowEditorDocument {
             project_name: project_name.to_owned(),
             workflow_id: slugify_kebab(name),
             workflow_name: name.to_owned(),
+            description: String::new(),
+            is_draft: false,
+            origin: None,
             has_unsaved_changes: false,
             trigger: EditorTriggerConfig {
                 work_queue_enabled: false,
@@ -1010,6 +1069,9 @@ impl WorkflowEditorDocument {
                         actor_badge: "Codex".to_owned(),
                         subtitle: Some("reads $loop.previous on attempt 2+".to_owned()),
                         detail: "Apply the next fix iteration.".to_owned(),
+                        agent_ref: None,
+                        composite_ref: None,
+                        skills: Vec::new(),
                     },
                     EditorStep {
                         id: step_b_id,
@@ -1018,6 +1080,9 @@ impl WorkflowEditorDocument {
                         actor_badge: "Shell · npm test".to_owned(),
                         subtitle: None,
                         detail: "npm test".to_owned(),
+                        agent_ref: None,
+                        composite_ref: None,
+                        skills: Vec::new(),
                     },
                 ],
             }));
@@ -1034,6 +1099,9 @@ impl WorkflowEditorDocument {
             actor_badge: kind.default_actor_badge().to_owned(),
             subtitle: None,
             detail: kind.subtitle().to_owned(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
         }));
         self.selected = EditorSelection::Step(step_id.clone());
         self.has_unsaved_changes = true;
@@ -1425,6 +1493,563 @@ impl WorkflowEditorDocument {
             }
         }
         groups
+    }
+
+    /// Builds a [`WorkflowEditorDocument`] directly from a catalog [`WorkflowDef`].
+    pub fn from_workflow_def(
+        project_name: &str,
+        workflow: &WorkflowDef,
+        catalog: &BrukCatalog,
+    ) -> Self {
+        let mut nodes = Vec::new();
+        let mut default_selection: Option<EditorSelection> = None;
+
+        for node in &workflow.nodes {
+            match node {
+                WorkflowNodeDef::Loop(lp) => {
+                    let steps: Vec<EditorStep> = lp
+                        .steps
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, child)| {
+                            let mut step = editor_step_from_node(child, catalog);
+                            if idx == 0 && lp.pass_previous_outputs && step.subtitle.is_none() {
+                                step.subtitle =
+                                    Some("reads $loop.previous on attempt 2+".to_owned());
+                            }
+                            step
+                        })
+                        .collect();
+                    let exit_conditions = lp
+                        .exit_conditions
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, cond)| LoopExitCondition {
+                            id: format!("cond-{}", idx + 1),
+                            step_id: cond.step.clone(),
+                            field: cond.field,
+                            operator: cond.operator,
+                            expected: cond.expected.clone(),
+                        })
+                        .collect();
+                    let fallback = match lp.fallback.as_deref() {
+                        Some(WorkflowNodeDef::CommentOnIssue(s)) => EditorFallbackStep {
+                            name: s.name.clone(),
+                            action_label: "Comment on issue".to_owned(),
+                            outcome_label: "stop run".to_owned(),
+                        },
+                        Some(other) => EditorFallbackStep {
+                            name: other.name().to_owned(),
+                            action_label: "Fallback step".to_owned(),
+                            outcome_label: "stop run".to_owned(),
+                        },
+                        None => EditorFallbackStep {
+                            name: "Report failure".to_owned(),
+                            action_label: "Comment on issue".to_owned(),
+                            outcome_label: "stop run".to_owned(),
+                        },
+                    };
+                    if default_selection.is_none() {
+                        default_selection = Some(EditorSelection::Loop(lp.id.clone()));
+                    }
+                    nodes.push(EditorNode::Loop(EditorLoopBlock {
+                        id: lp.id.clone(),
+                        name: lp.name.clone(),
+                        repeat_mode: lp.repeat,
+                        exit_conditions,
+                        max_attempts: lp.max_attempts.max(1),
+                        wait_between: lp.wait_between,
+                        pass_previous_outputs: lp.pass_previous_outputs,
+                        discard_file_changes: lp.discard_file_changes,
+                        on_exhausted: lp.on_exhausted,
+                        fallback,
+                        steps,
+                    }));
+                }
+                other => {
+                    let step = editor_step_from_node(other, catalog);
+                    if default_selection.is_none() {
+                        default_selection = Some(EditorSelection::Step(step.id.clone()));
+                    }
+                    nodes.push(EditorNode::Step(step));
+                }
+            }
+        }
+
+        let inputs_summary = if workflow.inputs.is_empty() {
+            if workflow.triggers.work_queue {
+                "inputs: issue (optional for ad-hoc) · branch".to_owned()
+            } else {
+                "inputs: prompt · branch".to_owned()
+            }
+        } else {
+            let names: Vec<&str> = workflow.inputs.keys().map(String::as_str).collect();
+            format!("inputs: {}", names.join(" · "))
+        };
+
+        let origin_path = workflow
+            .origin
+            .display_path("workflows", &format!("{}.yaml", workflow.id));
+
+        Self {
+            project_name: project_name.to_owned(),
+            workflow_id: workflow.id.clone(),
+            workflow_name: workflow.name.clone(),
+            description: workflow.description.clone(),
+            is_draft: workflow.draft,
+            origin: Some(workflow.origin.clone()),
+            has_unsaved_changes: false,
+            trigger: EditorTriggerConfig {
+                work_queue_enabled: workflow.triggers.work_queue,
+                work_queue_label: if workflow.triggers.work_queue {
+                    "Work queue · intake rules".to_owned()
+                } else {
+                    "Work queue disabled".to_owned()
+                },
+                ad_hoc_allowed: workflow.triggers.ad_hoc,
+                inputs_summary,
+            },
+            nodes,
+            selected: default_selection.unwrap_or(EditorSelection::Trigger),
+            revisions: vec![EditorRevision {
+                version: 1,
+                label: format!("Loaded from {origin_path}"),
+                timestamp: workflow.origin.badge_label(),
+            }],
+            next_id_counter: 20,
+        }
+    }
+
+    /// Converts this editor document back into a serializable [`WorkflowDef`] for
+    /// `.agents/bruk/workflows/<id>.yaml`.
+    pub fn to_workflow_def(&self) -> WorkflowDef {
+        let id = {
+            let clean = slugify_kebab(&self.workflow_id);
+            if clean.is_empty() {
+                slugify_kebab(&self.workflow_name)
+            } else {
+                clean
+            }
+        };
+        let nodes = self
+            .nodes
+            .iter()
+            .map(editor_node_to_workflow_node)
+            .collect();
+        WorkflowDef {
+            id,
+            name: self.workflow_name.clone(),
+            description: self.description.clone(),
+            draft: self.is_draft,
+            triggers: WorkflowTriggersDef {
+                work_queue: self.trigger.work_queue_enabled,
+                ad_hoc: self.trigger.ad_hoc_allowed,
+                issue_labels: Vec::new(),
+            },
+            inputs: BTreeMap::new(),
+            nodes,
+            origin: self.origin.clone().unwrap_or_default(),
+        }
+    }
+
+    /// Appends a real composite from the catalog to the workflow spine and selects it.
+    pub fn add_catalog_composite(&mut self, composite: &CompositeDef) -> String {
+        let id_num = self.next_id_counter;
+        self.next_id_counter += 1;
+        let step_id = format!("step-{id_num}");
+        self.nodes.push(EditorNode::Step(EditorStep {
+            id: step_id.clone(),
+            name: composite.name.clone(),
+            kind: StepTypeKind::CompositeFixUntilTestsPass,
+            actor_badge: format!("Composite · {}", composite.id),
+            subtitle: Some(composite.origin.badge_label()),
+            detail: composite.description.clone(),
+            agent_ref: None,
+            composite_ref: Some(composite.id.clone()),
+            skills: Vec::new(),
+        }));
+        self.selected = EditorSelection::Step(step_id.clone());
+        self.has_unsaved_changes = true;
+        step_id
+    }
+
+    /// Assigns or clears the agent reference for an agent step.
+    pub fn update_step_agent(&mut self, step_id: &str, agent_ref: Option<&str>) {
+        if let Some(step) = self.find_step_mut(step_id) {
+            let normalized = agent_ref
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned);
+            if step.agent_ref != normalized {
+                step.agent_ref = normalized.clone();
+                let provider_prefix = match step.kind {
+                    StepTypeKind::CodexTask => "Codex",
+                    StepTypeKind::ClaudeTask => "Claude",
+                    _ => "Agent",
+                };
+                step.actor_badge = match normalized {
+                    Some(agent) => format!("{provider_prefix} · {agent}"),
+                    None => provider_prefix.to_owned(),
+                };
+                self.has_unsaved_changes = true;
+            }
+        }
+    }
+
+    /// Updates extra step-level skills from a comma-separated input string.
+    pub fn update_step_skills(&mut self, step_id: &str, raw_skills: &str) {
+        if let Some(step) = self.find_step_mut(step_id) {
+            let parsed: Vec<String> = raw_skills
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect();
+            if step.skills != parsed {
+                step.skills = parsed;
+                self.has_unsaved_changes = true;
+            }
+        }
+    }
+
+    /// Runs structural editor validation plus catalog reference checks for agents, skills, and composites.
+    pub fn validate_with_catalog(&self, catalog: &BrukCatalog) -> ValidationReport {
+        let mut report = self.validate();
+        for node in &self.nodes {
+            let steps: &[EditorStep] = match node {
+                EditorNode::Step(s) => std::slice::from_ref(s),
+                EditorNode::Loop(lp) => &lp.steps,
+            };
+            for step in steps {
+                if let Some(agent_ref) = step.agent_ref.as_deref()
+                    && let Err(err) = catalog.resolve_agent(agent_ref)
+                {
+                    report.issues.push(format!("Step '{}': {err}", step.name));
+                }
+                for skill_ref in &step.skills {
+                    if catalog.resolve_skill(skill_ref).is_none() {
+                        report.issues.push(format!(
+                            "Step '{}' references unknown skill '{skill_ref}'.",
+                            step.name
+                        ));
+                    }
+                }
+                if let Some(comp_ref) = step.composite_ref.as_deref()
+                    && catalog.resolve_composite(comp_ref).is_none()
+                {
+                    report.issues.push(format!(
+                        "Step '{}' references unknown composite '{comp_ref}'.",
+                        step.name
+                    ));
+                }
+            }
+        }
+        report.is_valid = report.issues.is_empty();
+        if !report.is_valid {
+            report.summary = format!(
+                "Found {} validation issue{}.",
+                report.issues.len(),
+                if report.issues.len() == 1 { "" } else { "s" }
+            );
+        }
+        report
+    }
+}
+
+fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> EditorStep {
+    match node {
+        WorkflowNodeDef::AgentTask(step) => {
+            let resolved_provider = step.provider.or_else(|| {
+                step.agent
+                    .as_deref()
+                    .and_then(|a| catalog.resolve_agent(a).ok())
+                    .and_then(|r| r.provider)
+            });
+            let kind = match resolved_provider {
+                Some(ProviderKind::Codex) => StepTypeKind::CodexTask,
+                Some(ProviderKind::OpenRouter) => StepTypeKind::ModelCall,
+                _ => StepTypeKind::ClaudeTask,
+            };
+            let provider_label = resolved_provider.map(|p| p.label()).unwrap_or("Claude");
+            let actor_badge = match step.agent.as_deref() {
+                Some(agent) => format!("{provider_label} · {agent}"),
+                None => provider_label.to_owned(),
+            };
+            let subtitle = if !step.skills.is_empty() {
+                Some(format!("skills: {}", step.skills.join(", ")))
+            } else {
+                None
+            };
+            EditorStep {
+                id: step.id.clone(),
+                name: step.name.clone(),
+                kind,
+                actor_badge,
+                subtitle,
+                detail: step.prompt.clone(),
+                agent_ref: step.agent.clone(),
+                composite_ref: None,
+                skills: step.skills.clone(),
+            }
+        }
+        WorkflowNodeDef::ShellCommand(step) => {
+            let cmd = step.command.trim();
+            EditorStep {
+                id: step.id.clone(),
+                name: step.name.clone(),
+                kind: StepTypeKind::ShellCommand,
+                actor_badge: if cmd.is_empty() {
+                    "Shell".to_owned()
+                } else {
+                    format!("Shell · {cmd}")
+                },
+                subtitle: None,
+                detail: step.command.clone(),
+                agent_ref: None,
+                composite_ref: None,
+                skills: Vec::new(),
+            }
+        }
+        WorkflowNodeDef::ApprovalGate(step) => EditorStep {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            kind: StepTypeKind::ApprovalGate,
+            actor_badge: "You".to_owned(),
+            subtitle: None,
+            detail: step.prompt.clone(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+        WorkflowNodeDef::Composite(step) => {
+            let comp = catalog.resolve_composite(&step.uses);
+            let kind = match step.uses.as_str() {
+                "review-and-open-pr" | "builtin/review-and-open-pr" => {
+                    StepTypeKind::CompositeReviewAndOpenPr
+                }
+                "two-model-review" | "builtin/two-model-review" => {
+                    StepTypeKind::CompositeTwoModelReview
+                }
+                _ => StepTypeKind::CompositeFixUntilTestsPass,
+            };
+            EditorStep {
+                id: step.id.clone(),
+                name: step.name.clone(),
+                kind,
+                actor_badge: format!("Composite · {}", step.uses),
+                subtitle: comp.map(|c| c.origin.badge_label()),
+                detail: comp
+                    .map(|c| c.description.clone())
+                    .unwrap_or_else(|| format!("Uses composite '{}'", step.uses)),
+                agent_ref: None,
+                composite_ref: Some(step.uses.clone()),
+                skills: Vec::new(),
+            }
+        }
+        WorkflowNodeDef::CommentOnIssue(step) => EditorStep {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            kind: StepTypeKind::CommentOnIssue,
+            actor_badge: "Issue source".to_owned(),
+            subtitle: None,
+            detail: step.body.clone(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+        WorkflowNodeDef::SetIssueStatus(step) => EditorStep {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            kind: StepTypeKind::SetIssueStatus,
+            actor_badge: "Issue source".to_owned(),
+            subtitle: None,
+            detail: step.add_labels.join(", "),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+        WorkflowNodeDef::OpenPullRequest(step) => EditorStep {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            kind: StepTypeKind::CompositeReviewAndOpenPr,
+            actor_badge: "GitHub PR".to_owned(),
+            subtitle: None,
+            detail: step.title.clone(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+        WorkflowNodeDef::Condition(step) => EditorStep {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            kind: StepTypeKind::Condition,
+            actor_badge: "Condition".to_owned(),
+            subtitle: None,
+            detail: step.expression.clone(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+        WorkflowNodeDef::Loop(lp) => EditorStep {
+            id: lp.id.clone(),
+            name: lp.name.clone(),
+            kind: StepTypeKind::Loop,
+            actor_badge: "Loop".to_owned(),
+            subtitle: None,
+            detail: String::new(),
+            agent_ref: None,
+            composite_ref: None,
+            skills: Vec::new(),
+        },
+    }
+}
+
+fn editor_node_to_workflow_node(node: &EditorNode) -> WorkflowNodeDef {
+    match node {
+        EditorNode::Step(step) => editor_step_to_workflow_node(step),
+        EditorNode::Loop(lp) => WorkflowNodeDef::Loop(LoopNodeDef {
+            id: lp.id.clone(),
+            name: lp.name.clone(),
+            repeat: lp.repeat_mode,
+            max_attempts: lp.max_attempts.max(1),
+            wait_between: lp.wait_between,
+            pass_previous_outputs: lp.pass_previous_outputs,
+            discard_file_changes: lp.discard_file_changes,
+            exit_conditions: lp
+                .exit_conditions
+                .iter()
+                .map(|c| LoopExitConditionDef {
+                    step: c.step_id.clone(),
+                    field: c.field,
+                    operator: c.operator,
+                    expected: c.expected.clone(),
+                })
+                .collect(),
+            on_exhausted: lp.on_exhausted,
+            fallback: Some(Box::new(WorkflowNodeDef::CommentOnIssue(
+                CommentOnIssueStepDef {
+                    id: format!("{}_fallback", slugify_identifier(&lp.id)),
+                    name: lp.fallback.name.clone(),
+                    body: format!("Loop '{}' exhausted max attempts.", lp.name),
+                },
+            ))),
+            steps: lp.steps.iter().map(editor_step_to_workflow_node).collect(),
+        }),
+    }
+}
+
+fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
+    if let Some(comp_ref) = step.composite_ref.as_deref() {
+        return WorkflowNodeDef::Composite(CompositeStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            uses: comp_ref.to_owned(),
+            with: BTreeMap::new(),
+        });
+    }
+    match step.kind {
+        StepTypeKind::ClaudeTask => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            agent: step.agent_ref.clone(),
+            provider: Some(ProviderKind::Claude),
+            model: None,
+            skills: step.skills.clone(),
+            prompt: step.detail.clone(),
+            inputs: BTreeMap::new(),
+            outputs: Vec::new(),
+        }),
+        StepTypeKind::CodexTask => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            agent: step.agent_ref.clone(),
+            provider: Some(ProviderKind::Codex),
+            model: None,
+            skills: step.skills.clone(),
+            prompt: step.detail.clone(),
+            inputs: BTreeMap::new(),
+            outputs: Vec::new(),
+        }),
+        StepTypeKind::ModelCall => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            agent: step.agent_ref.clone(),
+            provider: Some(ProviderKind::OpenRouter),
+            model: None,
+            skills: step.skills.clone(),
+            prompt: step.detail.clone(),
+            inputs: BTreeMap::new(),
+            outputs: Vec::new(),
+        }),
+        StepTypeKind::ShellCommand => WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            command: step.detail.clone(),
+        }),
+        StepTypeKind::ApprovalGate => WorkflowNodeDef::ApprovalGate(ApprovalGateStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            prompt: step.detail.clone(),
+        }),
+        StepTypeKind::CommentOnIssue | StepTypeKind::ExtensionPostUpdate => {
+            WorkflowNodeDef::CommentOnIssue(CommentOnIssueStepDef {
+                id: step.id.clone(),
+                name: step.name.clone(),
+                body: step.detail.clone(),
+            })
+        }
+        StepTypeKind::SetIssueStatus => WorkflowNodeDef::SetIssueStatus(SetIssueStatusStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            add_labels: step
+                .detail
+                .split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_owned)
+                .collect(),
+            remove_labels: Vec::new(),
+        }),
+        StepTypeKind::Condition => WorkflowNodeDef::Condition(ConditionStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            expression: step.detail.clone(),
+        }),
+        StepTypeKind::CompositeFixUntilTestsPass => WorkflowNodeDef::Composite(CompositeStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            uses: "fix-until-tests-pass".to_owned(),
+            with: BTreeMap::new(),
+        }),
+        StepTypeKind::CompositeReviewAndOpenPr => {
+            if step.actor_badge == "GitHub PR" {
+                WorkflowNodeDef::OpenPullRequest(OpenPullRequestStepDef {
+                    id: step.id.clone(),
+                    name: step.name.clone(),
+                    title: step.detail.clone(),
+                    body: String::new(),
+                    draft: None,
+                })
+            } else {
+                WorkflowNodeDef::Composite(CompositeStepDef {
+                    id: step.id.clone(),
+                    name: step.name.clone(),
+                    uses: "review-and-open-pr".to_owned(),
+                    with: BTreeMap::new(),
+                })
+            }
+        }
+        StepTypeKind::CompositeTwoModelReview => WorkflowNodeDef::Composite(CompositeStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            uses: "two-model-review".to_owned(),
+            with: BTreeMap::new(),
+        }),
+        StepTypeKind::Loop => WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            command: step.detail.clone(),
+        }),
     }
 }
 

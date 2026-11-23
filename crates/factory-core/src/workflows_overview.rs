@@ -4,6 +4,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::definitions::{BrukCatalog, DefinitionOrigin, WorkflowDef, WorkflowNodeDef};
+
 /// Segmented filter tabs shown above the workflows table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -222,9 +224,15 @@ pub struct WorkflowOverviewEntry {
     pub edited_label: String,
     pub step_groups: Vec<WorkflowStepGroup>,
     pub recent_runs: Vec<WorkflowRecentRun>,
+    #[serde(default)]
+    pub origin: Option<DefinitionOrigin>,
 }
 
 impl WorkflowOverviewEntry {
+    /// Returns a compact layer badge (`Built-in`, `Module · <name>`, `Project`) for catalog workflows.
+    pub fn origin_badge(&self) -> Option<String> {
+        self.origin.as_ref().map(DefinitionOrigin::badge_label)
+    }
     pub fn picks_up_issues(&self) -> bool {
         self.triggers
             .iter()
@@ -336,6 +344,22 @@ impl ProjectWorkflowsOverview {
         Self {
             project_name: project_name.to_owned(),
             workflows: Vec::new(),
+            running_count: 0,
+            next_run_number: 1,
+            next_custom_seq: 1,
+        }
+    }
+
+    /// Builds a real workflows overview directly from a resolved 3-layer [`BrukCatalog`].
+    pub fn from_catalog(project_name: &str, catalog: &BrukCatalog) -> Self {
+        let workflows = catalog
+            .effective_workflows()
+            .into_iter()
+            .map(|wf| workflow_entry_from_def(wf, catalog))
+            .collect();
+        Self {
+            project_name: project_name.to_owned(),
+            workflows,
             running_count: 0,
             next_run_number: 1,
             next_custom_seq: 1,
@@ -455,6 +479,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Failed,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "triage-new-issues".to_owned(),
@@ -512,6 +537,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Done,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "dependency-upgrade".to_owned(),
@@ -586,6 +612,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Failed,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "docs-refresh".to_owned(),
@@ -649,6 +676,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Done,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "release-prep".to_owned(),
@@ -727,6 +755,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Done,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "security-audit".to_owned(),
@@ -768,6 +797,7 @@ impl ProjectWorkflowsOverview {
                         }),
                     ],
                     recent_runs: Vec::new(),
+                    origin: None,
                 },
             ],
         }
@@ -841,6 +871,7 @@ impl ProjectWorkflowsOverview {
                             status: RecentRunStatus::Done,
                         },
                     ],
+                    origin: None,
                 },
                 WorkflowOverviewEntry {
                     id: "content-update".to_owned(),
@@ -892,6 +923,7 @@ impl ProjectWorkflowsOverview {
                         summary: "Issue #109 · Launch blog banner".to_owned(),
                         status: RecentRunStatus::Done,
                     }],
+                    origin: None,
                 },
             ],
         }
@@ -922,6 +954,7 @@ impl ProjectWorkflowsOverview {
                             label: "Ad-hoc".to_owned(),
                         },
                     ],
+                    origin: None,
                     last_ten_runs: vec![N, N, N, S, S, S, S, S, S, R],
                     last_run_caption: "Last run 8 min ago".to_owned(),
                     last_run_order: 1,
@@ -992,6 +1025,7 @@ impl ProjectWorkflowsOverview {
                             actor: "Shell".to_owned(),
                         }),
                     ],
+                    origin: None,
                     recent_runs: vec![WorkflowRecentRun {
                         run_number: 16,
                         summary: "Prepare TestFlight 1.14.0".to_owned(),
@@ -1056,6 +1090,7 @@ impl ProjectWorkflowsOverview {
                     }),
                 ],
                 recent_runs: Vec::new(),
+                origin: None,
             }],
         }
     }
@@ -1197,6 +1232,7 @@ impl ProjectWorkflowsOverview {
                 actor: "Claude".to_owned(),
             })],
             recent_runs: Vec::new(),
+            origin: None,
         };
         entry.refresh_now_label();
         self.workflows.push(entry);
@@ -1319,6 +1355,7 @@ impl ProjectWorkflowsOverview {
             edited_label: "Just now by you".to_owned(),
             step_groups,
             recent_runs: Vec::new(),
+            origin: None,
         });
         id
     }
@@ -1384,6 +1421,7 @@ impl ProjectWorkflowsOverview {
                 }),
             ],
             recent_runs: Vec::new(),
+            origin: None,
         });
         Ok(id)
     }
@@ -1565,6 +1603,159 @@ fn humanize_slug(raw: &str) -> String {
         "Imported workflow".to_owned()
     } else {
         words.join(" ")
+    }
+}
+
+fn workflow_entry_from_def(wf: &WorkflowDef, catalog: &BrukCatalog) -> WorkflowOverviewEntry {
+    let mut triggers = Vec::new();
+    if wf.triggers.work_queue {
+        let label = if wf.triggers.issue_labels.is_empty() {
+            "Work queue".to_owned()
+        } else {
+            format!("Work queue · {}", wf.triggers.issue_labels.join(", "))
+        };
+        triggers.push(WorkflowTriggerLine {
+            kind: WorkflowTriggerKind::WorkQueue,
+            label,
+        });
+    }
+    if wf.triggers.ad_hoc {
+        triggers.push(WorkflowTriggerLine {
+            kind: WorkflowTriggerKind::AdHoc,
+            label: "Ad-hoc".to_owned(),
+        });
+    }
+
+    let picks_up_label = if wf.is_draft_or_no_queue() {
+        if wf.draft {
+            "None (draft)".to_owned()
+        } else {
+            "Ad-hoc only".to_owned()
+        }
+    } else if wf.triggers.issue_labels.is_empty() {
+        "Work queue intake rules".to_owned()
+    } else {
+        format!("Issues labeled {}", wf.triggers.issue_labels.join(", "))
+    };
+
+    let mut step_num = 1u32;
+    let mut step_groups = Vec::new();
+    for node in &wf.nodes {
+        match node {
+            WorkflowNodeDef::Loop(lp) => {
+                let mut inner = Vec::new();
+                for child in &lp.steps {
+                    inner.push(WorkflowStepPreview {
+                        number: step_num,
+                        name: child.name().to_owned(),
+                        actor: actor_label_for_node(child, catalog),
+                    });
+                    step_num += 1;
+                }
+                step_groups.push(WorkflowStepGroup::Loop {
+                    title: format!("{} · max {}", lp.name, lp.max_attempts),
+                    condition_label: match lp.repeat {
+                        crate::workflow_editor::LoopRepeatMode::UntilCheckPasses => {
+                            "until pass".to_owned()
+                        }
+                        crate::workflow_editor::LoopRepeatMode::ForEachItem => {
+                            "for each".to_owned()
+                        }
+                        crate::workflow_editor::LoopRepeatMode::FixedCount => "fixed".to_owned(),
+                    },
+                    steps: inner,
+                });
+            }
+            other => {
+                step_groups.push(WorkflowStepGroup::Single(WorkflowStepPreview {
+                    number: step_num,
+                    name: other.name().to_owned(),
+                    actor: actor_label_for_node(other, catalog),
+                }));
+                step_num += 1;
+            }
+        }
+    }
+
+    let now_label = if wf.draft {
+        "Draft".to_owned()
+    } else {
+        "Idle".to_owned()
+    };
+
+    WorkflowOverviewEntry {
+        id: wf.id.clone(),
+        name: wf.name.clone(),
+        description: wf.description.clone(),
+        is_draft: wf.draft,
+        triggers,
+        last_ten_runs: vec![RunOutcomeDot::NoneYet; 10],
+        last_run_caption: "Never run".to_owned(),
+        last_run_order: u32::MAX,
+        now_label,
+        now_tone: WorkflowNowTone::Muted,
+        active_runs: 0,
+        needs_you_runs: 0,
+        picks_up_label,
+        ad_hoc_allowed: wf.triggers.ad_hoc,
+        ad_hoc_label: if wf.triggers.ad_hoc {
+            "Allowed".to_owned()
+        } else {
+            "Disabled".to_owned()
+        },
+        median_run_label: "—".to_owned(),
+        average_cost_cents: None,
+        edited_label: wf
+            .origin
+            .display_path("workflows", &format!("{}.yaml", wf.id)),
+        step_groups,
+        recent_runs: Vec::new(),
+        origin: Some(wf.origin.clone()),
+    }
+}
+
+trait WorkflowDefExt {
+    fn is_draft_or_no_queue(&self) -> bool;
+}
+
+impl WorkflowDefExt for WorkflowDef {
+    fn is_draft_or_no_queue(&self) -> bool {
+        self.draft || !self.triggers.work_queue
+    }
+}
+
+fn actor_label_for_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> String {
+    match node {
+        WorkflowNodeDef::AgentTask(step) => {
+            if let Some(agent_ref) = step.agent.as_deref() {
+                if let Ok(resolved) = catalog.resolve_agent(agent_ref) {
+                    if let Some(provider) = step.provider.or(resolved.provider) {
+                        return format!("{} · {}", provider.label(), resolved.id);
+                    }
+                    return format!("Agent · {}", resolved.id);
+                }
+                return format!("Agent · {agent_ref}");
+            }
+            step.provider
+                .map(|p| p.label().to_owned())
+                .unwrap_or_else(|| "Agent".to_owned())
+        }
+        WorkflowNodeDef::ShellCommand(step) => {
+            let cmd = step.command.trim();
+            if cmd.is_empty() {
+                "Shell".to_owned()
+            } else {
+                format!("Shell · {cmd}")
+            }
+        }
+        WorkflowNodeDef::ApprovalGate(_) => "You".to_owned(),
+        WorkflowNodeDef::Composite(step) => format!("Composite · {}", step.uses),
+        WorkflowNodeDef::Loop(_) => "Loop".to_owned(),
+        WorkflowNodeDef::CommentOnIssue(_) | WorkflowNodeDef::SetIssueStatus(_) => {
+            "Issue source".to_owned()
+        }
+        WorkflowNodeDef::OpenPullRequest(_) => "GitHub PR".to_owned(),
+        WorkflowNodeDef::Condition(_) => "Condition".to_owned(),
     }
 }
 
