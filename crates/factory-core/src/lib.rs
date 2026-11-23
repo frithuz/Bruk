@@ -17,6 +17,7 @@ pub mod machines;
 pub mod model;
 pub mod preferences;
 pub mod project_settings;
+pub mod step_context;
 pub mod storage;
 pub mod work_queue;
 pub mod workflow_editor;
@@ -105,6 +106,11 @@ pub use preferences::{
 pub use project_settings::{
     IssueSourceAuthMode, IssueSourceKind, ProjectEnvVar, ProjectIntakeRule, ProjectSandboxMode,
     ProjectSettings, ProjectSettingsError, ProjectSettingsTab, ProjectWorkflowSetting,
+};
+pub use step_context::{
+    MaterializedStepContext, StepContextBundle, StepContextError, SubagentContextSpec,
+    TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
+    compile_step_context, default_step_runtime_dir, materialize_step_context,
 };
 pub use storage::{ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{
