@@ -7,6 +7,10 @@ use crate::{
     claude_cli::{
         ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
     },
+    claude_settings::{
+        ClaudeSettingsError, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
+        build_claude_spawn_plan,
+    },
     codex_cli::{CODEX_BINARY_NAME, CodexCliDetails, CodexCliProbe},
 };
 
@@ -504,6 +508,8 @@ pub struct AppPreferences {
     pub appearance: AppearanceSettings,
     pub claude: CliAccount,
     #[serde(default)]
+    pub claude_spawn_settings: ClaudeSpawnSettings,
+    #[serde(default)]
     pub codex: Option<CliAccount>,
     pub openrouter_keys: Vec<OpenRouterKey>,
     pub machines: MachinesSettings,
@@ -551,6 +557,7 @@ impl AppPreferences {
                 test_state: ConnectionTestState::Untested,
                 used_by_projects: Vec::new(),
             },
+            claude_spawn_settings: ClaudeSpawnSettings::default(),
             codex: None,
             openrouter_keys: Vec::new(),
             machines: MachinesSettings::default(),
@@ -635,6 +642,7 @@ impl AppPreferences {
                     "mobile-app".to_owned(),
                 ],
             },
+            claude_spawn_settings: ClaudeSpawnSettings::default(),
             codex: Some(CliAccount {
                 id: "codex".to_owned(),
                 provider: ProviderKind::Codex,
@@ -1161,6 +1169,30 @@ impl AppPreferences {
     /// Returns `true` if the family is now visible (checked), or `false` if hidden (unchecked).
     pub fn toggle_claude_model_family(&mut self, family: &str) -> bool {
         toggle_account_model_family(&mut self.claude, family)
+    }
+
+    /// Builds a resolved [`ClaudeSpawnPlan`] using this account's binary, default model,
+    /// and all custom [`ClaudeSpawnSettings`] configured in Preferences.
+    pub fn build_claude_spawn_plan(
+        &self,
+        options: &ClaudeSpawnOptions,
+    ) -> Result<ClaudeSpawnPlan, ClaudeSettingsError> {
+        let binary = self
+            .claude
+            .custom_cli_path
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| {
+                let b = self.claude.cli_binary.trim();
+                if b.is_empty() { "claude" } else { b }
+            });
+        build_claude_spawn_plan(
+            binary,
+            Some(self.claude.default_model.as_str()),
+            &self.claude_spawn_settings,
+            options,
+        )
     }
 
     /// Sets or clears the optional custom binary path override for the Codex CLI.

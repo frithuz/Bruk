@@ -12,7 +12,8 @@ use std::{
 
 use factory_core::{
     AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, CodexCliProbe, CoreUpdatePolicy,
+    AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe, ClaudeSettingValue,
+    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CoreUpdatePolicy,
     DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
     DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
     InboxFilter, InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
@@ -22,8 +23,9 @@ use factory_core::{
     RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
     WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
     WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
-    fetch_claude_details, fetch_codex_details, probe_claude_cli, probe_codex_cli,
-    resolve_claude_binary, resolve_codex_binary, run_claude_auth_login, run_codex_login,
+    fetch_claude_details, fetch_codex_details, find_claude_setting_spec, probe_claude_cli,
+    probe_codex_cli, resolve_claude_binary, resolve_codex_binary, run_claude_auth_login,
+    run_codex_login,
 };
 use nsh_core::{
     element::desktop::main_window,
@@ -280,6 +282,7 @@ impl AppState {
             sample.demo_mode = true;
             sample.general = persisted_prefs.general;
             sample.appearance = persisted_prefs.appearance;
+            sample.claude_spawn_settings = persisted_prefs.claude_spawn_settings;
             sample.machines = persisted_prefs.machines;
             sample.advanced = persisted_prefs.advanced;
             (sample, Some(real_copy))
@@ -758,6 +761,7 @@ impl AppState {
                 .get_or_insert_with(AppPreferences::empty);
             real.general = self.preferences.general.clone();
             real.appearance = self.preferences.appearance.clone();
+            real.claude_spawn_settings = self.preferences.claude_spawn_settings.clone();
             real.machines = self.preferences.machines.clone();
             real.advanced = self.preferences.advanced.clone();
             real.demo_mode = false;
@@ -3411,6 +3415,226 @@ pub(crate) fn toggle_claude_model_family(family: &str) {
         } else {
             format!("Hiding {family} models from selection.")
         });
+        s.persist_preferences();
+    });
+}
+
+/// Returns the persisted custom Claude spawn settings.
+pub(crate) fn claude_spawn_settings() -> ClaudeSpawnSettings {
+    state().with(|s| s.preferences.claude_spawn_settings.clone())
+}
+
+/// Builds a live spawn preview plan for the current Claude binary, default model, and spawn settings.
+pub(crate) fn claude_spawn_preview_plan() -> Result<ClaudeSpawnPlan, String> {
+    state().with(|s| {
+        s.preferences
+            .build_claude_spawn_plan(&ClaudeSpawnOptions::default())
+            .map_err(|err| err.to_string())
+    })
+}
+
+/// Sets or clears (`None`) a boolean Claude spawn setting override.
+pub(crate) fn set_claude_spawn_bool(spec_id: &str, value: Option<bool>) {
+    state().update(|s| {
+        let label = find_claude_setting_spec(spec_id)
+            .map(|spec| spec.label)
+            .unwrap_or(spec_id);
+        match value {
+            Some(flag) => {
+                match s
+                    .preferences
+                    .claude_spawn_settings
+                    .set_value(spec_id, ClaudeSettingValue::Bool(flag))
+                {
+                    Ok(()) => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!(
+                            "Set {label} to {}.",
+                            if flag { "On" } else { "Off" }
+                        ));
+                        s.persist_preferences();
+                    }
+                    Err(err) => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(err.to_string());
+                    }
+                }
+            }
+            None => {
+                s.preferences.claude_spawn_settings.clear(spec_id);
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Reset {label} to CLI default."));
+                s.persist_preferences();
+            }
+        }
+    });
+}
+
+/// Sets or clears (`None`) a choice/enum Claude spawn setting override.
+pub(crate) fn set_claude_spawn_choice(spec_id: &str, choice: Option<&str>) {
+    state().update(|s| {
+        let label = find_claude_setting_spec(spec_id)
+            .map(|spec| spec.label)
+            .unwrap_or(spec_id);
+        match choice {
+            Some(raw) => {
+                match s
+                    .preferences
+                    .claude_spawn_settings
+                    .set_from_text(spec_id, raw)
+                {
+                    Ok(()) => {
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(format!("Set {label} to '{raw}'."));
+                        s.persist_preferences();
+                    }
+                    Err(err) => {
+                        s.preferences_feedback = None;
+                        s.preferences_error = Some(err.to_string());
+                    }
+                }
+            }
+            None => {
+                s.preferences.claude_spawn_settings.clear(spec_id);
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Reset {label} to CLI default."));
+                s.persist_preferences();
+            }
+        }
+    });
+}
+
+/// Parses and saves a text-edited Claude spawn setting override. Returns `true` on success.
+pub(crate) fn set_claude_spawn_text(spec_id: &str, raw: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        let label = find_claude_setting_spec(spec_id)
+            .map(|spec| spec.label)
+            .unwrap_or(spec_id);
+        match s
+            .preferences
+            .claude_spawn_settings
+            .set_from_text(spec_id, raw)
+        {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Updated {label}."));
+                s.persist_preferences();
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    ok
+}
+
+/// Clears a single Claude spawn setting override back to the CLI default.
+pub(crate) fn clear_claude_spawn_setting(spec_id: &str) {
+    state().update(|s| {
+        let label = find_claude_setting_spec(spec_id)
+            .map(|spec| spec.label)
+            .unwrap_or(spec_id);
+        s.preferences.claude_spawn_settings.clear(spec_id);
+        s.preferences_error = None;
+        s.preferences_feedback = Some(format!("Reset {label} to CLI default."));
+        s.persist_preferences();
+    });
+}
+
+/// Adds or updates a Claude spawn environment variable override. Returns `true` on success.
+pub(crate) fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
+    let mut ok = false;
+    state().update(
+        |s| match s.preferences.claude_spawn_settings.set_env_var(key, value) {
+            Ok(()) => {
+                let normalized = key.trim();
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Saved environment variable {normalized}."));
+                s.persist_preferences();
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+    ok
+}
+
+/// Removes a configured Claude spawn environment variable.
+pub(crate) fn remove_claude_spawn_env_var(key: &str) {
+    state().update(|s| {
+        if s.preferences.claude_spawn_settings.remove_env_var(key) {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!("Removed environment variable {key}."));
+            s.persist_preferences();
+        }
+    });
+}
+
+/// Updates extra raw CLI arguments appended when spawning Claude. Returns `true` on success.
+pub(crate) fn set_claude_spawn_extra_cli_args(raw: &str) -> bool {
+    let mut ok = false;
+    state().update(
+        |s| match s.preferences.claude_spawn_settings.set_extra_cli_args(raw) {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(if raw.trim().is_empty() {
+                    "Cleared extra Claude CLI arguments.".to_owned()
+                } else {
+                    "Updated extra Claude CLI arguments.".to_owned()
+                });
+                s.persist_preferences();
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        },
+    );
+    ok
+}
+
+/// Updates extra raw JSON merged into `--settings` when spawning Claude. Returns `true` on success.
+pub(crate) fn set_claude_spawn_extra_settings_json(raw: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        match s
+            .preferences
+            .claude_spawn_settings
+            .set_extra_settings_json(raw)
+        {
+            Ok(()) => {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(if raw.trim().is_empty() {
+                    "Cleared extra Claude --settings JSON.".to_owned()
+                } else {
+                    "Updated extra Claude --settings JSON.".to_owned()
+                });
+                s.persist_preferences();
+                ok = true;
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    ok
+}
+
+/// Resets all custom Claude spawn settings back to CLI defaults.
+pub(crate) fn reset_all_claude_spawn_settings() {
+    state().update(|s| {
+        s.preferences.claude_spawn_settings.reset_all();
+        s.preferences_error = None;
+        s.preferences_feedback =
+            Some("Reset all Claude spawn settings to CLI defaults.".to_owned());
         s.persist_preferences();
     });
 }

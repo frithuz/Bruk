@@ -420,5 +420,69 @@ mod tests {
         );
         assert_eq!(migrated.claude.default_model, "sonnet");
         assert_eq!(migrated.openrouter_keys.len(), 1);
+        assert!(migrated.claude_spawn_settings.is_empty());
+    }
+
+    #[test]
+    fn persists_claude_spawn_settings_across_reopen() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+
+        {
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            let mut prefs = AppPreferences::empty();
+            prefs
+                .claude_spawn_settings
+                .set_from_text("cli.permission-mode", "acceptEdits")
+                .unwrap();
+            prefs
+                .claude_spawn_settings
+                .set_value(
+                    "alwaysThinkingEnabled",
+                    crate::ClaudeSettingValue::Bool(true),
+                )
+                .unwrap();
+            prefs
+                .claude_spawn_settings
+                .set_from_text("permissions.allow", "Bash(cargo test*), Read(*)")
+                .unwrap();
+            prefs
+                .claude_spawn_settings
+                .set_env_var("DISABLE_TELEMETRY", "1")
+                .unwrap();
+            prefs
+                .claude_spawn_settings
+                .set_extra_cli_args("--max-turns 15")
+                .unwrap();
+            prefs
+                .claude_spawn_settings
+                .set_extra_settings_json(r#"{"customKey":"abc"}"#)
+                .unwrap();
+            db.save_preferences(&prefs).unwrap();
+        }
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let loaded = reopened.load_preferences().unwrap().unwrap();
+        assert_eq!(loaded.claude_spawn_settings.override_count(), 6);
+        assert_eq!(
+            loaded.claude_spawn_settings.get("cli.permission-mode"),
+            Some(&crate::ClaudeSettingValue::String("acceptEdits".to_owned()))
+        );
+        assert_eq!(
+            loaded.claude_spawn_settings.get("alwaysThinkingEnabled"),
+            Some(&crate::ClaudeSettingValue::Bool(true))
+        );
+        assert_eq!(
+            loaded
+                .claude_spawn_settings
+                .env_vars
+                .get("DISABLE_TELEMETRY")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            loaded.claude_spawn_settings.extra_cli_args,
+            "--max-turns 15"
+        );
     }
 }

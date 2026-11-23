@@ -5,6 +5,7 @@
 //! and reused across the macOS app, CLI tools, or background daemons.
 
 pub mod claude_cli;
+pub mod claude_settings;
 pub mod codex_cli;
 pub mod dashboard;
 pub mod engine;
@@ -26,6 +27,15 @@ pub use claude_cli::{
     format_reset_schedule_now, model_family_from_id, parse_claude_auth_status,
     parse_claude_details_stream, probe_claude_cli, probe_claude_cli_from_env,
     resolve_claude_binary, resolve_claude_binary_from_env, run_claude_auth_login,
+};
+pub use claude_settings::{
+    CLAUDE_DISABLE_AUTOUPDATER_ENV, CLAUDE_DISABLE_AUTOUPDATER_VALUE, CLAUDE_ENV_PRESETS,
+    CLAUDE_SETTING_SPECS, ClaudeEnvPreset, ClaudeSettingCategory, ClaudeSettingKind,
+    ClaudeSettingSpec, ClaudeSettingTarget, ClaudeSettingValue, ClaudeSettingsError,
+    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CliFlagEncoding,
+    apply_mandatory_claude_spawn_env, build_claude_command, build_claude_spawn_plan,
+    claude_setting_specs_for_category, find_claude_setting_spec, new_claude_command,
+    split_shell_words,
 };
 pub use codex_cli::{
     CODEX_BINARY_NAME, CodexBinaryError, CodexCliDetails, CodexCliProbe, fetch_codex_details,

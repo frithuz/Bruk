@@ -2328,3 +2328,245 @@ done
     assert!(app.screen().shows("CLI works"));
     assert!(!app.screen().matches("id:prefs-codex-sign-in").unwrap());
 }
+
+#[cfg(unix)]
+#[test]
+fn claude_spawn_settings_in_preferences_configure_preview_filter_persist_and_reset() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":true,"authMethod":"claude.ai","email":"spawn-user@example.com","subscriptionType":"max","configDirectory":"/Users/spawn/.claude"}'
+"#,
+    );
+
+    {
+        let mut app =
+            start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+        app.press_key("mod+,").unwrap();
+        app.wait_for("Spawn Settings").unwrap();
+        assert!(app.screen().shows("All defaults"));
+
+        // Collapsible <details>-style sections start collapsed so all 10 groups are scannable.
+        assert!(app.screen().shows("Launch & CLI"));
+        assert!(app.screen().shows("Models & Reasoning"));
+        assert!(app.screen().shows("Sandbox & Security"));
+        assert!(app.screen().shows("Environment & Raw"));
+        assert!(!app.screen().shows("Bare Minimal Mode"));
+
+        // 1. Expand "Launch & CLI" collapsible section and configure CLI flags.
+        app.press("id:prefs-claude-spawn-section-cli-flags")
+            .unwrap();
+        app.wait_for("Bare Minimal Mode").unwrap();
+
+        app.press("id:prefs-claude-spawn-cli-permission-mode-edit")
+            .unwrap();
+        app.wait_for("id:prefs-claude-spawn-cli-permission-mode-opt-acceptedits")
+            .unwrap();
+        app.press("id:prefs-claude-spawn-cli-permission-mode-opt-acceptedits")
+            .unwrap();
+        app.wait_for("1 override").unwrap();
+
+        app.press("id:prefs-claude-spawn-cli-bare-on").unwrap();
+        app.wait_for("2 overrides").unwrap();
+
+        app.press("id:prefs-claude-spawn-cli-max-budget-usd-edit")
+            .unwrap();
+        app.wait_for("id:prefs-claude-spawn-cli-max-budget-usd-input")
+            .unwrap();
+        app.type_text("id:prefs-claude-spawn-cli-max-budget-usd-input", "4.50")
+            .unwrap();
+        app.press("id:prefs-claude-spawn-cli-max-budget-usd-save")
+            .unwrap();
+        app.wait_for("3 overrides").unwrap();
+
+        // Collapse Launch & CLI again and confirm its rows hide.
+        app.press("id:prefs-claude-spawn-section-cli-flags")
+            .unwrap();
+        assert!(!app.screen().shows("Bare Minimal Mode"));
+
+        // 2. Expand Models & Reasoning and toggle extended thinking.
+        app.press("id:prefs-claude-spawn-section-models").unwrap();
+        app.wait_for("Always Thinking Enabled").unwrap();
+        app.press("id:prefs-claude-spawn-alwaysthinkingenabled-on")
+            .unwrap();
+        app.wait_for("4 overrides").unwrap();
+
+        // 3. Expand Sandbox & Security and enable sandbox + set proxy port (with validation).
+        app.press("id:prefs-claude-spawn-section-sandbox").unwrap();
+        app.wait_for("Enable Bash Sandbox").unwrap();
+        app.press("id:prefs-claude-spawn-sandbox-enabled-on")
+            .unwrap();
+        app.wait_for("5 overrides").unwrap();
+
+        app.press("id:prefs-claude-spawn-sandbox-network-httpproxyport-edit")
+            .unwrap();
+        app.wait_for("id:prefs-claude-spawn-sandbox-network-httpproxyport-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-claude-spawn-sandbox-network-httpproxyport-input",
+            "99999",
+        )
+        .unwrap();
+        app.press("id:prefs-claude-spawn-sandbox-network-httpproxyport-save")
+            .unwrap();
+        app.wait_for("invalid value for 'sandbox.network.httpProxyPort': must be at most 65535")
+            .unwrap();
+
+        app.clear("id:prefs-claude-spawn-sandbox-network-httpproxyport-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-claude-spawn-sandbox-network-httpproxyport-input",
+            "8080",
+        )
+        .unwrap();
+        app.press("id:prefs-claude-spawn-sandbox-network-httpproxyport-save")
+            .unwrap();
+        app.wait_for("6 overrides").unwrap();
+
+        // 4. Global search hides non-matching groups and non-matching settings, and auto-expands
+        // the matching group ("Context & Git") to show only "Git Commit Attribution".
+        app.type_text("id:prefs-claude-spawn-search", "attribution.commit")
+            .unwrap();
+        app.wait_for("Git Commit Attribution").unwrap();
+        assert!(app.screen().shows("Context & Git"));
+        assert!(!app.screen().shows("Launch & CLI"));
+        assert!(!app.screen().shows("Models & Reasoning"));
+        assert!(!app.screen().shows("Sandbox & Security"));
+        assert!(!app.screen().shows("Environment & Raw"));
+        assert!(!app.screen().shows("Auto-Compact Enabled"));
+
+        app.press("id:prefs-claude-spawn-attribution-commit-edit")
+            .unwrap();
+        app.wait_for("id:prefs-claude-spawn-attribution-commit-save")
+            .unwrap();
+        app.press("id:prefs-claude-spawn-attribution-commit-save")
+            .unwrap();
+        app.wait_for("7 overrides").unwrap();
+        app.press("id:prefs-claude-spawn-clear-filter").unwrap();
+        app.wait_for("Launch & CLI").unwrap();
+
+        // 5. Expand Environment & Raw, confirm DISABLE_AUTOUPDATER=1 is always enforced,
+        // and add a preset env var + extra CLI args + extra JSON.
+        app.press("id:prefs-claude-spawn-section-env-raw").unwrap();
+        app.wait_for("Process Environment Variables").unwrap();
+        assert!(app.screen().shows("DISABLE_AUTOUPDATER"));
+        assert!(app.screen().shows("Always enforced"));
+        app.press("id:prefs-claude-spawn-env-preset-disable-telemetry")
+            .unwrap();
+        app.wait_for("id:prefs-claude-spawn-env-save").unwrap();
+        app.press("id:prefs-claude-spawn-env-save").unwrap();
+        app.wait_for("8 overrides").unwrap();
+        assert!(app.screen().shows("DISABLE_TELEMETRY"));
+
+        app.press("id:prefs-claude-spawn-extra-args-edit").unwrap();
+        app.wait_for("id:prefs-claude-spawn-extra-args-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-claude-spawn-extra-args-input",
+            "--custom-flag value",
+        )
+        .unwrap();
+        app.press("id:prefs-claude-spawn-extra-args-save").unwrap();
+        app.wait_for("9 overrides").unwrap();
+
+        app.press("id:prefs-claude-spawn-extra-json-edit").unwrap();
+        app.wait_for("id:prefs-claude-spawn-extra-json-input")
+            .unwrap();
+        app.type_text(
+            "id:prefs-claude-spawn-extra-json-input",
+            r#"{"futureOption":true}"#,
+        )
+        .unwrap();
+        app.press("id:prefs-claude-spawn-extra-json-save").unwrap();
+        app.wait_for("10 overrides").unwrap();
+
+        // 6. Toggle Preview Command and confirm preview sections appear.
+        app.press("id:prefs-claude-spawn-preview-toggle").unwrap();
+        app.wait_for("Resolved spawn invocation").unwrap();
+        assert!(app.screen().shows("Generated --settings JSON"));
+        assert!(
+            app.screen()
+                .matches("id:prefs-claude-spawn-preview-cmd")
+                .unwrap()
+        );
+        assert!(
+            app.screen()
+                .matches("id:prefs-claude-spawn-preview-json")
+                .unwrap()
+        );
+
+        // 7. Toggle "Modified only" to inspect only groups & settings with active overrides
+        // (hiding unmodified groups like Permissions and Interface & Session).
+        app.press("id:prefs-claude-spawn-modified-only").unwrap();
+        app.wait_for("Showing 10 active override(s) across 5 group(s)")
+            .unwrap();
+        assert!(app.screen().shows("Launch & CLI"));
+        assert!(app.screen().shows("Models & Reasoning"));
+        assert!(app.screen().shows("Sandbox & Security"));
+        assert!(app.screen().shows("Context & Git"));
+        assert!(app.screen().shows("Environment & Raw"));
+        assert!(!app.screen().shows("Permissions"));
+        assert!(!app.screen().shows("Interface & Session"));
+        assert!(!app.screen().shows("Auto-Compact Enabled"));
+
+        app.press_window_close("preferences").unwrap();
+    }
+
+    // Verify persisted SQLite preferences build the exact Claude spawn plan.
+    {
+        let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+        let saved = db.load_preferences().unwrap().unwrap();
+        assert_eq!(saved.claude_spawn_settings.override_count(), 10);
+        let plan = saved
+            .build_claude_spawn_plan(&factory_core::ClaudeSpawnOptions::default())
+            .unwrap();
+        let preview = plan.preview_command_line();
+        assert!(preview.contains("DISABLE_AUTOUPDATER=1"));
+        assert!(preview.contains("DISABLE_TELEMETRY=1"));
+        assert!(preview.contains("--permission-mode acceptEdits"));
+        assert!(preview.contains("--bare"));
+        assert!(preview.contains("--max-budget-usd 4.50"));
+        assert!(preview.contains("--custom-flag value"));
+        let json = plan.settings_json.unwrap();
+        assert_eq!(json["alwaysThinkingEnabled"], true);
+        assert_eq!(json["sandbox"]["enabled"], true);
+        assert_eq!(json["sandbox"]["network"]["httpProxyPort"], 8080);
+        assert_eq!(json["attribution"]["commit"], "");
+        assert_eq!(json["futureOption"], true);
+    }
+
+    // Reopen against the same SQLite DB and verify all 10 overrides persisted, then Reset All.
+    let mut reopened =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    reopened.press_key("mod+,").unwrap();
+    reopened.wait_for("10 overrides").unwrap();
+    reopened
+        .press("id:prefs-claude-spawn-preview-toggle")
+        .unwrap();
+    reopened.wait_for("Resolved spawn invocation").unwrap();
+    assert!(reopened.screen().shows("Generated --settings JSON"));
+
+    reopened.press("id:prefs-claude-spawn-reset-all").unwrap();
+    reopened.wait_for("All defaults").unwrap();
+    assert!(!reopened.screen().shows("Generated --settings JSON"));
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let after_reset = db.load_preferences().unwrap().unwrap();
+    assert!(after_reset.claude_spawn_settings.is_empty());
+    let reset_plan = after_reset
+        .build_claude_spawn_plan(&factory_core::ClaudeSpawnOptions::default())
+        .unwrap();
+    assert_eq!(
+        reset_plan
+            .env
+            .get("DISABLE_AUTOUPDATER")
+            .map(String::as_str),
+        Some("1")
+    );
+}

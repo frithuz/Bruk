@@ -1,5 +1,6 @@
 //! Main macOS desktop shell: unified header toolbar, left navigation rail, and active canvas.
 
+mod claude_spawn_settings;
 mod dashboard;
 mod icons;
 pub(crate) mod inbox;

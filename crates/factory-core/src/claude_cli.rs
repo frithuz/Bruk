@@ -12,13 +12,15 @@ use std::{
     fs,
     io::Write,
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use chrono::{DateTime, Duration, FixedOffset, Local, Timelike};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::claude_settings::new_claude_command;
 
 /// Default executable filename searched on `PATH`.
 #[cfg(windows)]
@@ -368,7 +370,7 @@ pub fn probe_claude_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> 
         Err(error) => return ClaudeCliProbe::BinaryNotFound { error },
     };
 
-    let output = match Command::new(&binary_path)
+    let output = match new_claude_command(&binary_path)
         .args(["auth", "status", "--json"])
         .stdin(Stdio::null())
         .output()
@@ -395,7 +397,7 @@ pub fn probe_claude_cli_from_env(custom_path: Option<&str>) -> ClaudeCliProbe {
 
 /// Runs `claude auth login` so the user can authenticate their system Claude CLI account.
 pub fn run_claude_auth_login(binary_path: &Path) -> Result<(), String> {
-    let output = Command::new(binary_path)
+    let output = new_claude_command(binary_path)
         .args(["auth", "login"])
         .stdin(Stdio::null())
         .output()
@@ -427,7 +429,7 @@ const STREAM_USAGE_REQUEST_ID: &str = "bruk_usage";
 ///
 /// This spends zero inference tokens and uses the CLI's own system authentication.
 pub fn fetch_claude_details(binary_path: &Path) -> ClaudeCliDetails {
-    let mut child = match Command::new(binary_path)
+    let mut child = match new_claude_command(binary_path)
         .args([
             "--print",
             "--input-format",
@@ -1484,5 +1486,42 @@ exit 1
         assert_eq!(resets.len(), 2);
         assert_eq!(resets[0].label, "Current session (5h)");
         assert_eq!(resets[1].label, "Weekly (all models)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn all_claude_cli_invocations_disable_auto_updater_via_env() {
+        let temp = TempDir::new().unwrap();
+        let log_file = temp.path().join("env.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "CMD=$1 DISABLE_AUTOUPDATER=$DISABLE_AUTOUPDATER" >> "{log}"
+if [ "$1" = "auth" ] && [ "$2" = "status" ]; then
+  echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"env@example.com","subscriptionType":"max","configDirectory":"/tmp/.claude"}}'
+  exit 0
+fi
+if [ "$1" = "auth" ] && [ "$2" = "login" ]; then
+  exit 0
+fi
+cat >/dev/null
+echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"bruk_init","response":{{"models":[]}}}}}}'
+echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"bruk_usage","response":{{"rate_limits_available":false}}}}}}'
+"#,
+            log = log_file.display()
+        );
+        let claude_bin = write_fake_claude_script(temp.path(), "claude", &script, true);
+
+        let probe = probe_claude_cli(Some(claude_bin.to_str().unwrap()), None);
+        assert!(matches!(probe, ClaudeCliProbe::Authenticated { .. }));
+        run_claude_auth_login(&claude_bin).unwrap();
+        let details = fetch_claude_details(&claude_bin);
+        assert_eq!(details.warning, None);
+
+        let logged = fs::read_to_string(&log_file).unwrap();
+        let lines: Vec<&str> = logged.lines().collect();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "CMD=auth DISABLE_AUTOUPDATER=1");
+        assert_eq!(lines[1], "CMD=auth DISABLE_AUTOUPDATER=1");
+        assert_eq!(lines[2], "CMD=--print DISABLE_AUTOUPDATER=1");
     }
 }

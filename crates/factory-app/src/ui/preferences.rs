@@ -17,7 +17,10 @@ use nsh_core::{
 
 use crate::{
     store::{self, GeneralFlag},
-    ui::{icons, palette},
+    ui::{
+        claude_spawn_settings::{ClaudeSpawnUiState, claude_spawn_settings_card},
+        icons, palette,
+    },
 };
 
 /// Active inline editor inside the Providers detail pane.
@@ -226,6 +229,7 @@ fn providers_tab() -> impl IntoElement {
     let draft_secondary = signal(String::new());
     let draft_cap = signal(String::new());
     let draft_model = signal(String::new());
+    let claude_spawn_ui = ClaudeSpawnUiState::new();
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
@@ -252,6 +256,7 @@ fn providers_tab() -> impl IntoElement {
                         draft_secondary,
                         draft_cap,
                         draft_model,
+                        claude_spawn_ui,
                     )),
             )
             .child(
@@ -612,6 +617,7 @@ fn menu_option_button(label: &'static str, on_press: impl Fn() + 'static) -> imp
         )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn providers_detail_column(
     active_editor: Signal<Option<ProviderEditor>>,
     add_menu_open: Signal<bool>,
@@ -619,6 +625,7 @@ fn providers_detail_column(
     draft_secondary: Signal<String>,
     draft_cap: Signal<String>,
     draft_model: Signal<String>,
+    claude_spawn_ui: ClaudeSpawnUiState,
 ) -> impl IntoElement {
     view()
         .flex_1()
@@ -660,6 +667,7 @@ fn providers_detail_column(
                     add_menu_open,
                     draft_primary,
                     draft_model,
+                    claude_spawn_ui,
                 )
                 .into_element()
             } else {
@@ -669,6 +677,7 @@ fn providers_detail_column(
                     add_menu_open,
                     draft_primary,
                     draft_model,
+                    claude_spawn_ui,
                 )
                 .into_element()
             }
@@ -1305,6 +1314,7 @@ fn cli_account_detail_pane(
     add_menu_open: Signal<bool>,
     draft_cli_path: Signal<String>,
     draft_model: Signal<String>,
+    claude_spawn_ui: ClaudeSpawnUiState,
 ) -> impl IntoElement {
     let provider = account.provider;
     let is_claude = provider == ProviderKind::Claude;
@@ -1502,9 +1512,7 @@ fn cli_account_detail_pane(
             )
             .child(when(
                 move || is_editing_cli_path,
-                move || {
-                    cli_path_editor(provider, draft_cli_path, has_custom_path, active_editor)
-                },
+                move || cli_path_editor(provider, draft_cli_path, has_custom_path, active_editor),
             ))
             .into_element()
     };
@@ -1653,7 +1661,12 @@ fn cli_account_detail_pane(
                 } else {
                     store::codex_details_loading()
                 };
-                cli_usage_card(provider, usage_summary.clone(), usage_warning.clone(), loading)
+                cli_usage_card(
+                    provider,
+                    usage_summary.clone(),
+                    usage_warning.clone(),
+                    loading,
+                )
             },
         ))
         .child(
@@ -1736,10 +1749,17 @@ fn cli_account_detail_pane(
                     move || {
                         view()
                             .child(card_divider())
-                            .child(cli_model_family_filter_row(provider, model_families.clone()))
+                            .child(cli_model_family_filter_row(
+                                provider,
+                                model_families.clone(),
+                            ))
                     },
                 )),
         )
+        .child(when(
+            move || is_claude,
+            move || claude_spawn_settings_card(claude_spawn_ui),
+        ))
         .child(
             grouped_card("Used by")
                 .child(card_divider())
@@ -2029,7 +2049,10 @@ fn cli_model_family_filter_row(
     let mut checkboxes = view().flex_row().flex_wrap().gap(px(8.0));
     for (family, checked) in families {
         let family_for_press = family.clone();
-        let test_id = format!("prefs-{provider_slug}-family-{}", family.to_ascii_lowercase());
+        let test_id = format!(
+            "prefs-{provider_slug}-family-{}",
+            family.to_ascii_lowercase()
+        );
         let label_for_a11y = format!("{family} model family");
         checkboxes = checkboxes.child(
             button()
