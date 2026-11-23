@@ -1,0 +1,49 @@
+id: fix-until-tests-pass
+name: Fix until tests pass
+description: Iterate implementation and test checks until the verification command succeeds.
+inputs:
+  plan:
+    type: string
+    required: true
+    description: Implementation plan produced by the planning step.
+  test_command:
+    type: string
+    required: false
+    default: cargo test --workspace
+    description: Verification command executed after each implementation attempt.
+outputs:
+  test_output: "{{ steps.run_tests.stdout }}"
+nodes:
+  - kind: loop
+    id: fix_loop
+    name: Fix until tests pass
+    repeat: until_check_passes
+    max_attempts: 5
+    wait_between: none
+    pass_previous_outputs: true
+    discard_file_changes: false
+    exit_conditions:
+      - step: run_tests
+        field: exit_code
+        operator: equals
+        expected: "0"
+    on_exhausted: go_to_fallback_step
+    fallback:
+      kind: comment_on_issue
+      id: report_failure
+      name: Report failure
+      body: "Automated fix exhausted max attempts. Latest test output:\n\n{{ steps.run_tests.stderr }}"
+    steps:
+      - kind: agent_task
+        id: implement
+        name: Implement fix
+        agent: implementer
+        prompt: |
+          Implement the planned changes:
+          {{ inputs.plan }}
+
+          If this is a retry attempt, inspect the previous attempt's test failure output and address the root cause cleanly.
+      - kind: shell_command
+        id: run_tests
+        name: Run tests
+        command: "{{ inputs.test_command }}"

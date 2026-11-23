@@ -9,6 +9,7 @@ pub mod claude_settings;
 pub mod codex_cli;
 pub mod codex_settings;
 pub mod dashboard;
+pub mod definitions;
 pub mod engine;
 pub mod github_intake;
 pub mod inbox;
@@ -57,6 +58,17 @@ pub use dashboard::{
     HighTokenRun, InboxItem, InboxRequestKind, MachineNode, MachineStatus, ProjectActivityRow,
     ProjectColor, ProjectTokens, ProviderUsage, TokenBucket, WaitMetrics, format_axis_tokens,
     format_currency, format_tenths_hours, format_tokens, format_wait_minutes,
+};
+pub use definitions::{
+    AgentDef, AgentTaskStepDef, AgentToolsPolicy, ApprovalGateStepDef, BRUK_AGENTS_SUBDIR,
+    BRUK_COMPOSITES_SUBDIR, BRUK_CONFIG_DIR, BRUK_MANIFEST_FILE, BRUK_SKILLS_SUBDIR,
+    BRUK_WORKFLOWS_SUBDIR, BUILTIN_NAMESPACE, BrukCatalog, BrukManifest, CatalogDiagnostic,
+    CatalogError, CatalogLoadOptions, CommentOnIssueStepDef, CompositeDef, CompositeStepDef,
+    ConditionStepDef, DefinitionOrigin, DefinitionRef, DiagnosticSeverity, InputParamDef,
+    LoadedModuleInfo, LoopExitConditionDef, LoopNodeDef, ModuleDecl, ModuleFetchPolicy,
+    ModuleSource, OpenPullRequestStepDef, PROJECT_NAMESPACE, ResolvedAgent, SetIssueStatusStepDef,
+    ShellCommandStepDef, SkillDef, WorkflowDef, WorkflowNodeDef, WorkflowTriggersDef,
+    default_module_cache_dir, validate_identifier,
 };
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
 pub use github_intake::{

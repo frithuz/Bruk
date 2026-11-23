@@ -1,0 +1,44 @@
+id: fix-issue
+name: Fix issue
+description: Inspect the issue, plan a fix, iterate until tests pass, pause for review, and open a PR.
+draft: false
+triggers:
+  work_queue: true
+  ad_hoc: true
+  issue_labels:
+    - bug
+inputs:
+  issue:
+    type: issue
+    required: false
+    description: Linked issue from the project work queue.
+  prompt:
+    type: string
+    required: false
+    description: Ad-hoc task prompt when launched outside the work queue.
+  test_command:
+    type: string
+    required: false
+    default: cargo test --workspace
+    description: Verification command run inside the fix loop.
+nodes:
+  - kind: agent_task
+    id: read_plan
+    name: Read issue & plan
+    agent: planner
+    prompt: |
+      Inspect the task and write a concise fix plan:
+      {{ inputs.prompt }}
+  - kind: composite
+    id: fix_loop
+    name: Fix until tests pass
+    uses: fix-until-tests-pass
+    with:
+      plan: "{{ steps.read_plan.output }}"
+      test_command: "{{ inputs.test_command }}"
+  - kind: composite
+    id: review_pr
+    name: Review and open PR
+    uses: review-and-open-pr
+    with:
+      summary: "{{ inputs.prompt }}"

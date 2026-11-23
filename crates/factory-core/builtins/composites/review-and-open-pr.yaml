@@ -1,0 +1,20 @@
+id: review-and-open-pr
+name: Review and open PR
+description: Pause for human review, then draft and open a pull request.
+inputs:
+  summary:
+    type: string
+    required: false
+    default: "Automated workflow changes"
+outputs:
+  pr_url: "{{ steps.open_pr.stdout }}"
+nodes:
+  - kind: approval_gate
+    id: review_gate
+    name: Review gate
+    prompt: "Review the diff and approve before opening a pull request."
+  - kind: open_pull_request
+    id: open_pr
+    name: Open pull request
+    title: "{{ inputs.summary }}"
+    body: "Automated changes prepared by Bruk.\n\n{{ inputs.summary }}"

@@ -1,0 +1,25 @@
+id: review-pr
+name: Review a pull request
+description: Run an automated read-only review pass and summarize findings.
+draft: false
+triggers:
+  work_queue: false
+  ad_hoc: true
+  issue_labels: []
+inputs:
+  prompt:
+    type: string
+    required: true
+    description: Branch, PR reference, or scope to review.
+nodes:
+  - kind: agent_task
+    id: review_diff
+    name: Review changes
+    agent: reviewer
+    prompt: |
+      Review the requested changes and report prioritized findings:
+      {{ inputs.prompt }}
+  - kind: approval_gate
+    id: review_decision
+    name: Review findings
+    prompt: "Inspect the automated review findings before proceeding."

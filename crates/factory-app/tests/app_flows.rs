@@ -787,7 +787,7 @@ fn project_settings_view_renders_issues_intake_and_interactive_tabs() {
     app.wait_for("Discovered workflows").unwrap();
     assert!(
         app.screen()
-            .shows(".factory/workflows/fix-issue.yaml · Intake · 4 steps · Claude / Codex")
+            .shows(".agents/bruk/workflows/fix-issue.yaml · Intake · 4 steps · Claude / Codex")
     );
 
     app.press("id:ps-tab-environment").unwrap();
@@ -1792,10 +1792,10 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     app.press("id:ps-tab-workflows").unwrap();
     app.wait_for(
-        "No workflow files discovered yet. Add definitions in .factory/workflows/ or create one from Workflows.",
+        "No workflow files discovered yet. Add definitions in .agents/bruk/workflows/ or create one from Workflows.",
     )
     .unwrap();
-    assert!(!app.screen().shows(".factory/workflows/fix-issue.yaml"));
+    assert!(!app.screen().shows(".agents/bruk/workflows/fix-issue.yaml"));
 
     app.press("id:ps-tab-environment").unwrap();
     app.wait_for("No project environment variables configured.")

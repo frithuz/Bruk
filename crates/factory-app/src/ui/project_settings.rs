@@ -1817,7 +1817,7 @@ fn workflows_tab() -> impl IntoElement {
                 if settings.workflows.is_empty() {
                     list_card = list_card.child(card_divider()).child(
                         view().px(px(16.0)).py(px(14.0)).child(
-                            text("No workflow files discovered yet. Add definitions in .factory/workflows/ or create one from Workflows.")
+                            text("No workflow files discovered yet. Add definitions in .agents/bruk/workflows/ or create one from Workflows.")
                                 .text_size(px(12.5))
                                 .text_color(palette::text_muted()),
                         ),
@@ -1862,7 +1862,7 @@ fn workflows_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(toggle_row(
                                 "Reload workflow files automatically",
-                                "Watch .factory/workflows/ and pick up YAML edits without restarting.",
+                                "Watch .agents/bruk/ and pick up YAML edits without restarting.",
                                 settings.auto_reload_workflows,
                                 store::toggle_project_auto_reload_workflows,
                             )),
