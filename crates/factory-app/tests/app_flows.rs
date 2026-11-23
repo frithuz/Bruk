@@ -2912,3 +2912,240 @@ fn appearance_font_preferences_default_to_atkinson_and_persist_user_overrides() 
         factory_core::FontPreference::Default
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn github_intake_syncs_real_issues_persists_settings_and_updates_working_label() {
+    use std::process::{Command, Stdio};
+
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("billing-api");
+    let bin_dir = temp.path().join("bin");
+    let gh_log = temp.path().join("gh.log");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    // Create a real local git repo with a GitHub origin remote so Bruk auto-detects `acme/billing-api`.
+    assert!(
+        Command::new("git")
+            .arg("init")
+            .arg(&repo_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .arg("-C")
+            .arg(&repo_dir)
+            .args([
+                "remote",
+                "add",
+                "origin",
+                "git@github.com:acme/billing-api.git",
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // Fake `gh` CLI in isolated PATH that logs invocations and returns realistic issue JSON.
+    let gh_script = format!(
+        r#"#!/bin/sh
+echo "TOKEN=${{GH_TOKEN:-}} ARGS=$*" >> "{}"
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  if [ "${{GH_TOKEN:-}}" = "ghp_invalid_token_0000" ]; then
+    echo "HTTP 401: Bad credentials" >&2
+    exit 1
+  fi
+  printf '%s\n' '[{{"number":101,"title":"Retry webhook timeouts","body":"Add jittered retry for 503s.","labels":[{{"name":"agent-ready"}},{{"name":"bug"}}],"url":"https://github.com/acme/billing-api/issues/101","state":"OPEN"}},{{"number":102,"title":"Audit billing metrics","body":"Verify counters match invoices.","labels":[{{"name":"agent-ready"}}],"url":"https://github.com/acme/billing-api/issues/102","state":"OPEN"}},{{"number":103,"title":"Explore multi-currency support","body":"Draft RFC.","labels":[{{"name":"rfc"}}],"url":"https://github.com/acme/billing-api/issues/103","state":"OPEN"}}]'
+  exit 0
+fi
+exit 0
+"#,
+        gh_log.display()
+    );
+    write_fake_claude(&bin_dir, "gh", &gh_script);
+
+    {
+        let mut app =
+            start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_owned());
+
+        // Register the real git repository.
+        app.press("id:dashboard-empty-register-project").unwrap();
+        app.wait_for("Register a local repository").unwrap();
+        app.type_text("text:Project name", "billing-api").unwrap();
+        app.type_text("text:Repository path", &repo_dir.display().to_string())
+            .unwrap();
+        app.press("role:button[Save Project]").unwrap();
+        app.wait_for("Registered project 'billing-api'").unwrap();
+
+        // Project Settings should auto-detect `acme/billing-api` from git origin.
+        app.press("id:sidebar-project-settings-1").unwrap();
+        app.wait_for("billing-api · Issues & intake").unwrap();
+        assert_eq!(
+            app.screen().input_text("id:ps-github-repo").unwrap(),
+            Some("acme/billing-api")
+        );
+        assert!(app.screen().shows("Ready to verify · press Test & Sync"));
+
+        // Configure a `label:agent-ready` search filter, a `bug -> Fix issue` rule, and a fallback workflow (`Triage new issues`).
+        app.press("id:ps-add-filter-btn").unwrap();
+        app.wait_for("id:ps-filter-value").unwrap();
+        app.type_text("id:ps-filter-value", "agent-ready").unwrap();
+        app.press("id:ps-filter-save").unwrap();
+        app.wait_for("Query: label:agent-ready").unwrap();
+
+        app.type_text("id:ps-fallback-workflow", "Triage new issues")
+            .unwrap();
+        app.press("id:ps-add-rule-btn").unwrap();
+        app.wait_for("id:ps-new-rule-label").unwrap();
+        app.type_text("id:ps-new-rule-label", "bug").unwrap();
+        app.press("id:ps-rule-save").unwrap();
+        app.wait_for("has label bug").unwrap();
+
+        // Trigger real GitHub sync via `Test & Sync`.
+        app.press("id:ps-github-sync-btn").unwrap();
+        app.wait_for("Connected · 3 open issues · synced just now")
+            .unwrap();
+
+        // Navigate to Work queue and verify synced issues were routed cleanly.
+        app.press("id:sidebar-work-queue-1").unwrap();
+        app.wait_for("billing-api · GitHub Issues · acme/billing-api")
+            .unwrap();
+        assert!(app.screen().shows("Retry webhook timeouts"));
+        assert!(app.screen().shows("Audit billing metrics"));
+        assert!(app.screen().shows("label bug → Fix issue"));
+        assert!(
+            app.screen()
+                .shows("1 open issue doesn't match the intake rules")
+        );
+
+        // Start #101 -> should invoke `gh issue edit 101 --repo acme/billing-api --add-label agent-working`.
+        app.press("id:wq-inspector-start-now").unwrap();
+        app.wait_for("Started issue #101 as run #1").unwrap();
+    }
+
+    // Confirm `gh` received both `issue list` and `issue edit --add-label agent-working`.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let log = std::fs::read_to_string(&gh_log).unwrap_or_default();
+        if log.contains("issue edit 101 --repo acme/billing-api --add-label agent-working") {
+            assert!(log.contains("issue list --repo acme/billing-api --state open"));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "expected gh add-label call in log, got:\n{log}"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+
+    // Reopen the app against the same SQLite DB: settings and synced issues must persist.
+    {
+        let mut reopened =
+            start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_owned());
+        reopened.press("id:sidebar-work-queue-1").unwrap();
+        reopened
+            .wait_for("billing-api · GitHub Issues · acme/billing-api")
+            .unwrap();
+        assert!(reopened.screen().shows("Retry webhook timeouts"));
+        assert!(reopened.screen().shows("Audit billing metrics"));
+
+        // Switch to an invalid PAT and verify auth failure surfaces cleanly.
+        reopened.press("id:sidebar-project-settings-1").unwrap();
+        reopened.wait_for("billing-api · Issues & intake").unwrap();
+        reopened.press("id:ps-use-token-btn").unwrap();
+        reopened.wait_for("id:ps-token-input").unwrap();
+        reopened
+            .type_text("id:ps-token-input", "ghp_invalid_token_0000")
+            .unwrap();
+        reopened.press("id:ps-token-save").unwrap();
+        reopened
+            .wait_for("Personal access token (ghp_••••••••••••0000)")
+            .unwrap();
+
+        reopened.press("id:ps-github-sync-btn").unwrap();
+        reopened
+            .wait_for("Sync error · GitHub authentication failed: HTTP 401: Bad credentials")
+            .unwrap();
+
+        // Error banner also appears on the Work queue view.
+        reopened.press("id:sidebar-work-queue-1").unwrap();
+        reopened.wait_for("id:wq-sync-error-banner").unwrap();
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn github_intake_supports_optional_assignee_and_search_filter_rules() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    // Fake `gh` CLI returning issues with assignees, milestones, and labels (no `agent-ready` label).
+    let gh_script = r#"#!/bin/sh
+if [ "$1" = "issue" ] && [ "$2" = "list" ]; then
+  printf '%s\n' '[{"number":501,"title":"Fix OAuth token rotation","body":"Assigned to bot.","labels":[{"name":"bug"}],"assignees":[{"login":"factory-bot"}],"author":{"login":"alice"},"milestone":{"title":"v2.0"},"url":"https://github.com/acme/filters-demo/issues/501","state":"OPEN"},{"number":502,"title":"Update onboarding docs","body":"Assigned to bot without bug label.","labels":[],"assignees":[{"login":"factory-bot"}],"author":{"login":"alice"},"milestone":null,"url":"https://github.com/acme/filters-demo/issues/502","state":"OPEN"},{"number":503,"title":"Human-owned roadmap item","body":"Not assigned to bot.","labels":[{"name":"bug"}],"assignees":[{"login":"bob"}],"author":{"login":"bob"},"milestone":null,"url":"https://github.com/acme/filters-demo/issues/503","state":"OPEN"}]'
+  exit 0
+fi
+exit 0
+"#;
+    write_fake_claude(&bin_dir, "gh", gh_script);
+
+    let mut app = start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_owned());
+
+    // Register a project and open Issues & intake settings.
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Register a local repository").unwrap();
+    app.type_text("text:Project name", "filters-demo").unwrap();
+    app.type_text("text:Repository path", "/workspace/filters-demo")
+        .unwrap();
+    app.press("role:button[Save Project]").unwrap();
+    app.wait_for("Registered project 'filters-demo'").unwrap();
+
+    app.press("id:sidebar-project-settings-1").unwrap();
+    app.wait_for("filters-demo · Issues & intake").unwrap();
+
+    // Configure repo and add an optional assignee search filter (`assignee:factory-bot`).
+    app.type_text("id:ps-github-repo", "acme/filters-demo")
+        .unwrap();
+
+    app.press("id:ps-add-filter-btn").unwrap();
+    app.wait_for("id:ps-filter-value").unwrap();
+    app.press("id:ps-filter-qualifier").unwrap();
+    app.press("role:option[Assigned to]").unwrap();
+    app.type_text("id:ps-filter-value", "@factory-bot").unwrap();
+    app.press("id:ps-filter-save").unwrap();
+    app.wait_for("Query: assignee:factory-bot").unwrap();
+
+    // Add a label rule (`has label bug -> Fix issue`) and a fallback workflow (`Agent Triage`).
+    app.type_text("id:ps-fallback-workflow", "Agent Triage")
+        .unwrap();
+    app.press("id:ps-add-rule-btn").unwrap();
+    app.wait_for("id:ps-new-rule-label").unwrap();
+    app.type_text("id:ps-new-rule-label", "bug").unwrap();
+    app.press("id:ps-rule-save").unwrap();
+    app.wait_for("has label bug").unwrap();
+
+    // Sync via GitHub CLI and verify #501 + #502 (assigned to @factory-bot) are queued while #503 (assigned to @bob) is unmatched.
+    app.press("id:ps-github-sync-btn").unwrap();
+    app.wait_for("Connected · 3 open issues · synced just now")
+        .unwrap();
+
+    app.press("id:sidebar-work-queue-1").unwrap();
+    app.wait_for("filters-demo · GitHub Issues · acme/filters-demo")
+        .unwrap();
+    assert!(app.screen().shows("Fix OAuth token rotation"));
+    assert!(app.screen().shows("Update onboarding docs"));
+    assert!(
+        app.screen()
+            .shows("1 open issue doesn't match the intake rules")
+    );
+    app.press("id:wq-unmatched-toggle").unwrap();
+    app.wait_for("Not assigned to @factory-bot").unwrap();
+}

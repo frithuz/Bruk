@@ -11,23 +11,27 @@ use std::{
 };
 
 use factory_core::{
-    AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings,
-    AttentionRequest, AttentionRequestBody, AttentionRequestKind, ClaudeCliProbe,
-    ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe,
-    CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CoreUpdatePolicy,
-    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
-    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
-    FontPreference, InboxFilter, InboxState, IntakeRule, IssueSourceKind, LoopExhaustedAction,
-    LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
-    MachinesFleet, NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId,
-    ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
-    ProjectWorkflowsOverview, ProviderKind, RunDetailTab, RunExecutionState, RunId, RunStatus,
-    StepTypeKind, ValidationReport, WorkQueueViewMode, Workflow, WorkflowEditorDocument,
-    WorkflowId, WorkflowRun, WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter,
-    WorkflowsSort, fetch_claude_details, fetch_codex_details, find_claude_setting_spec,
-    find_codex_setting_spec, probe_claude_cli, probe_codex_cli, resolve_claude_binary,
+    AGENT_WORKING_LABEL, AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AppearanceMode,
+    AppearanceSettings, AttentionRequest, AttentionRequestBody, AttentionRequestKind,
+    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
+    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
+    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
+    DefaultLandingView, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
+    FactoryState, FontPreference, GitHubAuth, GitHubFilterClause, InboxFilter, InboxState,
+    IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
+    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
+    NewMachineDraft, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
+    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
+    RunDetailTab, RunExecutionState, RunId, RunStatus, StepTypeKind, ValidationReport,
+    WorkQueueViewMode, Workflow, WorkflowEditorDocument, WorkflowId, WorkflowRun,
+    WorkflowRunViewData, WorkflowTemplateKind, WorkflowsFilter, WorkflowsSort,
+    add_github_issue_label, detect_git_remote_info, fetch_claude_details, fetch_codex_details,
+    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
+    probe_claude_cli, probe_codex_cli, remove_github_issue_label, resolve_claude_binary,
     resolve_codex_binary, run_claude_auth_login, run_codex_login,
 };
+
+const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
 use nsh_core::{
     element::desktop::main_window,
     geometry::{Bounds, Points},
@@ -130,6 +134,7 @@ struct AppState {
     work_queue_inspector_visible: bool,
     work_queue_ad_hoc_open: bool,
     work_queue_unmatched_expanded: bool,
+    work_queue_syncing: bool,
     workflows_overviews: BTreeMap<String, ProjectWorkflowsOverview>,
     workflows_filter: WorkflowsFilter,
     workflows_sort: WorkflowsSort,
@@ -340,15 +345,46 @@ impl AppState {
                     ProjectSettings::for_project(&project.name, &path_str, &project.default_branch),
                 );
             } else {
-                work_queues.insert(project.name.clone(), ProjectWorkQueue::empty(&project.name));
+                let loaded_settings = db
+                    .as_ref()
+                    .and_then(|arc| arc.lock().ok())
+                    .and_then(|guard| guard.load_project_settings(project.id).ok().flatten());
+                let mut settings = loaded_settings.unwrap_or_else(|| {
+                    ProjectSettings::empty(&project.name, &path_str, &project.default_branch)
+                });
+                if (settings.git_remote.trim().is_empty() || settings.github_repo.trim().is_empty())
+                    && let Some(detected) = detect_git_remote_info(&project.root_path)
+                {
+                    let before_repo = settings.github_repo.clone();
+                    let before_remote = settings.git_remote.clone();
+                    settings.apply_detected_git_remote(&detected);
+                    if (settings.github_repo != before_repo || settings.git_remote != before_remote)
+                        && let Some(db_arc) = db.as_ref()
+                        && let Ok(guard) = db_arc.lock()
+                    {
+                        let _ = guard.save_project_settings(project.id, &settings);
+                    }
+                }
+
+                let loaded_queue = db
+                    .as_ref()
+                    .and_then(|arc| arc.lock().ok())
+                    .and_then(|guard| guard.load_project_work_queue(project.id).ok().flatten());
+                let mut queue =
+                    loaded_queue.unwrap_or_else(|| ProjectWorkQueue::empty(&project.name));
+                if !settings.github_repo.trim().is_empty()
+                    || !settings.intake_filters.is_empty()
+                    || !settings.intake_rules.is_empty()
+                {
+                    apply_project_settings_to_queue(&settings, &mut queue);
+                }
+
+                work_queues.insert(project.name.clone(), queue);
                 workflows_overviews.insert(
                     project.name.clone(),
                     ProjectWorkflowsOverview::empty(&project.name),
                 );
-                project_settings.insert(
-                    project.name.clone(),
-                    ProjectSettings::empty(&project.name, &path_str, &project.default_branch),
-                );
+                project_settings.insert(project.name.clone(), settings);
             }
         }
 
@@ -435,6 +471,7 @@ impl AppState {
             work_queue_inspector_visible: true,
             work_queue_ad_hoc_open: false,
             work_queue_unmatched_expanded: false,
+            work_queue_syncing: false,
             workflows_overviews,
             workflows_filter: WorkflowsFilter::All,
             workflows_sort: WorkflowsSort::LastRun,
@@ -641,28 +678,104 @@ impl AppState {
     fn sync_queue_from_project_settings(&mut self) {
         let settings = self.active_project_settings_clone();
         let queue = self.ensure_queue_mut(&settings.project_name);
-        queue.max_agent_slots = settings.max_concurrent_runs;
-        if !settings.github_repo.trim().is_empty() {
-            queue.repo_slug = settings.github_repo.trim().to_owned();
+        apply_project_settings_to_queue(&settings, queue);
+    }
+
+    fn project_id_by_name(&self, name: &str) -> Option<ProjectId> {
+        if self.demo_mode || self.using_sample_projects {
+            return None;
         }
-        queue.tracker_name = settings.issue_source.title().to_owned();
-        let rules: Vec<IntakeRule> = settings
-            .intake_rules
+        self.factory
+            .projects()
             .iter()
-            .filter_map(|rule| {
-                rule.label.as_ref().map(|label| IntakeRule {
-                    label: label.clone(),
-                    workflow_name: rule.workflow_name.clone(),
-                })
-            })
-            .collect();
-        let fallback = settings
-            .intake_rules
-            .iter()
-            .find(|rule| rule.is_fallback())
-            .map(|rule| rule.workflow_name.clone())
-            .unwrap_or_else(|| queue.fallback_workflow.clone());
-        queue.update_intake_rules(settings.required_label.clone(), rules, fallback);
+            .find(|project| project.name == name)
+            .map(|project| project.id)
+    }
+
+    fn persist_project_settings_by_name(&mut self, project_name: &str) {
+        let Some(project_id) = self.project_id_by_name(project_name) else {
+            return;
+        };
+        let Some(settings) = self.project_settings.get(project_name).cloned() else {
+            return;
+        };
+        if let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+            && let Err(err) = db.save_project_settings(project_id, &settings)
+        {
+            self.project_settings_error = Some(format!("Could not save project settings: {err}"));
+        }
+    }
+
+    fn persist_active_project_settings(&mut self) {
+        let name = self.selected_project_name();
+        self.persist_project_settings_by_name(&name);
+    }
+
+    fn persist_work_queue_by_name(&mut self, project_name: &str) {
+        let Some(project_id) = self.project_id_by_name(project_name) else {
+            return;
+        };
+        let Some(queue) = self.work_queues.get(project_name).cloned() else {
+            return;
+        };
+        if let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.save_project_work_queue(project_id, &queue);
+        }
+    }
+
+    fn persist_active_work_queue(&mut self) {
+        let name = self.selected_project_name();
+        self.persist_work_queue_by_name(&name);
+    }
+
+    fn save_github_pat_for_active_project(&mut self, token: &str) {
+        let name = self.selected_project_name();
+        let Some(project_id) = self.project_id_by_name(&name) else {
+            return;
+        };
+        if let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+            && let Err(err) =
+                db.save_project_secret(project_id, GITHUB_PAT_SECRET_KEY, token.trim())
+        {
+            self.project_settings_error = Some(format!("Could not save GitHub token: {err}"));
+        }
+    }
+
+    fn resolve_github_auth_for_project(&self, project_name: &str) -> Result<GitHubAuth, String> {
+        let settings = self
+            .project_settings
+            .get(project_name)
+            .cloned()
+            .unwrap_or_else(|| self.active_project_settings_clone());
+        match settings.github_auth_mode {
+            IssueSourceAuthMode::GitHubCli => Ok(GitHubAuth::GitHubCli),
+            IssueSourceAuthMode::PersonalToken => {
+                let Some(project_id) = self.project_id_by_name(project_name) else {
+                    return Err("Project is not persisted in SQLite.".to_owned());
+                };
+                let token = self
+                    .db
+                    .as_ref()
+                    .and_then(|arc| arc.lock().ok())
+                    .and_then(|db| {
+                        db.load_project_secret(project_id, GITHUB_PAT_SECRET_KEY)
+                            .ok()
+                    })
+                    .flatten()
+                    .filter(|t| !t.trim().is_empty());
+                match token {
+                    Some(tok) => Ok(GitHubAuth::PersonalToken(tok)),
+                    None => Err(
+                        "No personal access token is saved for this project. Add a token or switch to GitHub CLI."
+                            .to_owned(),
+                    ),
+                }
+            }
+        }
     }
 
     fn ensure_workflow_run_mut(
@@ -1474,13 +1587,42 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                 } else {
                     s.factory.insert_project(project);
                 }
-                s.work_queues.entry(saved_name.clone()).or_insert_with(|| {
-                    if demo {
-                        ProjectWorkQueue::for_project(&saved_name)
-                    } else {
-                        ProjectWorkQueue::empty(&saved_name)
+                let initial_settings = if demo {
+                    ProjectSettings::for_project(&saved_name, &saved_path, &saved_branch)
+                } else {
+                    let mut clean = ProjectSettings::empty(&saved_name, &saved_path, &saved_branch);
+                    if let Some(detected) = detect_git_remote_info(Path::new(&saved_path)) {
+                        clean.apply_detected_git_remote(&detected);
                     }
-                });
+                    clean
+                };
+                if !demo
+                    && (!initial_settings.github_repo.trim().is_empty()
+                        || !initial_settings.git_remote.trim().is_empty())
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.save_project_settings(id, &initial_settings);
+                }
+                let initial_queue = if demo {
+                    ProjectWorkQueue::for_project(&saved_name)
+                } else {
+                    let mut q = ProjectWorkQueue::empty(&saved_name);
+                    if !initial_settings.github_repo.trim().is_empty() {
+                        apply_project_settings_to_queue(&initial_settings, &mut q);
+                    }
+                    q
+                };
+                if !demo
+                    && !initial_queue.repo_slug.trim().is_empty()
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.save_project_work_queue(id, &initial_queue);
+                }
+                s.work_queues
+                    .entry(saved_name.clone())
+                    .or_insert(initial_queue);
                 s.workflows_overviews
                     .entry(saved_name.clone())
                     .or_insert_with(|| {
@@ -1492,13 +1634,7 @@ pub(crate) fn register_project(name: &str, path: &str) -> bool {
                     });
                 s.project_settings
                     .entry(saved_name.clone())
-                    .or_insert_with(|| {
-                        if demo {
-                            ProjectSettings::for_project(&saved_name, &saved_path, &saved_branch)
-                        } else {
-                            ProjectSettings::empty(&saved_name, &saved_path, &saved_branch)
-                        }
-                    });
+                    .or_insert(initial_settings);
                 s.selected_project = Some(id);
                 s.expanded_projects.insert(id);
                 s.selected_run = None;
@@ -1659,13 +1795,74 @@ pub(crate) fn work_queue_unmatched_expanded() -> bool {
     state().with(|s| s.work_queue_unmatched_expanded)
 }
 
+pub(crate) fn work_queue_syncing() -> bool {
+    state().with(|s| s.work_queue_syncing)
+}
+
 pub(crate) fn toggle_work_queue_unmatched_expanded() {
     state().update(|s| {
         s.work_queue_unmatched_expanded = !s.work_queue_unmatched_expanded;
     });
 }
 
+fn spawn_github_working_label_update(issue_number: u32, add: bool) {
+    let job = state().with_untracked(|s| {
+        if s.demo_mode {
+            return None;
+        }
+        let settings = s.active_project_settings_clone();
+        if settings.issue_source != IssueSourceKind::GitHubIssues
+            || !settings.source_connected
+            || !settings.add_working_label
+            || settings.github_repo.trim().is_empty()
+        {
+            return None;
+        }
+        let auth = s
+            .resolve_github_auth_for_project(&settings.project_name)
+            .ok()?;
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        Some((settings.github_repo, auth, path_env))
+    });
+
+    if let Some((repo, auth, path_env)) = job {
+        Owner::detached().run(|| {
+            spawn(async move {
+                let result = spawn_blocking_task(move || {
+                    if add {
+                        add_github_issue_label(
+                            &repo,
+                            issue_number,
+                            AGENT_WORKING_LABEL,
+                            &auth,
+                            path_env.as_deref(),
+                        )
+                    } else {
+                        remove_github_issue_label(
+                            &repo,
+                            issue_number,
+                            AGENT_WORKING_LABEL,
+                            &auth,
+                            path_env.as_deref(),
+                        )
+                    }
+                })
+                .await;
+                if let Err(err) = result {
+                    state().update(|s| {
+                        let verb = if add { "add" } else { "remove" };
+                        s.status_message = Some(format!(
+                            "Could not {verb} '{AGENT_WORKING_LABEL}' label on #{issue_number}: {err}"
+                        ));
+                    });
+                }
+            });
+        });
+    }
+}
+
 pub(crate) fn start_work_queue_issue(issue_number: u32) {
+    let mut started = false;
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -1675,15 +1872,21 @@ pub(crate) fn start_work_queue_issue(issue_number: u32) {
                 s.status_message = Some(format!(
                     "Started issue #{issue_number} as run #{run_number}"
                 ));
+                s.persist_active_work_queue();
+                started = true;
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
             }
         }
     });
+    if started {
+        spawn_github_working_label_update(issue_number, true);
+    }
 }
 
 pub(crate) fn start_next_queued_issue() {
+    let mut started_issue = None;
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -1694,12 +1897,17 @@ pub(crate) fn start_next_queued_issue() {
                 s.status_message = Some(format!(
                     "Started next queued issue #{issue_number} as run #{run_number}"
                 ));
+                s.persist_active_work_queue();
+                started_issue = Some(issue_number);
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
             }
         }
     });
+    if let Some(issue_number) = started_issue {
+        spawn_github_working_label_update(issue_number, true);
+    }
 }
 
 pub(crate) fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &str) {
@@ -1710,6 +1918,7 @@ pub(crate) fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &st
         match queue.reassign_workflow(issue_number, &wf) {
             Ok(()) => {
                 s.status_message = Some(format!("Assigned #{issue_number} to workflow '{wf}'"));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1727,6 +1936,7 @@ pub(crate) fn skip_work_queue_issue(issue_number: u32) {
                 let next_selected = queue.default_selected_issue();
                 s.work_queue_selected_issue = next_selected;
                 s.status_message = Some(format!("Skipped issue #{issue_number}"));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1745,6 +1955,7 @@ pub(crate) fn approve_work_queue_review(issue_number: u32) {
                 s.status_message = Some(format!(
                     "Approved review gate for #{issue_number} — PR merged"
                 ));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1763,6 +1974,7 @@ pub(crate) fn request_changes_work_queue_review(issue_number: u32) {
                 s.status_message = Some(format!(
                     "Requested changes on #{issue_number} — resumed agent run"
                 ));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1772,6 +1984,7 @@ pub(crate) fn request_changes_work_queue_review(issue_number: u32) {
 }
 
 pub(crate) fn stop_work_queue_issue(issue_number: u32) {
+    let mut stopped = false;
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -1779,12 +1992,17 @@ pub(crate) fn stop_work_queue_issue(issue_number: u32) {
             Ok(()) => {
                 s.work_queue_selected_issue = Some(issue_number);
                 s.status_message = Some(format!("Stopped run for #{issue_number} and re-queued"));
+                s.persist_active_work_queue();
+                stopped = true;
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
             }
         }
     });
+    if stopped {
+        spawn_github_working_label_update(issue_number, false);
+    }
 }
 
 pub(crate) fn requeue_work_queue_issue(issue_number: u32) {
@@ -1795,6 +2013,7 @@ pub(crate) fn requeue_work_queue_issue(issue_number: u32) {
             Ok(()) => {
                 s.work_queue_selected_issue = Some(issue_number);
                 s.status_message = Some(format!("Re-queued issue #{issue_number}"));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1811,6 +2030,7 @@ pub(crate) fn queue_unmatched_work_issue(issue_number: u32) {
             Ok(()) => {
                 s.work_queue_selected_issue = Some(issue_number);
                 s.status_message = Some(format!("Added issue #{issue_number} to Ready for agents"));
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
@@ -1819,24 +2039,251 @@ pub(crate) fn queue_unmatched_work_issue(issue_number: u32) {
     });
 }
 
-pub(crate) fn sync_work_queue() {
-    state().update(|s| {
-        let name = s.selected_project_name();
-        let queue = s.ensure_queue_mut(&name);
-        let slug = queue.repo_slug.clone();
-        match queue.sync_issues() {
-            Some(imported) => {
-                s.work_queue_selected_issue = Some(imported.issue_number);
-                s.status_message = Some(format!(
-                    "Synced {slug} — queued #{} {}",
-                    imported.issue_number, imported.title
-                ));
-            }
-            None => {
-                s.status_message = Some(format!("Synced {slug} — work queue is up to date"));
-            }
-        }
+pub(crate) fn open_work_queue_issue_url(url: &str) {
+    let url_owned = url.to_owned();
+    let should_open = state().with_untracked(|s| {
+        !s.demo_mode
+            && matches!(s.claude_path_lookup, ClaudePathLookup::SystemPath)
+            && (url_owned.starts_with("https://") || url_owned.starts_with("http://"))
     });
+    set_status_message(format!("Issue URL: {url_owned}"));
+    if should_open {
+        #[cfg(target_os = "macos")]
+        {
+            let _ = std::process::Command::new("/usr/bin/open")
+                .arg(&url_owned)
+                .spawn();
+        }
+    }
+}
+
+pub(crate) fn sync_work_queue() {
+    sync_github_issues_for_active_project(false);
+}
+
+pub(crate) fn test_and_sync_project_github_source() {
+    sync_github_issues_for_active_project(true);
+}
+
+fn sync_github_issues_for_active_project(from_settings: bool) {
+    struct GitHubSyncJob {
+        project_name: String,
+        raw_repo: String,
+        filter_clauses: Vec<GitHubFilterClause>,
+        auth: GitHubAuth,
+        path_env: Option<OsString>,
+    }
+
+    let mut background_job: Option<GitHubSyncJob> = None;
+
+    state().update(|s| {
+        if s.demo_mode {
+            let name = s.selected_project_name();
+            let queue = s.ensure_queue_mut(&name);
+            let slug = queue.repo_slug.clone();
+            match queue.sync_issues() {
+                Some(imported) => {
+                    s.work_queue_selected_issue = Some(imported.issue_number);
+                    let msg = format!(
+                        "Synced {slug} — queued #{} {}",
+                        imported.issue_number, imported.title
+                    );
+                    s.status_message = Some(msg.clone());
+                    if from_settings {
+                        s.project_settings_error = None;
+                        s.project_settings_feedback = Some(msg);
+                    }
+                }
+                None => {
+                    let msg = format!("Synced {slug} — work queue is up to date");
+                    s.status_message = Some(msg.clone());
+                    if from_settings {
+                        s.project_settings_error = None;
+                        s.project_settings_feedback = Some(msg);
+                    }
+                }
+            }
+            return;
+        }
+
+        if s.work_queue_syncing {
+            return;
+        }
+
+        let settings = s.active_project_settings_clone();
+        if settings.project_name.trim().is_empty() {
+            let msg = "Select or register a project before syncing issues.".to_owned();
+            s.status_message = Some(msg.clone());
+            if from_settings {
+                s.project_settings_error = Some(msg);
+            }
+            return;
+        }
+
+        if settings.issue_source != IssueSourceKind::GitHubIssues {
+            let msg = format!(
+                "{} live sync is not wired yet — switch to GitHub Issues.",
+                settings.issue_source.title()
+            );
+            s.status_message = Some(msg.clone());
+            if from_settings {
+                s.project_settings_feedback = None;
+                s.project_settings_error = Some(msg);
+            }
+            return;
+        }
+
+        let raw_repo = settings.github_repo.trim().to_owned();
+        if raw_repo.is_empty() {
+            let msg =
+                "Configure a GitHub repository (owner/repo) in Project Settings first.".to_owned();
+            s.status_message = Some(msg.clone());
+            if from_settings {
+                s.project_settings_feedback = None;
+                s.project_settings_error = Some(msg);
+            }
+            return;
+        }
+
+        let auth = match s.resolve_github_auth_for_project(&settings.project_name) {
+            Ok(auth) => auth,
+            Err(err) => {
+                s.ensure_project_settings_mut()
+                    .apply_github_sync_error(&err);
+                s.persist_active_project_settings();
+                s.status_message = Some(err.clone());
+                if from_settings {
+                    s.project_settings_feedback = None;
+                    s.project_settings_error = Some(err);
+                }
+                return;
+            }
+        };
+
+        let filter_clauses = settings.effective_intake_filter_clauses();
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        s.work_queue_syncing = true;
+        s.project_settings_error = None;
+        let syncing_msg = format!("Syncing GitHub issues for {raw_repo}…");
+        s.status_message = Some(syncing_msg.clone());
+        if from_settings {
+            s.project_settings_feedback = Some(syncing_msg);
+        }
+
+        background_job = Some(GitHubSyncJob {
+            project_name: settings.project_name,
+            raw_repo,
+            filter_clauses,
+            auth,
+            path_env,
+        });
+    });
+
+    if let Some(GitHubSyncJob {
+        project_name,
+        raw_repo,
+        filter_clauses,
+        auth,
+        path_env,
+    }) = background_job
+    {
+        Owner::detached().run(|| {
+            spawn(async move {
+                let result = spawn_blocking_task(move || {
+                    fetch_github_open_issues_with_filter(
+                        &raw_repo,
+                        &filter_clauses,
+                        &auth,
+                        path_env.as_deref(),
+                    )
+                })
+                .await;
+
+                let mut auto_started_issues = Vec::new();
+                state().update(|s| {
+                    s.work_queue_syncing = false;
+                    if s.demo_mode {
+                        return;
+                    }
+                    match result {
+                        Ok(snapshot) => {
+                            let open_count = snapshot.open_issues.len() as u32;
+                            if let Some(settings) = s.project_settings.get_mut(&project_name) {
+                                settings.apply_github_sync_success(
+                                    &snapshot.repo,
+                                    open_count,
+                                    snapshot.synced_at_unix,
+                                );
+                            }
+                            let settings_snapshot = s.project_settings.get(&project_name).cloned();
+                            let diff = {
+                                let queue = s.ensure_queue_mut(&project_name);
+                                if let Some(ref settings) = settings_snapshot {
+                                    apply_project_settings_to_queue(settings, queue);
+                                }
+                                let diff = queue.apply_github_snapshot(&snapshot);
+                                if let Some(ref settings) = settings_snapshot
+                                    && settings.auto_start_matching_work
+                                    && !settings.archived
+                                {
+                                    while queue.busy_slots() < settings.max_concurrent_runs as usize
+                                    {
+                                        match queue.start_next_queued() {
+                                            Ok((issue_no, _)) => auto_started_issues.push(issue_no),
+                                            Err(_) => break,
+                                        }
+                                    }
+                                }
+                                diff
+                            };
+
+                            if s.selected_project_name() == project_name {
+                                s.sync_selected_issue_for_active_project();
+                            }
+                            s.persist_project_settings_by_name(&project_name);
+                            s.persist_work_queue_by_name(&project_name);
+
+                            let summary = if !diff.newly_queued.is_empty() {
+                                format!(
+                                    "Synced {} — {} open ({} ready, {} newly queued, {} unmatched)",
+                                    snapshot.repo,
+                                    diff.total_open,
+                                    diff.ready_count,
+                                    diff.newly_queued.len(),
+                                    diff.unmatched_count
+                                )
+                            } else {
+                                format!(
+                                    "Synced {} — {} open ({} ready, {} unmatched)",
+                                    snapshot.repo,
+                                    diff.total_open,
+                                    diff.ready_count,
+                                    diff.unmatched_count
+                                )
+                            };
+                            s.status_message = Some(summary.clone());
+                            s.project_settings_error = None;
+                            s.project_settings_feedback = Some(summary);
+                        }
+                        Err(err) => {
+                            let message = err.to_string();
+                            if let Some(settings) = s.project_settings.get_mut(&project_name) {
+                                settings.apply_github_sync_error(&message);
+                            }
+                            s.persist_project_settings_by_name(&project_name);
+                            s.status_message = Some(format!("GitHub sync failed: {message}"));
+                            s.project_settings_feedback = None;
+                            s.project_settings_error = Some(message);
+                        }
+                    }
+                });
+
+                for issue_no in auto_started_issues {
+                    spawn_github_working_label_update(issue_no, true);
+                }
+            });
+        });
+    }
 }
 
 pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
@@ -1854,6 +2301,7 @@ pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
                     "Started ad-hoc run #{run_no} ({wf}): {}",
                     prompt.trim()
                 ));
+                s.persist_active_work_queue();
                 launched = true;
             }
             Err(err) => {
@@ -4749,6 +5197,8 @@ pub(crate) fn set_project_issue_source(source: IssueSourceKind) {
                 s.project_settings_error = None;
                 s.project_settings_feedback = None;
                 s.sync_queue_from_project_settings();
+                s.persist_active_project_settings();
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.project_settings_error = Some(err.to_string());
@@ -4760,9 +5210,31 @@ pub(crate) fn set_project_issue_source(source: IssueSourceKind) {
 pub(crate) fn set_project_github_repo(repo: &str) {
     let repo = repo.to_owned();
     state().update(|s| {
-        s.ensure_project_settings_mut().github_repo = repo;
+        let demo = s.demo_mode;
+        let settings = s.ensure_project_settings_mut();
+        if settings.github_repo != repo {
+            settings.github_repo = repo;
+            if !demo {
+                settings.source_connected = false;
+                settings.source_error = None;
+            }
+        }
         s.project_settings_error = None;
         s.sync_queue_from_project_settings();
+        s.persist_active_project_settings();
+        s.persist_active_work_queue();
+    });
+}
+
+pub(crate) fn set_project_fallback_workflow(workflow: &str) {
+    let workflow = workflow.to_owned();
+    state().update(|s| {
+        s.ensure_project_settings_mut()
+            .set_fallback_workflow(&workflow);
+        s.project_settings_error = None;
+        s.sync_queue_from_project_settings();
+        s.persist_active_project_settings();
+        s.persist_active_work_queue();
     });
 }
 
@@ -4771,6 +5243,7 @@ pub(crate) fn set_project_itsaplan_workspace(workspace: &str) {
     state().update(|s| {
         s.ensure_project_settings_mut().itsaplan_workspace = workspace;
         s.project_settings_error = None;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4779,32 +5252,48 @@ pub(crate) fn set_project_itsaplan_agent_member(member: &str) {
     state().update(|s| {
         s.ensure_project_settings_mut().itsaplan_agent_member = member;
         s.project_settings_error = None;
+        s.persist_active_project_settings();
     });
 }
 
 pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
     let mut ok = false;
-    state().update(
-        |s| match s.ensure_project_settings_mut().set_github_token(raw_token) {
+    state().update(|s| {
+        let demo = s.demo_mode;
+        match s.ensure_project_settings_mut().set_github_token(raw_token) {
             Ok(()) => {
+                if !demo {
+                    let settings = s.ensure_project_settings_mut();
+                    settings.source_connected = false;
+                    settings.source_error = None;
+                    s.save_github_pat_for_active_project(raw_token);
+                }
                 s.project_settings_error = None;
                 s.project_settings_feedback =
-                    Some("Saved personal access token in macOS Keychain.".to_owned());
+                    Some("Saved personal access token for this project.".to_owned());
+                s.persist_active_project_settings();
                 ok = true;
             }
             Err(err) => {
                 s.project_settings_error = Some(err.to_string());
             }
-        },
-    );
+        }
+    });
     ok
 }
 
 pub(crate) fn use_project_github_cli() {
     state().update(|s| {
-        s.ensure_project_settings_mut().use_github_cli();
+        let demo = s.demo_mode;
+        let settings = s.ensure_project_settings_mut();
+        settings.use_github_cli();
+        if !demo {
+            settings.source_connected = false;
+            settings.source_error = None;
+        }
         s.project_settings_error = None;
         s.project_settings_feedback = Some("Using GitHub CLI (gh) sign-in.".to_owned());
+        s.persist_active_project_settings();
     });
 }
 
@@ -4823,6 +5312,76 @@ pub(crate) fn add_project_intake_rule(label: &str, workflow_name: &str) -> bool 
                     workflow_name.trim()
                 ));
                 s.sync_queue_from_project_settings();
+                s.persist_active_project_settings();
+                s.persist_active_work_queue();
+                added = true;
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+    added
+}
+
+pub(crate) fn add_project_intake_filter(clause: GitHubFilterClause) -> bool {
+    let mut added = false;
+    state().update(|s| {
+        let token = clause.to_github_query_token();
+        match s.ensure_project_settings_mut().add_intake_filter(clause) {
+            Ok(()) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback = Some(format!("Added search filter: {token}"));
+                s.sync_queue_from_project_settings();
+                s.persist_active_project_settings();
+                s.persist_active_work_queue();
+                added = true;
+            }
+            Err(err) => {
+                s.project_settings_error = Some(err.to_string());
+            }
+        }
+    });
+    added
+}
+
+pub(crate) fn remove_project_intake_filter(index: usize) {
+    state().update(|s| {
+        if s.ensure_project_settings_mut().remove_intake_filter(index) {
+            s.project_settings_error = None;
+            s.project_settings_feedback = Some("Removed search filter.".to_owned());
+            s.sync_queue_from_project_settings();
+            s.persist_active_project_settings();
+            s.persist_active_work_queue();
+        }
+    });
+}
+
+pub(crate) fn add_project_intake_rule_with_clauses(
+    clauses: Vec<GitHubFilterClause>,
+    workflow_name: &str,
+) -> bool {
+    let mut added = false;
+    state().update(|s| {
+        let condition = clauses
+            .iter()
+            .filter(|c| !c.is_empty())
+            .map(GitHubFilterClause::human_summary)
+            .collect::<Vec<_>>()
+            .join(" and ");
+        match s
+            .ensure_project_settings_mut()
+            .add_intake_rule_with_clauses(clauses, workflow_name)
+        {
+            Ok(_) => {
+                s.project_settings_error = None;
+                s.project_settings_feedback = Some(format!(
+                    "Added rule: {condition} → {}",
+                    workflow_name.trim()
+                ));
+                s.sync_queue_from_project_settings();
+                s.persist_active_project_settings();
+                s.persist_active_work_queue();
                 added = true;
             }
             Err(err) => {
@@ -4839,6 +5398,8 @@ pub(crate) fn remove_project_intake_rule(rule_id: u64) {
             s.project_settings_error = None;
             s.project_settings_feedback = Some("Removed intake rule.".to_owned());
             s.sync_queue_from_project_settings();
+            s.persist_active_project_settings();
+            s.persist_active_work_queue();
         }
     });
 }
@@ -4852,6 +5413,8 @@ pub(crate) fn set_project_max_concurrent_runs_str(value: &str) {
             Ok(()) => {
                 s.project_settings_error = None;
                 s.sync_queue_from_project_settings();
+                s.persist_active_project_settings();
+                s.persist_active_work_queue();
             }
             Err(err) => {
                 s.project_settings_error = Some(err.to_string());
@@ -4866,6 +5429,8 @@ pub(crate) fn step_project_max_concurrent_runs(delta: i32) {
             .step_max_concurrent_runs(delta);
         s.project_settings_error = None;
         s.sync_queue_from_project_settings();
+        s.persist_active_project_settings();
+        s.persist_active_work_queue();
     });
 }
 
@@ -4873,6 +5438,7 @@ pub(crate) fn toggle_project_auto_start() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_start_matching_work = !settings.auto_start_matching_work;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4880,6 +5446,7 @@ pub(crate) fn toggle_project_add_working_label() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.add_working_label = !settings.add_working_label;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4887,6 +5454,7 @@ pub(crate) fn toggle_project_comment_summary() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.comment_with_run_summary = !settings.comment_with_run_summary;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4894,6 +5462,7 @@ pub(crate) fn toggle_project_link_pr_closes_issue() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.link_pr_closes_issue = !settings.link_pr_closes_issue;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4901,6 +5470,7 @@ pub(crate) fn set_project_default_branch(branch: &str) {
     let branch = branch.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().default_branch = branch;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4908,6 +5478,7 @@ pub(crate) fn set_project_branch_prefix(prefix: &str) {
     let prefix = prefix.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().branch_prefix = prefix;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4915,6 +5486,7 @@ pub(crate) fn toggle_project_isolated_worktrees() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.use_isolated_worktrees = !settings.use_isolated_worktrees;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4922,6 +5494,7 @@ pub(crate) fn toggle_project_draft_prs() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.open_prs_as_draft = !settings.open_prs_as_draft;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4929,6 +5502,7 @@ pub(crate) fn toggle_project_auto_cleanup_worktrees() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_cleanup_worktrees = !settings.auto_cleanup_worktrees;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4944,18 +5518,21 @@ pub(crate) fn toggle_project_archived() {
         } else {
             "Project restored from archive.".to_owned()
         });
+        s.persist_active_project_settings();
     });
 }
 
 pub(crate) fn set_project_default_provider(provider: ProviderKind) {
     state().update(|s| {
         s.ensure_project_settings_mut().default_provider = provider;
+        s.persist_active_project_settings();
     });
 }
 
 pub(crate) fn set_project_openrouter_key(key_id: Option<String>) {
     state().update(|s| {
         s.ensure_project_settings_mut().openrouter_key_id = key_id;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4963,6 +5540,7 @@ pub(crate) fn set_project_model_override(model: &str) {
     let model = model.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().model_override = model;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4970,6 +5548,7 @@ pub(crate) fn toggle_project_workflow(name: &str) {
     let name = name.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().toggle_workflow(&name);
+        s.persist_active_project_settings();
     });
 }
 
@@ -4977,6 +5556,7 @@ pub(crate) fn toggle_project_require_review_before_pr() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.require_review_before_pr = !settings.require_review_before_pr;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4984,6 +5564,7 @@ pub(crate) fn toggle_project_auto_reload_workflows() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_reload_workflows = !settings.auto_reload_workflows;
+        s.persist_active_project_settings();
     });
 }
 
@@ -4998,6 +5579,7 @@ pub(crate) fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bo
                 s.project_settings_error = None;
                 s.project_settings_feedback =
                     Some(format!("Added environment variable {}.", key.trim()));
+                s.persist_active_project_settings();
                 added = true;
             }
             Err(err) => {
@@ -5013,6 +5595,7 @@ pub(crate) fn remove_project_env_var(id: u64) {
         if s.ensure_project_settings_mut().remove_env_var(id) {
             s.project_settings_error = None;
             s.project_settings_feedback = Some("Removed environment variable.".to_owned());
+            s.persist_active_project_settings();
         }
     });
 }
@@ -5021,6 +5604,7 @@ pub(crate) fn toggle_project_load_dotenv() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.load_dotenv_local = !settings.load_dotenv_local;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5028,6 +5612,7 @@ pub(crate) fn toggle_project_inherit_host_path() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.inherit_host_path = !settings.inherit_host_path;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5036,6 +5621,7 @@ pub(crate) fn step_project_max_loop_attempts(delta: i32) {
         let settings = s.ensure_project_settings_mut();
         settings.max_loop_attempts =
             (settings.max_loop_attempts as i32 + delta).clamp(1, 20) as u32;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5044,6 +5630,7 @@ pub(crate) fn step_project_step_timeout(delta: i32) {
         let settings = s.ensure_project_settings_mut();
         settings.step_timeout_minutes =
             (settings.step_timeout_minutes as i32 + delta).clamp(5, 120) as u32;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5052,6 +5639,7 @@ pub(crate) fn step_project_per_run_budget(delta_cents: i64) {
         let settings = s.ensure_project_settings_mut();
         let next = (settings.per_run_budget_cents as i64 + delta_cents).clamp(100, 10_000);
         settings.per_run_budget_cents = next as u64;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5060,6 +5648,7 @@ pub(crate) fn step_project_monthly_budget(delta_cents: i64) {
         let settings = s.ensure_project_settings_mut();
         let next = (settings.monthly_budget_cents as i64 + delta_cents).clamp(1_000, 500_000);
         settings.monthly_budget_cents = next as u64;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5067,6 +5656,7 @@ pub(crate) fn toggle_project_pause_on_budget() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.pause_on_budget_limit = !settings.pause_on_budget_limit;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5074,12 +5664,14 @@ pub(crate) fn toggle_project_require_approval_for_ci() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.require_approval_for_ci = !settings.require_approval_for_ci;
+        s.persist_active_project_settings();
     });
 }
 
 pub(crate) fn set_project_sandbox_mode(mode: ProjectSandboxMode) {
     state().update(|s| {
         s.ensure_project_settings_mut().sandbox_mode = mode;
+        s.persist_active_project_settings();
     });
 }
 
@@ -5087,7 +5679,22 @@ pub(crate) fn set_project_preferred_runner(runner: &str) {
     let runner = runner.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().preferred_runner = runner;
+        s.persist_active_project_settings();
     });
+}
+
+fn apply_project_settings_to_queue(settings: &ProjectSettings, queue: &mut ProjectWorkQueue) {
+    queue.max_agent_slots = settings.max_concurrent_runs;
+    queue.repo_slug = settings.github_repo.trim().to_owned();
+    queue.tracker_name = settings.issue_source.title().to_owned();
+    let rules: Vec<IntakeRule> = settings
+        .intake_rules
+        .iter()
+        .filter(|rule| !rule.is_fallback())
+        .map(|rule| IntakeRule::with_clauses(rule.effective_clauses(), rule.workflow_name.clone()))
+        .collect();
+    let fallback = settings.fallback_workflow_name();
+    queue.update_intake_rules(settings.intake_filters.clone(), rules, fallback);
 }
 
 // --- Workflows Overview state -----------------------------------------------------------

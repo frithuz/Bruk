@@ -3,10 +3,10 @@
 //! Default `Issues & intake` pane matches `05 ProjectSettings.png`.
 
 use factory_core::{
-    IssueSourceAuthMode, IssueSourceKind, ProjectIntakeRule, ProjectSandboxMode,
-    ProjectSettingsTab, ProviderKind,
+    GitHubFilterClause, GitHubFilterQualifier, IssueSourceAuthMode, IssueSourceKind,
+    ProjectIntakeRule, ProjectSandboxMode, ProjectSettingsTab, ProviderKind,
 };
-use nsh_base::{button, input};
+use nsh_base::{SelectItem, SelectValue, button, input, select};
 use nsh_core::prelude::*;
 
 use crate::{
@@ -388,35 +388,80 @@ fn source_details_card(
         ))
         .child(card_divider())
         .child(dynamic(|| {
-            let status_text = store::active_project_settings().source_status_text();
+            let settings = store::active_project_settings();
+            let status_text = settings.source_status_text();
             let status_ok = status_text.starts_with("Connected");
+            let status_err = status_text.starts_with("Sync error");
+            let is_github = settings.issue_source == IssueSourceKind::GitHubIssues;
+            let has_repo = !settings.github_repo.trim().is_empty();
+            let syncing = store::work_queue_syncing();
+
             view()
                 .flex_row()
                 .items_center()
+                .justify_between()
                 .gap(px(12.0))
                 .px(px(16.0))
                 .py(px(11.0))
-                .child(form_row_label("Status"))
                 .child(
                     view()
+                        .flex_1()
+                        .min_w(px(0.0))
                         .flex_row()
                         .items_center()
-                        .gap(px(6.0))
-                        .child(when(
-                            move || status_ok,
-                            || icons::check(palette::success_text()),
-                        ))
+                        .gap(px(12.0))
+                        .child(form_row_label("Status"))
                         .child(
-                            text(status_text)
-                                .text_size(px(12.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(if status_ok {
-                                    palette::success_text()
-                                } else {
-                                    palette::warning_text()
-                                }),
+                            view()
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(when(
+                                    move || status_ok,
+                                    || icons::check(palette::success_text()),
+                                ))
+                                .child(
+                                    text(status_text)
+                                        .flex_1()
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(if status_ok {
+                                            palette::success_text()
+                                        } else if status_err {
+                                            palette::destructive_text()
+                                        } else {
+                                            palette::warning_text()
+                                        }),
+                                ),
                         ),
                 )
+                .child(when(
+                    move || is_github,
+                    move || {
+                        button()
+                            .test_id("ps-github-sync-btn")
+                            .accessibility_label(if syncing { "Syncing…" } else { "Test & Sync" })
+                            .disabled(syncing || !has_repo)
+                            .on_press(store::test_and_sync_project_github_source)
+                            .px(px(12.0))
+                            .py(px(5.5))
+                            .rounded(px(7.0))
+                            .border_1()
+                            .border_color(palette::border_color())
+                            .bg(palette::control_bg())
+                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                            .active(|s| s.opacity(0.8))
+                            .disabled_style(|s| s.opacity(0.45))
+                            .child(
+                                text(if syncing { "Syncing…" } else { "Test & Sync" })
+                                    .text_size(px(12.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::text_primary()),
+                            )
+                    },
+                ))
         }))
 }
 
@@ -641,6 +686,14 @@ fn intake_rules_section(
             .max_concurrent_runs
             .to_string(),
     );
+    let add_filter_open = signal(false);
+    let draft_filter_qualifier = signal(GitHubFilterQualifier::Label);
+    let draft_filter_negated = signal(false);
+    let draft_filter_value = signal(String::new());
+
+    let draft_rule_qualifier = signal(GitHubFilterQualifier::Label);
+    let draft_rule_negated = signal(false);
+    let draft_rule_clauses = signal(Vec::<GitHubFilterClause>::new());
 
     view()
         .gap(px(12.0))
@@ -657,6 +710,196 @@ fn intake_rules_section(
                     text(|| store::active_project_settings().intake_rules_subtitle())
                         .text_size(px(12.0))
                         .text_color(palette::text_muted()),
+                ),
+        )
+        .child(
+            view()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_bg())
+                .overflow_hidden()
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(12.0))
+                        .px(px(16.0))
+                        .py(px(9.5))
+                        .child(form_row_label("Fallback workflow"))
+                        .child(
+                            input()
+                                .test_id("ps-fallback-workflow")
+                                .flex_1()
+                                .value(|| store::active_project_settings().fallback_workflow_name())
+                                .on_change(store::set_project_fallback_workflow)
+                                .placeholder("e.g. Triage new issues (optional)")
+                                .px(px(10.0))
+                                .py(px(6.0))
+                                .rounded(px(7.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::card_inset_bg())
+                                .text_size(px(12.5))
+                                .text_color(palette::text_primary()),
+                        ),
+                )
+                .child(card_divider())
+                .child(
+                    view()
+                        .px(px(16.0))
+                        .py(px(10.0))
+                        .gap(px(9.0))
+                        .child(dynamic(move || {
+                            let settings = store::active_project_settings();
+                            let query_preview = settings.effective_github_search_query();
+
+                            let mut header = view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.0))
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(12.0))
+                                        .child(form_row_label("Search filters"))
+                                        .child(
+                                            text(if settings.intake_filters.is_empty() {
+                                                "Optional — filter by label, assignee, author, milestone, exclusions, or any GitHub search query."
+                                                    .to_owned()
+                                            } else {
+                                                format!("Query: {query_preview}")
+                                            })
+                                            .flex_1()
+                                            .app_class(if settings.intake_filters.is_empty() {
+                                                ""
+                                            } else {
+                                                "font-mono"
+                                            })
+                                            .text_size(px(12.0))
+                                            .text_color(palette::text_muted()),
+                                        ),
+                                )
+                                .child(secondary_button("ps-add-filter-btn", "Add Filter", move || {
+                                    store::clear_project_settings_messages();
+                                    draft_filter_value.set(String::new());
+                                    draft_filter_negated.set(false);
+                                    add_filter_open.update(|open| *open = !*open);
+                                }));
+
+                            if !settings.intake_filters.is_empty() {
+                                let mut chips = view()
+                                    .pl(px(152.0))
+                                    .flex_row()
+                                    .flex_wrap()
+                                    .items_center()
+                                    .gap(px(6.0));
+                                for (idx, clause) in settings.intake_filters.iter().enumerate() {
+                                    let remove_id = format!("ps-remove-filter-{idx}");
+                                    let token = clause.to_github_query_token();
+                                    chips = chips.child(
+                                        view()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .px(px(8.5))
+                                            .py(px(3.5))
+                                            .rounded(px(6.5))
+                                            .border_1()
+                                            .border_color(palette::border_color())
+                                            .bg(palette::card_inset_bg())
+                                            .child(
+                                                text(token.clone())
+                                                    .app_class("font-mono")
+                                                    .text_size(px(11.5))
+                                                    .text_color(palette::text_primary()),
+                                            )
+                                            .child(
+                                                button()
+                                                    .test_id(&remove_id)
+                                                    .accessibility_label(format!(
+                                                        "Remove filter {token}"
+                                                    ))
+                                                    .on_press(move || {
+                                                        store::remove_project_intake_filter(idx);
+                                                    })
+                                                    .px(px(3.0))
+                                                    .rounded(px(4.0))
+                                                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                                    .child(
+                                                        text("×")
+                                                            .text_size(px(12.0))
+                                                            .text_color(palette::text_muted()),
+                                                    ),
+                                            ),
+                                    );
+                                }
+                                header = view().gap(px(8.0)).child(header).child(chips);
+                            }
+                            header
+                        }))
+                        .child(when(
+                            move || add_filter_open.get(),
+                            move || {
+                                let save_filter = move || {
+                                    let q = draft_filter_qualifier.get_untracked();
+                                    let neg = draft_filter_negated.get_untracked();
+                                    let val = draft_filter_value.get_untracked();
+                                    let clause = GitHubFilterClause::with_negation(q, val, neg);
+                                    if store::add_project_intake_filter(clause) {
+                                        draft_filter_value.set(String::new());
+                                        draft_filter_negated.set(false);
+                                        add_filter_open.set(false);
+                                    }
+                                };
+
+                                view()
+                                    .pl(px(152.0))
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(qualifier_select(
+                                        "ps-filter-qualifier",
+                                        "Filter qualifier",
+                                        draft_filter_qualifier,
+                                        draft_filter_negated,
+                                    ))
+                                    .child(negate_toggle_button(
+                                        "ps-filter-negate",
+                                        draft_filter_qualifier,
+                                        draft_filter_negated,
+                                    ))
+                                    .child(dynamic(move || {
+                                        let q = draft_filter_qualifier.get();
+                                        input()
+                                            .test_id("ps-filter-value")
+                                            .flex_1()
+                                            .value(move || draft_filter_value.get())
+                                            .on_change(move |v: &str| {
+                                                draft_filter_value.set(v.to_owned());
+                                            })
+                                            .placeholder(q.placeholder())
+                                            .app_class("font-mono")
+                                            .px(px(10.0))
+                                            .py(px(6.0))
+                                            .rounded(px(7.0))
+                                            .border_1()
+                                            .border_color(palette::border_color())
+                                            .bg(palette::card_inset_bg())
+                                            .text_size(px(12.5))
+                                            .text_color(palette::text_primary())
+                                    }))
+                                    .child(secondary_button("ps-filter-cancel", "Cancel", move || {
+                                        store::clear_project_settings_messages();
+                                        add_filter_open.set(false);
+                                    }))
+                                    .child(primary_button("ps-filter-save", "Add", save_filter))
+                            },
+                        )),
                 ),
         )
         .child(dynamic(move || {
@@ -727,6 +970,9 @@ fn intake_rules_section(
                 .gap(px(12.0))
                 .child(secondary_button("ps-add-rule-btn", "Add Rule", move || {
                     store::clear_project_settings_messages();
+                    draft_rule_qualifier.set(GitHubFilterQualifier::Label);
+                    draft_rule_negated.set(false);
+                    draft_rule_clauses.set(Vec::new());
                     draft_rule_label.set(String::new());
                     draft_rule_workflow.set("Fix issue".to_owned());
                     add_rule_open.update(|open| *open = !*open);
@@ -767,11 +1013,48 @@ fn intake_rules_section(
         .child(when(
             move || add_rule_open.get(),
             move || {
-                let save_rule = move || {
-                    let label = draft_rule_label.get_untracked();
-                    let workflow = draft_rule_workflow.get_untracked();
-                    if store::add_project_intake_rule(&label, &workflow) {
+                let stage_current_clause = move || {
+                    let q = draft_rule_qualifier.get_untracked();
+                    let neg = draft_rule_negated.get_untracked();
+                    let val = draft_rule_label.get_untracked();
+                    let clause = GitHubFilterClause::with_negation(q, val, neg);
+                    if !clause.is_empty() {
+                        draft_rule_clauses.update(|list| {
+                            let key = clause.dedupe_key();
+                            if !list.iter().any(|c| c.dedupe_key() == key) {
+                                list.push(clause);
+                            }
+                        });
                         draft_rule_label.set(String::new());
+                        draft_rule_negated.set(false);
+                    }
+                };
+
+                let save_rule = move || {
+                    let mut clauses = draft_rule_clauses.get_untracked();
+                    let q = draft_rule_qualifier.get_untracked();
+                    let neg = draft_rule_negated.get_untracked();
+                    let val = draft_rule_label.get_untracked();
+                    let current = GitHubFilterClause::with_negation(q, val, neg);
+                    if !current.is_empty() {
+                        let key = current.dedupe_key();
+                        if !clauses.iter().any(|c| c.dedupe_key() == key) {
+                            clauses.push(current);
+                        }
+                    }
+                    let workflow = draft_rule_workflow.get_untracked();
+                    let ok = if clauses.len() == 1
+                        && clauses[0].qualifier == GitHubFilterQualifier::Label
+                        && !clauses[0].negated
+                    {
+                        store::add_project_intake_rule(&clauses[0].value, &workflow)
+                    } else {
+                        store::add_project_intake_rule_with_clauses(clauses, &workflow)
+                    };
+                    if ok {
+                        draft_rule_label.set(String::new());
+                        draft_rule_clauses.set(Vec::new());
+                        draft_rule_negated.set(false);
                         add_rule_open.set(false);
                     }
                 };
@@ -789,16 +1072,90 @@ fn intake_rules_section(
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(palette::text_secondary()),
                     )
+                    .child(dynamic(move || {
+                        let staged = draft_rule_clauses.get();
+                        if staged.is_empty() {
+                            return view().into_element();
+                        }
+                        let mut chips = view().flex_row().flex_wrap().items_center().gap(px(6.0));
+                        for (idx, clause) in staged.iter().enumerate() {
+                            let label = clause.human_summary();
+                            chips = chips.child(
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .px(px(8.5))
+                                    .py(px(3.5))
+                                    .rounded(px(6.5))
+                                    .border_1()
+                                    .border_color(palette::border_color())
+                                    .bg(palette::card_inset_bg())
+                                    .child(
+                                        text(label)
+                                            .text_size(px(11.5))
+                                            .text_color(palette::text_primary()),
+                                    )
+                                    .child(
+                                        button()
+                                            .on_press(move || {
+                                                draft_rule_clauses.update(|list| {
+                                                    if idx < list.len() {
+                                                        list.remove(idx);
+                                                    }
+                                                });
+                                            })
+                                            .px(px(3.0))
+                                            .rounded(px(4.0))
+                                            .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                            .child(
+                                                text("×")
+                                                    .text_size(px(12.0))
+                                                    .text_color(palette::text_muted()),
+                                            ),
+                                    ),
+                            );
+                        }
+                        chips.into_element()
+                    }))
                     .child(
                         view()
                             .flex_row()
+                            .items_end()
                             .gap(px(10.0))
                             .child(
+                                view()
+                                    .gap(px(4.0))
+                                    .child(
+                                        text("Filter by")
+                                            .text_size(px(11.5))
+                                            .text_color(palette::text_muted()),
+                                    )
+                                    .child(
+                                        view()
+                                            .flex_row()
+                                            .items_center()
+                                            .gap(px(6.0))
+                                            .child(qualifier_select(
+                                                "ps-new-rule-qualifier",
+                                                "Rule filter qualifier",
+                                                draft_rule_qualifier,
+                                                draft_rule_negated,
+                                            ))
+                                            .child(negate_toggle_button(
+                                                "ps-new-rule-negate",
+                                                draft_rule_qualifier,
+                                                draft_rule_negated,
+                                            )),
+                                    ),
+                            )
+                            .child(dynamic(move || {
+                                let q = draft_rule_qualifier.get();
                                 view()
                                     .flex_1()
                                     .gap(px(4.0))
                                     .child(
-                                        text("Issue label")
+                                        text(q.field_label())
                                             .text_size(px(11.5))
                                             .text_color(palette::text_muted()),
                                     )
@@ -809,7 +1166,7 @@ fn intake_rules_section(
                                             .on_change(move |v: &str| {
                                                 draft_rule_label.set(v.to_owned());
                                             })
-                                            .placeholder("e.g. security")
+                                            .placeholder(q.placeholder())
                                             .px(px(10.0))
                                             .py(px(6.0))
                                             .rounded(px(7.0))
@@ -818,8 +1175,13 @@ fn intake_rules_section(
                                             .bg(palette::card_inset_bg())
                                             .text_size(px(12.5))
                                             .text_color(palette::text_primary()),
-                                    ),
-                            )
+                                    )
+                            }))
+                            .child(secondary_button(
+                                "ps-new-rule-add-clause",
+                                "+ And",
+                                stage_current_clause,
+                            ))
                             .child(
                                 view()
                                     .flex_1()
@@ -856,12 +1218,119 @@ fn intake_rules_section(
                             .gap(px(8.0))
                             .child(secondary_button("ps-rule-cancel", "Cancel", move || {
                                 store::clear_project_settings_messages();
+                                draft_rule_clauses.set(Vec::new());
                                 add_rule_open.set(false);
                             }))
                             .child(primary_button("ps-rule-save", "Save Rule", save_rule)),
                     )
             },
         ))
+}
+
+fn qualifier_select(
+    test_id: &'static str,
+    accessibility_label: &'static str,
+    qualifier: Signal<GitHubFilterQualifier>,
+    negated: Signal<bool>,
+) -> impl IntoElement {
+    let trigger = view()
+        .h(px(30.0))
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(6.0))
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .child(
+            text(move || qualifier.get().label().to_owned())
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
+        )
+        .child(icons::chevron_down(palette::text_muted()));
+
+    select()
+        .test_id(test_id)
+        .accessibility_label(accessibility_label)
+        .items(|| {
+            GitHubFilterQualifier::ALL
+                .iter()
+                .map(|q| SelectItem::new(q.value(), q.label()))
+                .collect::<Vec<_>>()
+        })
+        .value(move || SelectValue::from(qualifier.get().value()))
+        .on_change(move |value: &Option<SharedString>| {
+            if let Some(raw) = value.as_deref() {
+                let next = GitHubFilterQualifier::from_value(raw);
+                qualifier.set(next);
+                if !next.supports_negation() {
+                    negated.set(false);
+                }
+            }
+        })
+        .cover(false)
+        .placement(Placement::Bottom)
+        .align(Align::Start)
+        .offset(px(4.0))
+        .popup_class("rounded-lg border border-border bg-popover p-1 shadow-md")
+        .item_class(
+            "px-2.5 py-1.5 rounded-md text-xs text-popover-foreground focus:bg-accent selected:font-medium",
+        )
+        .trigger(trigger)
+}
+
+fn negate_toggle_button(
+    test_id: &'static str,
+    qualifier: Signal<GitHubFilterQualifier>,
+    negated: Signal<bool>,
+) -> impl IntoElement {
+    dynamic(move || {
+        let q = qualifier.get();
+        if !q.supports_negation() {
+            return view().into_element();
+        }
+        let is_negated = negated.get();
+        button()
+            .test_id(test_id)
+            .accessibility_label(if is_negated {
+                "Exclude matching issues"
+            } else {
+                "Include matching issues"
+            })
+            .on_press(move || negated.update(|n| *n = !*n))
+            .h(px(30.0))
+            .px(px(9.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(if is_negated {
+                palette::destructive_text()
+            } else {
+                palette::border_color()
+            })
+            .bg(if is_negated {
+                palette::card_selected_bg()
+            } else {
+                palette::control_bg()
+            })
+            .items_center()
+            .justify_center()
+            .hover(|s| s.bg(palette::subtle_surface_bg()))
+            .child(
+                text(if is_negated { "Not" } else { "Is" })
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(if is_negated {
+                        palette::destructive_text()
+                    } else {
+                        palette::text_secondary()
+                    }),
+            )
+            .into_element()
+    })
 }
 
 fn intake_rule_row(order: usize, rule: &ProjectIntakeRule, show_remove: bool) -> impl IntoElement {

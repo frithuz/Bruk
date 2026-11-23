@@ -381,6 +381,7 @@ fn work_queue_header_controls() -> impl IntoElement {
             button()
                 .test_id("wq-header-sync")
                 .accessibility_label("Sync")
+                .disabled(store::work_queue_syncing)
                 .on_press(store::sync_work_queue)
                 .h(px(30.0))
                 .px(px(11.0))
@@ -393,12 +394,19 @@ fn work_queue_header_controls() -> impl IntoElement {
                 .gap(px(6.0))
                 .hover(|s| s.bg(palette::subtle_surface_bg()))
                 .active(|s| s.opacity(0.8))
+                .disabled_style(|s| s.opacity(0.55))
                 .child(icons::sync_arrows(palette::text_secondary()))
                 .child(
-                    text("Sync")
-                        .text_size(px(12.5))
-                        .font_weight(FontWeight::MEDIUM)
-                        .text_color(palette::text_primary()),
+                    text(|| {
+                        if store::work_queue_syncing() {
+                            "Syncing…".to_owned()
+                        } else {
+                            "Sync".to_owned()
+                        }
+                    })
+                    .text_size(px(12.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette::text_primary()),
                 ),
         )
         .child(

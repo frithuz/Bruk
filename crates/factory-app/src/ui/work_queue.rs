@@ -82,6 +82,13 @@ pub(crate) fn work_queue_view() -> impl IntoElement {
                 .gap(px(14.0))
                 .child(intake_banner(&queue));
 
+            if let Some(err) = store::active_project_settings()
+                .source_error
+                .filter(|e| !e.trim().is_empty())
+            {
+                body = body.child(sync_error_banner(err));
+            }
+
             if ad_hoc_open {
                 body = body.child(ad_hoc_run_card(&queue, ad_hoc_workflow, ad_hoc_title));
             }
@@ -162,6 +169,45 @@ fn intake_banner(queue: &ProjectWorkQueue) -> impl IntoElement {
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(palette::link_blue()),
                         ),
+                ),
+        )
+}
+
+fn sync_error_banner(message: String) -> impl IntoElement {
+    view()
+        .test_id("wq-sync-error-banner")
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .px(px(14.0))
+        .py(px(10.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(palette::destructive_text())
+        .bg(palette::card_bg())
+        .child(
+            text(format!("GitHub sync error: {message}"))
+                .flex_1()
+                .text_size(px(12.5))
+                .text_color(palette::destructive_text()),
+        )
+        .child(
+            button()
+                .on_press(|| store::open_project_settings_tab(ProjectSettingsTab::IssuesAndIntake))
+                .flex_shrink_0()
+                .px(px(10.0))
+                .py(px(4.5))
+                .rounded(px(6.5))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    text("Open Settings")
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
                 ),
         )
 }
@@ -1117,7 +1163,7 @@ fn inspector_content(
                         button()
                             .accessibility_label(tracker_open_label)
                             .on_press(move || {
-                                store::set_status_message(format!("Issue URL: {issue_url}"));
+                                store::open_work_queue_issue_url(&issue_url);
                             })
                             .hover(|s| s.opacity(0.8))
                             .child(

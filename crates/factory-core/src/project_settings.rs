@@ -3,7 +3,13 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::preferences::{ProviderKind, format_dollars_cents};
+use crate::{
+    github_intake::{
+        DetectedGitRemote, GitHubFilterClause, GitHubFilterQualifier, build_github_search_query,
+        current_unix_seconds, format_synced_relative,
+    },
+    preferences::{ProviderKind, format_dollars_cents},
+};
 
 /// Left-rail navigation sections inside the Project Settings window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -89,21 +95,42 @@ pub enum IssueSourceAuthMode {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectIntakeRule {
     pub id: u64,
-    /// `Some(label)` matches `"has label <label>"`; `None` is the catch-all fallback row.
+    /// Legacy/simple single-label shorthand (`Some(label)` matches `"has label <label>"`).
     pub label: Option<String>,
+    /// General GitHub search filter clauses (AND-combined). When empty and `label` is `None`,
+    /// this row acts as the catch-all fallback rule.
+    #[serde(default)]
+    pub clauses: Vec<GitHubFilterClause>,
     pub workflow_name: String,
 }
 
 impl ProjectIntakeRule {
+    /// Returns the effective GitHub filter clauses evaluated by this rule.
+    pub fn effective_clauses(&self) -> Vec<GitHubFilterClause> {
+        if !self.clauses.is_empty() {
+            self.clauses.clone()
+        } else if let Some(label) = &self.label {
+            vec![GitHubFilterClause::new(GitHubFilterQualifier::Label, label)]
+        } else {
+            Vec::new()
+        }
+    }
+
     pub fn condition_text(&self) -> String {
-        match &self.label {
-            Some(label) => format!("has label {label}"),
-            None => "matches anything else".to_owned(),
+        let clauses = self.effective_clauses();
+        if clauses.is_empty() {
+            "matches anything else".to_owned()
+        } else {
+            clauses
+                .iter()
+                .map(GitHubFilterClause::human_summary)
+                .collect::<Vec<_>>()
+                .join(" and ")
         }
     }
 
     pub fn is_fallback(&self) -> bool {
-        self.label.is_none()
+        self.clauses.is_empty() && self.label.is_none()
     }
 }
 
@@ -171,10 +198,18 @@ pub enum ProjectSettingsError {
     EmptyToken,
     #[error("issue label cannot be empty")]
     EmptyRuleLabel,
+    #[error("filter value cannot be empty")]
+    EmptyFilterValue,
+    #[error("a filter for '{0}' already exists")]
+    DuplicateFilterClause(String),
+    #[error("intake rule needs at least one filter condition")]
+    EmptyRuleConditions,
     #[error("workflow name cannot be empty")]
     EmptyWorkflowName,
     #[error("a rule for label '{0}' already exists")]
     DuplicateRuleLabel(String),
+    #[error("a rule matching '{0}' already exists")]
+    DuplicateRuleCondition(String),
     #[error("runs at once must be a whole number between 1 and 16")]
     InvalidConcurrency,
     #[error("variable name cannot be empty")]
@@ -208,7 +243,12 @@ pub struct ProjectSettings {
     pub source_connected: bool,
     pub open_issues_count: u32,
     pub last_synced_label: String,
-    pub required_label: String,
+    #[serde(default)]
+    pub last_synced_at: Option<i64>,
+    #[serde(default)]
+    pub source_error: Option<String>,
+    #[serde(default)]
+    pub intake_filters: Vec<GitHubFilterClause>,
     pub intake_rules: Vec<ProjectIntakeRule>,
     pub max_concurrent_runs: u32,
     pub auto_start_matching_work: bool,
@@ -274,7 +314,9 @@ impl ProjectSettings {
             source_connected: false,
             open_issues_count: 0,
             last_synced_label: "Never synced".to_owned(),
-            required_label: "agent-ready".to_owned(),
+            last_synced_at: None,
+            source_error: None,
+            intake_filters: Vec::new(),
             intake_rules: Vec::new(),
             max_concurrent_runs: 2,
             auto_start_matching_work: false,
@@ -355,21 +397,29 @@ impl ProjectSettings {
             source_connected: true,
             open_issues_count: 14,
             last_synced_label: "synced 1 min ago".to_owned(),
-            required_label: "agent-ready".to_owned(),
+            last_synced_at: None,
+            source_error: None,
+            intake_filters: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
             intake_rules: vec![
                 ProjectIntakeRule {
                     id: 1,
                     label: Some("bug".to_owned()),
+                    clauses: Vec::new(),
                     workflow_name: "Fix issue".to_owned(),
                 },
                 ProjectIntakeRule {
                     id: 2,
                     label: Some("docs".to_owned()),
+                    clauses: Vec::new(),
                     workflow_name: "Docs refresh".to_owned(),
                 },
                 ProjectIntakeRule {
                     id: 3,
                     label: None,
+                    clauses: Vec::new(),
                     workflow_name: "Triage new issues".to_owned(),
                 },
             ],
@@ -509,10 +559,84 @@ impl ProjectSettings {
 
     /// Subtitle displayed below the `Intake rules` heading.
     pub fn intake_rules_subtitle(&self) -> String {
-        format!(
-            "Open issues labeled {} become work. The first matching rule picks the workflow.",
-            self.required_label
-        )
+        let clauses = self.effective_intake_filter_clauses();
+        if clauses.is_empty() {
+            "All open issues become work. The first matching rule picks the workflow.".to_owned()
+        } else if clauses.len() == 1
+            && clauses[0].qualifier == GitHubFilterQualifier::Label
+            && !clauses[0].negated
+        {
+            format!(
+                "Open issues labeled {} become work. The first matching rule picks the workflow.",
+                clauses[0].value
+            )
+        } else {
+            let summary = clauses
+                .iter()
+                .map(GitHubFilterClause::human_summary)
+                .collect::<Vec<_>>()
+                .join(" and ");
+            format!(
+                "Open issues matching {summary} become work. The first matching rule picks the workflow."
+            )
+        }
+    }
+
+    /// Returns all active non-empty GitHub search filter clauses configured for intake.
+    pub fn effective_intake_filter_clauses(&self) -> Vec<GitHubFilterClause> {
+        let mut clauses: Vec<GitHubFilterClause> = Vec::new();
+        for filter in &self.intake_filters {
+            if filter.is_empty() {
+                continue;
+            }
+            let key = filter.dedupe_key();
+            if !clauses.iter().any(|existing| existing.dedupe_key() == key) {
+                clauses.push(filter.clone());
+            }
+        }
+        clauses
+    }
+
+    /// Renders the combined GitHub issue search query for all active project intake filters.
+    pub fn effective_github_search_query(&self) -> String {
+        build_github_search_query(&self.effective_intake_filter_clauses())
+    }
+
+    /// Adds an optional GitHub search filter clause to this project's intake filter.
+    pub fn add_intake_filter(
+        &mut self,
+        clause: GitHubFilterClause,
+    ) -> Result<(), ProjectSettingsError> {
+        if clause.is_empty() {
+            return Err(ProjectSettingsError::EmptyFilterValue);
+        }
+        let key = clause.dedupe_key();
+        if self
+            .effective_intake_filter_clauses()
+            .iter()
+            .any(|existing| existing.dedupe_key() == key)
+        {
+            return Err(ProjectSettingsError::DuplicateFilterClause(
+                clause.to_github_query_token(),
+            ));
+        }
+        self.intake_filters.push(clause);
+        Ok(())
+    }
+
+    /// Removes an optional project intake filter clause by index.
+    pub fn remove_intake_filter(&mut self, index: usize) -> bool {
+        if index < self.intake_filters.len() {
+            self.intake_filters.remove(index);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Clears all optional additional project intake filters.
+    pub fn clear_intake_filters(&mut self) {
+        self.intake_filters.clear();
     }
 
     /// Human-readable status text shown in the Issue source details card.
@@ -521,10 +645,23 @@ impl ProjectSettings {
             IssueSourceKind::GitHubIssues => {
                 if self.github_repo.trim().is_empty() {
                     "Not configured · enter owner/repo".to_owned()
+                } else if let Some(err) = self
+                    .source_error
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    format!("Sync error · {err}")
+                } else if !self.source_connected {
+                    "Ready to verify · press Test & Sync".to_owned()
                 } else {
+                    let synced = match self.last_synced_at {
+                        Some(ts) => format_synced_relative(ts, current_unix_seconds()),
+                        None => self.last_synced_label.clone(),
+                    };
                     format!(
                         "Connected · {} open issues · {}",
-                        self.open_issues_count, self.last_synced_label
+                        self.open_issues_count, synced
                     )
                 }
             }
@@ -539,6 +676,69 @@ impl ProjectSettings {
                 }
             }
             IssueSourceKind::Extension => "No issue source extensions installed".to_owned(),
+        }
+    }
+
+    /// Applies auto-detected git remote metadata when the fields have not yet been configured.
+    pub fn apply_detected_git_remote(&mut self, detected: &DetectedGitRemote) {
+        if self.git_remote.trim().is_empty() {
+            self.git_remote = detected.remote_display.clone();
+        }
+        if self.github_repo.trim().is_empty()
+            && let Some(slug) = &detected.github_repo
+        {
+            self.github_repo = slug.clone();
+        }
+    }
+
+    /// Records a successful live GitHub Issues sync.
+    pub fn apply_github_sync_success(
+        &mut self,
+        normalized_repo: &str,
+        open_issues_count: u32,
+        synced_at_unix: i64,
+    ) {
+        self.github_repo = normalized_repo.to_owned();
+        self.source_connected = true;
+        self.source_error = None;
+        self.open_issues_count = open_issues_count;
+        self.last_synced_at = Some(synced_at_unix);
+        self.last_synced_label = format_synced_relative(synced_at_unix, current_unix_seconds());
+    }
+
+    /// Records a failed GitHub Issues sync without clobbering the configured repository slug.
+    pub fn apply_github_sync_error(&mut self, error: impl Into<String>) {
+        self.source_connected = false;
+        self.source_error = Some(error.into());
+    }
+
+    /// Returns the workflow name configured on the catch-all fallback intake rule, if any.
+    pub fn fallback_workflow_name(&self) -> String {
+        self.intake_rules
+            .iter()
+            .find(|rule| rule.is_fallback())
+            .map(|rule| rule.workflow_name.clone())
+            .unwrap_or_default()
+    }
+
+    /// Sets or updates the catch-all fallback intake rule (clears it if blank).
+    pub fn set_fallback_workflow(&mut self, workflow_name: &str) {
+        let trimmed = workflow_name.trim();
+        if trimmed.is_empty() {
+            self.intake_rules.retain(|rule| !rule.is_fallback());
+            return;
+        }
+        if let Some(existing) = self.intake_rules.iter_mut().find(|rule| rule.is_fallback()) {
+            existing.workflow_name = trimmed.to_owned();
+        } else {
+            let id = self.next_rule_id;
+            self.next_rule_id += 1;
+            self.intake_rules.push(ProjectIntakeRule {
+                id,
+                label: None,
+                clauses: Vec::new(),
+                workflow_name: trimmed.to_owned(),
+            });
         }
     }
 
@@ -635,6 +835,73 @@ impl ProjectSettings {
         let new_rule = ProjectIntakeRule {
             id,
             label: Some(label.to_owned()),
+            clauses: vec![GitHubFilterClause::new(GitHubFilterQualifier::Label, label)],
+            workflow_name: workflow_name.to_owned(),
+        };
+
+        if let Some(fallback_pos) = self.intake_rules.iter().position(|r| r.is_fallback()) {
+            self.intake_rules.insert(fallback_pos, new_rule);
+        } else {
+            self.intake_rules.push(new_rule);
+        }
+        Ok(id)
+    }
+
+    /// Adds a general GitHub search-filter intake rule (single or multi-clause AND)
+    /// right before any catch-all fallback row.
+    pub fn add_intake_rule_with_clauses(
+        &mut self,
+        clauses: Vec<GitHubFilterClause>,
+        workflow_name: &str,
+    ) -> Result<u64, ProjectSettingsError> {
+        let cleaned: Vec<GitHubFilterClause> = clauses
+            .into_iter()
+            .filter(|clause| !clause.is_empty())
+            .collect();
+        if cleaned.is_empty() {
+            return Err(ProjectSettingsError::EmptyRuleConditions);
+        }
+
+        // Preserve existing single positive-label error messages for callers.
+        if cleaned.len() == 1
+            && cleaned[0].qualifier == GitHubFilterQualifier::Label
+            && !cleaned[0].negated
+        {
+            return self.add_intake_rule(&cleaned[0].value, workflow_name);
+        }
+
+        let workflow_name = workflow_name.trim();
+        if workflow_name.is_empty() {
+            return Err(ProjectSettingsError::EmptyWorkflowName);
+        }
+
+        let candidate_keys: Vec<String> =
+            cleaned.iter().map(GitHubFilterClause::dedupe_key).collect();
+        let candidate_summary = cleaned
+            .iter()
+            .map(GitHubFilterClause::human_summary)
+            .collect::<Vec<_>>()
+            .join(" and ");
+
+        if self.intake_rules.iter().any(|existing| {
+            let existing_keys: Vec<String> = existing
+                .effective_clauses()
+                .iter()
+                .map(GitHubFilterClause::dedupe_key)
+                .collect();
+            existing_keys == candidate_keys
+        }) {
+            return Err(ProjectSettingsError::DuplicateRuleCondition(
+                candidate_summary,
+            ));
+        }
+
+        let id = self.next_rule_id;
+        self.next_rule_id += 1;
+        let new_rule = ProjectIntakeRule {
+            id,
+            label: None,
+            clauses: cleaned,
             workflow_name: workflow_name.to_owned(),
         };
 
@@ -820,5 +1087,64 @@ mod tests {
             "••••••••••••1234"
         );
         assert!(settings.remove_env_var(env_id));
+    }
+
+    #[test]
+    fn supports_optional_github_search_filters_and_assignee_or_multi_clause_intake_rules() {
+        let mut settings = ProjectSettings::empty("my-service", "/repo/my-service", "main");
+        assert!(settings.effective_intake_filter_clauses().is_empty());
+        settings
+            .add_intake_filter(GitHubFilterClause::new(
+                GitHubFilterQualifier::Assignee,
+                "@factory-bot",
+            ))
+            .unwrap();
+        settings
+            .add_intake_filter(GitHubFilterClause::negated(
+                GitHubFilterQualifier::Label,
+                "blocked",
+            ))
+            .unwrap();
+        assert_eq!(
+            settings.effective_github_search_query(),
+            "assignee:factory-bot -label:blocked"
+        );
+        assert_eq!(
+            settings.intake_rules_subtitle(),
+            "Open issues matching assigned to @factory-bot and excludes label blocked become work. The first matching rule picks the workflow."
+        );
+
+        settings.set_fallback_workflow("Triage new issues");
+        let rule_id = settings
+            .add_intake_rule_with_clauses(
+                vec![
+                    GitHubFilterClause::new(GitHubFilterQualifier::Assignee, "@alice"),
+                    GitHubFilterClause::new(GitHubFilterQualifier::Milestone, "v2.0"),
+                ],
+                "Release prep",
+            )
+            .unwrap();
+        assert_eq!(settings.intake_rules.len(), 2);
+        assert_eq!(
+            settings.intake_rules[0].condition_text(),
+            "assigned to @alice and milestone v2.0"
+        );
+        assert!(settings.intake_rules[1].is_fallback());
+
+        // Duplicate multi-clause condition is rejected.
+        assert!(matches!(
+            settings.add_intake_rule_with_clauses(
+                vec![
+                    GitHubFilterClause::new(GitHubFilterQualifier::Assignee, "ALICE"),
+                    GitHubFilterClause::new(GitHubFilterQualifier::Milestone, "V2.0"),
+                ],
+                "Other",
+            ),
+            Err(ProjectSettingsError::DuplicateRuleCondition(_))
+        ));
+
+        assert!(settings.remove_intake_rule(rule_id));
+        assert!(settings.remove_intake_filter(0));
+        assert_eq!(settings.effective_github_search_query(), "-label:blocked");
     }
 }

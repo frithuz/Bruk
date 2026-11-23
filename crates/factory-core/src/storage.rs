@@ -11,6 +11,8 @@ use thiserror::Error;
 use crate::{
     model::{Project, ProjectId},
     preferences::AppPreferences,
+    project_settings::ProjectSettings,
+    work_queue::ProjectWorkQueue,
 };
 
 const APP_CONFIG_DIR: &str = "software-factory";
@@ -118,6 +120,7 @@ impl ProjectDatabase {
     fn init_schema(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS projects (
                  id             INTEGER PRIMARY KEY AUTOINCREMENT,
                  name           TEXT NOT NULL,
@@ -128,6 +131,23 @@ impl ProjectDatabase {
              );
              CREATE TABLE IF NOT EXISTS app_settings (
                  key        TEXT PRIMARY KEY,
+                 value_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS project_settings (
+                 project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+                 value_json TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS project_secrets (
+                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 key        TEXT NOT NULL,
+                 value      TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 PRIMARY KEY (project_id, key)
+             );
+             CREATE TABLE IF NOT EXISTS project_work_queues (
+                 project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                  value_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
              );",
@@ -256,6 +276,128 @@ impl ProjectDatabase {
                  value_json = excluded.value_json,
                  updated_at = unixepoch()",
             params![PREFERENCES_KEY, json],
+        )?;
+        Ok(())
+    }
+
+    /// Loads persisted per-project settings from SQLite, if saved previously.
+    pub fn load_project_settings(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Option<ProjectSettings>, StorageError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value_json FROM project_settings WHERE project_id = ?1",
+                params![project_id as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match raw {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Saves per-project settings as JSON in SQLite.
+    pub fn save_project_settings(
+        &self,
+        project_id: ProjectId,
+        settings: &ProjectSettings,
+    ) -> Result<(), StorageError> {
+        let json = serde_json::to_string(settings)?;
+        self.conn.execute(
+            "INSERT INTO project_settings (project_id, value_json, updated_at)
+             VALUES (?1, ?2, unixepoch())
+             ON CONFLICT(project_id) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 updated_at = unixepoch()",
+            params![project_id as i64, json],
+        )?;
+        Ok(())
+    }
+
+    /// Loads a secret value associated with a project (for example `"github_pat"`).
+    pub fn load_project_secret(
+        &self,
+        project_id: ProjectId,
+        key: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let value: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value FROM project_secrets WHERE project_id = ?1 AND key = ?2",
+                params![project_id as i64, key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value)
+    }
+
+    /// Stores or updates a secret value associated with a project.
+    pub fn save_project_secret(
+        &self,
+        project_id: ProjectId,
+        key: &str,
+        value: &str,
+    ) -> Result<(), StorageError> {
+        self.conn.execute(
+            "INSERT INTO project_secrets (project_id, key, value, updated_at)
+             VALUES (?1, ?2, ?3, unixepoch())
+             ON CONFLICT(project_id, key) DO UPDATE SET
+                 value = excluded.value,
+                 updated_at = unixepoch()",
+            params![project_id as i64, key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes a secret value associated with a project.
+    pub fn delete_project_secret(
+        &self,
+        project_id: ProjectId,
+        key: &str,
+    ) -> Result<bool, StorageError> {
+        let affected = self.conn.execute(
+            "DELETE FROM project_secrets WHERE project_id = ?1 AND key = ?2",
+            params![project_id as i64, key],
+        )?;
+        Ok(affected > 0)
+    }
+
+    /// Loads a persisted project work queue snapshot from SQLite, if saved previously.
+    pub fn load_project_work_queue(
+        &self,
+        project_id: ProjectId,
+    ) -> Result<Option<ProjectWorkQueue>, StorageError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value_json FROM project_work_queues WHERE project_id = ?1",
+                params![project_id as i64],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match raw {
+            Some(json) => Ok(Some(serde_json::from_str(&json)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Saves a project work queue snapshot as JSON in SQLite.
+    pub fn save_project_work_queue(
+        &self,
+        project_id: ProjectId,
+        queue: &ProjectWorkQueue,
+    ) -> Result<(), StorageError> {
+        let json = serde_json::to_string(queue)?;
+        self.conn.execute(
+            "INSERT INTO project_work_queues (project_id, value_json, updated_at)
+             VALUES (?1, ?2, unixepoch())
+             ON CONFLICT(project_id) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 updated_at = unixepoch()",
+            params![project_id as i64, json],
         )?;
         Ok(())
     }
@@ -556,5 +698,68 @@ mod tests {
             loaded.codex_spawn_settings.extra_config_overrides,
             "custom_flag = true"
         );
+    }
+
+    #[test]
+    fn persists_project_settings_secrets_and_work_queue_across_reopen() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("factory.db");
+
+        let project_id = {
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            let project = db
+                .register_project("billing-api", "/Users/dev/billing-api", "main", "")
+                .unwrap();
+
+            let mut settings =
+                ProjectSettings::empty("billing-api", "/Users/dev/billing-api", "main");
+            settings.github_repo = "acme/billing-api".to_owned();
+            settings
+                .add_intake_filter(crate::GitHubFilterClause::new(
+                    crate::GitHubFilterQualifier::Label,
+                    "agent-ready",
+                ))
+                .unwrap();
+            settings.add_intake_rule("bug", "Fix issue").unwrap();
+            settings.set_fallback_workflow("Triage new issues");
+            settings.set_github_token("ghp_super_secret_1234").unwrap();
+            db.save_project_settings(project.id, &settings).unwrap();
+            db.save_project_secret(project.id, "github_pat", "ghp_super_secret_1234")
+                .unwrap();
+
+            let mut queue = ProjectWorkQueue::empty("billing-api");
+            queue.repo_slug = "acme/billing-api".to_owned();
+            queue.tracker_name = "GitHub Issues".to_owned();
+            db.save_project_work_queue(project.id, &queue).unwrap();
+            project.id
+        };
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let loaded_settings = reopened.load_project_settings(project_id).unwrap().unwrap();
+        assert_eq!(loaded_settings.github_repo, "acme/billing-api");
+        assert_eq!(loaded_settings.intake_rules.len(), 2);
+        assert_eq!(loaded_settings.github_token_last4.as_deref(), Some("1234"));
+
+        let secret = reopened
+            .load_project_secret(project_id, "github_pat")
+            .unwrap();
+        assert_eq!(secret.as_deref(), Some("ghp_super_secret_1234"));
+
+        let loaded_queue = reopened
+            .load_project_work_queue(project_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded_queue.repo_slug, "acme/billing-api");
+
+        // Deleting the project cascades and removes settings, secrets, and work queue.
+        assert!(reopened.delete_project(project_id).unwrap());
+        assert_eq!(reopened.load_project_settings(project_id).unwrap(), None);
+        assert_eq!(
+            reopened
+                .load_project_secret(project_id, "github_pat")
+                .unwrap(),
+            None
+        );
+        assert_eq!(reopened.load_project_work_queue(project_id).unwrap(), None);
     }
 }

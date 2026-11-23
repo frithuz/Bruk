@@ -10,6 +10,7 @@ pub mod codex_cli;
 pub mod codex_settings;
 pub mod dashboard;
 pub mod engine;
+pub mod github_intake;
 pub mod inbox;
 pub mod machines;
 pub mod model;
@@ -58,6 +59,15 @@ pub use dashboard::{
     format_currency, format_tenths_hours, format_tokens, format_wait_minutes,
 };
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
+pub use github_intake::{
+    AGENT_WORKING_LABEL, DetectedGitRemote, GH_BINARY_NAME, GitHubAuth, GitHubFilterClause,
+    GitHubFilterQualifier, GitHubIntakeError, GitHubIssue, GitHubSyncSnapshot,
+    add_github_issue_label, build_github_search_query, comment_on_github_issue,
+    current_unix_seconds, detect_git_remote_info, fetch_github_open_issues,
+    fetch_github_open_issues_with_filter, format_synced_relative, normalize_assignee_handle,
+    normalize_github_repo_slug, parse_github_issues_json, parse_github_repo_slug,
+    remove_github_issue_label, resolve_gh_binary,
+};
 pub use inbox::{
     AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AttentionRequest, AttentionRequestBody,
     AttentionRequestKind, InboxFilter, InboxState, LoopAttemptSummary, LoopExhaustedDetail,
@@ -86,8 +96,8 @@ pub use project_settings::{
 };
 pub use storage::{ProjectDatabase, StorageError, default_db_path};
 pub use work_queue::{
-    IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue, WorkQueueError,
-    WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+    GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue,
+    WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
 };
 pub use workflow_editor::{
     EditorFallbackStep, EditorLoopBlock, EditorNode, EditorRevision, EditorSelection, EditorStep,

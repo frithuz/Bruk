@@ -1,7 +1,14 @@
 //! Per-project work queue domain model, intake rules, and mocked issue backlogs.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+use crate::github_intake::{
+    GitHubFilterClause, GitHubFilterQualifier, GitHubIssue, GitHubSyncSnapshot,
+    normalize_assignee_handle,
+};
 
 /// Display mode for the project work queue canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -49,11 +56,103 @@ impl WorkQueueStage {
     }
 }
 
-/// Maps an issue label to a target workflow during intake triage.
+/// Maps one or more GitHub search filter clauses (label, assignee, author, milestone, etc.)
+/// to a target workflow during intake triage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IntakeRule {
+    #[serde(default)]
     pub label: String,
+    #[serde(default)]
+    pub clauses: Vec<GitHubFilterClause>,
     pub workflow_name: String,
+}
+
+impl IntakeRule {
+    pub fn by_label(label: impl Into<String>, workflow_name: impl Into<String>) -> Self {
+        let label = label.into();
+        Self {
+            clauses: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                &label,
+            )],
+            label,
+            workflow_name: workflow_name.into(),
+        }
+    }
+
+    pub fn by_assignee(assignee: impl Into<String>, workflow_name: impl Into<String>) -> Self {
+        let assignee = normalize_assignee_handle(&assignee.into());
+        Self {
+            label: String::new(),
+            clauses: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Assignee,
+                assignee,
+            )],
+            workflow_name: workflow_name.into(),
+        }
+    }
+
+    pub fn with_clauses(
+        clauses: Vec<GitHubFilterClause>,
+        workflow_name: impl Into<String>,
+    ) -> Self {
+        let label = if clauses.len() == 1
+            && clauses[0].qualifier == GitHubFilterQualifier::Label
+            && !clauses[0].negated
+        {
+            clauses[0].value.clone()
+        } else {
+            String::new()
+        };
+        Self {
+            label,
+            clauses,
+            workflow_name: workflow_name.into(),
+        }
+    }
+
+    /// Returns the effective filter clauses evaluated by this rule.
+    pub fn effective_clauses(&self) -> Vec<GitHubFilterClause> {
+        if !self.clauses.is_empty() {
+            self.clauses.clone()
+        } else if !self.label.trim().is_empty() {
+            vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                self.label.trim(),
+            )]
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Evaluates whether all clauses of this rule match `issue`.
+    pub fn matches_issue(&self, issue: &GitHubIssue) -> bool {
+        let clauses = self.effective_clauses();
+        if clauses.is_empty() {
+            return false;
+        }
+        clauses
+            .iter()
+            .all(|clause| clause.matches_locally(issue) == Some(true))
+    }
+
+    /// Short matched-rule text shown in the Work Queue inspector.
+    pub fn matched_rule_text(&self) -> String {
+        let clauses = self.effective_clauses();
+        if clauses.len() == 1
+            && clauses[0].qualifier == GitHubFilterQualifier::Label
+            && !clauses[0].negated
+        {
+            format!("label {} → {}", clauses[0].value, self.workflow_name)
+        } else {
+            let summary = clauses
+                .iter()
+                .map(GitHubFilterClause::human_summary)
+                .collect::<Vec<_>>()
+                .join(" and ");
+            format!("{summary} → {}", self.workflow_name)
+        }
+    }
 }
 
 /// Sidebar summary of a workflow available inside a project.
@@ -105,13 +204,23 @@ pub enum WorkQueueError {
     EmptyTaskTitle,
 }
 
+/// Summary returned after applying a live GitHub open-issue snapshot to a [`ProjectWorkQueue`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubIntakeDiff {
+    pub total_open: usize,
+    pub newly_queued: Vec<u32>,
+    pub ready_count: usize,
+    pub unmatched_count: usize,
+}
+
 /// Complete work queue state for one project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectWorkQueue {
     pub project_name: String,
     pub tracker_name: String,
     pub repo_slug: String,
-    pub required_label: String,
+    #[serde(default)]
+    pub intake_filters: Vec<GitHubFilterClause>,
     pub intake_rules: Vec<IntakeRule>,
     pub fallback_workflow: String,
     pub workflows: Vec<ProjectWorkflowSummary>,
@@ -121,6 +230,14 @@ pub struct ProjectWorkQueue {
     pub next_run_number: u32,
     pub next_ad_hoc_issue_number: u32,
     sync_backlog: Vec<WorkQueueItem>,
+    #[serde(default)]
+    issue_labels: BTreeMap<u32, Vec<String>>,
+    #[serde(default)]
+    issue_snapshots: BTreeMap<u32, GitHubIssue>,
+    #[serde(default)]
+    unmatched_details: BTreeMap<u32, (String, String)>,
+    #[serde(default)]
+    skipped_issue_numbers: Vec<u32>,
 }
 
 impl ProjectWorkQueue {
@@ -130,7 +247,7 @@ impl ProjectWorkQueue {
             project_name: project_name.to_owned(),
             tracker_name: String::new(),
             repo_slug: String::new(),
-            required_label: String::new(),
+            intake_filters: Vec::new(),
             intake_rules: Vec::new(),
             fallback_workflow: String::new(),
             workflows: Vec::new(),
@@ -140,6 +257,10 @@ impl ProjectWorkQueue {
             next_run_number: 1,
             next_ad_hoc_issue_number: 1,
             sync_backlog: Vec::new(),
+            issue_labels: BTreeMap::new(),
+            issue_snapshots: BTreeMap::new(),
+            unmatched_details: BTreeMap::new(),
+            skipped_issue_numbers: Vec::new(),
         }
     }
 
@@ -165,16 +286,13 @@ impl ProjectWorkQueue {
             project_name: "api-gateway".to_owned(),
             tracker_name: "GitHub Issues".to_owned(),
             repo_slug: slug.to_owned(),
-            required_label: "agent-ready".to_owned(),
+            intake_filters: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
             intake_rules: vec![
-                IntakeRule {
-                    label: "bug".to_owned(),
-                    workflow_name: "Fix issue".to_owned(),
-                },
-                IntakeRule {
-                    label: "docs".to_owned(),
-                    workflow_name: "Docs refresh".to_owned(),
-                },
+                IntakeRule::by_label("bug", "Fix issue"),
+                IntakeRule::by_label("docs", "Docs refresh"),
             ],
             fallback_workflow: "Triage new issues".to_owned(),
             workflows: vec![
@@ -369,6 +487,10 @@ impl ProjectWorkQueue {
             max_agent_slots: 2,
             next_run_number: 45,
             next_ad_hoc_issue_number: 350,
+            issue_labels: BTreeMap::new(),
+            issue_snapshots: BTreeMap::new(),
+            unmatched_details: BTreeMap::new(),
+            skipped_issue_numbers: Vec::new(),
             sync_backlog: vec![
                 WorkQueueItem {
                     issue_number: 340,
@@ -408,16 +530,13 @@ impl ProjectWorkQueue {
             project_name: "marketing-site".to_owned(),
             tracker_name: "GitHub Issues".to_owned(),
             repo_slug: slug.to_owned(),
-            required_label: "agent-ready".to_owned(),
+            intake_filters: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
             intake_rules: vec![
-                IntakeRule {
-                    label: "bug".to_owned(),
-                    workflow_name: "Fix issue".to_owned(),
-                },
-                IntakeRule {
-                    label: "docs".to_owned(),
-                    workflow_name: "Docs refresh".to_owned(),
-                },
+                IntakeRule::by_label("bug", "Fix issue"),
+                IntakeRule::by_label("docs", "Docs refresh"),
             ],
             fallback_workflow: "Triage new issues".to_owned(),
             workflows: vec![
@@ -501,6 +620,10 @@ impl ProjectWorkQueue {
             next_run_number: 22,
             next_ad_hoc_issue_number: 130,
             sync_backlog: Vec::new(),
+            issue_labels: BTreeMap::new(),
+            issue_snapshots: BTreeMap::new(),
+            unmatched_details: BTreeMap::new(),
+            skipped_issue_numbers: Vec::new(),
         }
     }
 
@@ -512,16 +635,13 @@ impl ProjectWorkQueue {
             project_name: "mobile-app".to_owned(),
             tracker_name: "Linear".to_owned(),
             repo_slug: slug.to_owned(),
-            required_label: "agent-ready".to_owned(),
+            intake_filters: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
             intake_rules: vec![
-                IntakeRule {
-                    label: "bug".to_owned(),
-                    workflow_name: "Fix issue".to_owned(),
-                },
-                IntakeRule {
-                    label: "docs".to_owned(),
-                    workflow_name: "Docs refresh".to_owned(),
-                },
+                IntakeRule::by_label("bug", "Fix issue"),
+                IntakeRule::by_label("docs", "Docs refresh"),
             ],
             fallback_workflow: "Triage new issues".to_owned(),
             workflows: vec![
@@ -597,6 +717,10 @@ impl ProjectWorkQueue {
             next_run_number: 15,
             next_ad_hoc_issue_number: 220,
             sync_backlog: Vec::new(),
+            issue_labels: BTreeMap::new(),
+            issue_snapshots: BTreeMap::new(),
+            unmatched_details: BTreeMap::new(),
+            skipped_issue_numbers: Vec::new(),
         }
     }
 
@@ -608,16 +732,13 @@ impl ProjectWorkQueue {
             project_name: project_name.to_owned(),
             tracker_name: "GitHub Issues".to_owned(),
             repo_slug: slug,
-            required_label: "agent-ready".to_owned(),
+            intake_filters: vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
             intake_rules: vec![
-                IntakeRule {
-                    label: "bug".to_owned(),
-                    workflow_name: "Fix issue".to_owned(),
-                },
-                IntakeRule {
-                    label: "docs".to_owned(),
-                    workflow_name: "Docs refresh".to_owned(),
-                },
+                IntakeRule::by_label("bug", "Fix issue"),
+                IntakeRule::by_label("docs", "Docs refresh"),
             ],
             fallback_workflow: "Triage new issues".to_owned(),
             workflows: vec![
@@ -665,6 +786,10 @@ impl ProjectWorkQueue {
             next_run_number: 1,
             next_ad_hoc_issue_number: 20,
             sync_backlog: Vec::new(),
+            issue_labels: BTreeMap::new(),
+            issue_snapshots: BTreeMap::new(),
+            unmatched_details: BTreeMap::new(),
+            skipped_issue_numbers: Vec::new(),
         }
     }
 
@@ -785,57 +910,400 @@ impl ProjectWorkQueue {
 
     /// Resolves `(workflow_name, matched_rule)` for a given issue label.
     pub fn match_workflow_for_label(&self, label: &str) -> (String, String) {
-        if let Some(rule) = self
-            .intake_rules
-            .iter()
-            .find(|rule| rule.label.eq_ignore_ascii_case(label))
+        self.match_workflow_for_labels(&[label.to_owned()])
+            .unwrap_or_else(|| {
+                let fallback = if self.fallback_workflow.trim().is_empty() {
+                    "Unassigned".to_owned()
+                } else {
+                    self.fallback_workflow.clone()
+                };
+                let rule = if self.fallback_workflow.trim().is_empty() {
+                    "no workflow rule".to_owned()
+                } else {
+                    format!("fallback → {fallback}")
+                };
+                (fallback, rule)
+            })
+    }
+
+    /// Returns all active project-level intake filter clauses.
+    pub fn effective_intake_filter_clauses(&self) -> Vec<GitHubFilterClause> {
+        let mut clauses: Vec<GitHubFilterClause> = Vec::new();
+        for filter in &self.intake_filters {
+            if filter.is_empty() {
+                continue;
+            }
+            let key = filter.dedupe_key();
+            if !clauses.iter().any(|existing| existing.dedupe_key() == key) {
+                clauses.push(filter.clone());
+            }
+        }
+        clauses
+    }
+
+    /// Evaluates project-level intake filters against `issue`.
+    ///
+    /// Returns `None` when `issue` passes all filters (or when `server_filtered` already satisfied
+    /// server-side clauses), or `Some(reason)` describing the first failing clause.
+    fn first_intake_filter_failure(
+        &self,
+        issue: &GitHubIssue,
+        server_filtered: bool,
+    ) -> Option<String> {
+        for clause in self.effective_intake_filter_clauses() {
+            match clause.matches_locally(issue) {
+                Some(true) => {}
+                Some(false) => return Some(clause.mismatch_reason()),
+                None => {
+                    if !server_filtered {
+                        return Some(clause.mismatch_reason());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Resolves `(workflow_name, matched_rule)` against a list of issue labels.
+    ///
+    /// Returns `None` when specific intake rules are configured without a fallback workflow
+    /// and none of `labels` matches any rule.
+    pub fn match_workflow_for_labels(&self, labels: &[String]) -> Option<(String, String)> {
+        let synthetic = GitHubIssue {
+            number: 0,
+            title: String::new(),
+            body: String::new(),
+            labels: labels.to_vec(),
+            assignees: Vec::new(),
+            author: None,
+            milestone: None,
+            comments_count: 0,
+            created_at: None,
+            url: String::new(),
+            state: "OPEN".to_owned(),
+            updated_at: None,
+        };
+        self.match_workflow_for_issue(&synthetic)
+    }
+
+    /// Resolves `(workflow_name, matched_rule)` against a full [`GitHubIssue`] (labels, assignees,
+    /// author, milestone, title/body text, comments, dates, exclusions, etc.).
+    pub fn match_workflow_for_issue(&self, issue: &GitHubIssue) -> Option<(String, String)> {
+        for rule in &self.intake_rules {
+            if rule.matches_issue(issue) {
+                return Some((rule.workflow_name.clone(), rule.matched_rule_text()));
+            }
+        }
+        let fallback = self.fallback_workflow.trim();
+        if !fallback.is_empty() {
+            return Some((fallback.to_owned(), format!("fallback → {fallback}")));
+        }
+        if self.intake_rules.is_empty() {
+            return Some((
+                "Unassigned".to_owned(),
+                "no workflow rule (assign in inspector)".to_owned(),
+            ));
+        }
+        None
+    }
+
+    /// Picks the most descriptive primary badge for an issue card.
+    fn pick_primary_badge(&self, issue: &GitHubIssue) -> String {
+        for rule in &self.intake_rules {
+            if rule.matches_issue(issue) {
+                let clauses = rule.effective_clauses();
+                if let Some(first) = clauses.first() {
+                    match first.qualifier {
+                        GitHubFilterQualifier::Label if !first.negated => {
+                            if let Some(matched) = issue
+                                .labels
+                                .iter()
+                                .find(|label| label.eq_ignore_ascii_case(&first.value))
+                            {
+                                return matched.clone();
+                            }
+                        }
+                        GitHubFilterQualifier::Assignee if !first.negated => {
+                            let target = normalize_assignee_handle(&first.value);
+                            if let Some(matched) = issue.assignees.iter().find(|a| {
+                                target == "*"
+                                    || normalize_assignee_handle(a).eq_ignore_ascii_case(&target)
+                            }) {
+                                return format!("@{matched}");
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                break;
+            }
+        }
+        if let Some(other) = issue.labels.iter().find(|label| {
+            !self.intake_filters.iter().any(|f| {
+                f.qualifier == GitHubFilterQualifier::Label
+                    && !f.negated
+                    && f.value.eq_ignore_ascii_case(label)
+            })
+        }) {
+            return other.clone();
+        }
+        if let Some(assignee) = issue.assignees.first() {
+            return format!("@{assignee}");
+        }
+        issue
+            .labels
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "issue".to_owned())
+    }
+
+    /// Applies a live [`GitHubSyncSnapshot`] (including server-side `--search` results) to this queue.
+    pub fn apply_github_snapshot(&mut self, snapshot: &GitHubSyncSnapshot) -> GitHubIntakeDiff {
+        self.apply_github_issues_internal(
+            &snapshot.repo,
+            &snapshot.open_issues,
+            snapshot.server_filtered,
+        )
+    }
+
+    /// Applies a live open-issues slice from GitHub to this work queue.
+    ///
+    /// Preserves in-flight items (`InProgress`, `NeedsYou`, `DoneThisWeek`), ad-hoc items,
+    /// manual workflow overrides, and explicitly skipped issue numbers while reconciling
+    /// `ReadyForAgents` and `unmatched_issues` against the current intake filters and rules.
+    pub fn apply_github_issues(
+        &mut self,
+        repo_slug: &str,
+        issues: &[GitHubIssue],
+    ) -> GitHubIntakeDiff {
+        self.apply_github_issues_internal(repo_slug, issues, false)
+    }
+
+    fn apply_github_issues_internal(
+        &mut self,
+        repo_slug: &str,
+        issues: &[GitHubIssue],
+        server_filtered: bool,
+    ) -> GitHubIntakeDiff {
+        let slug = repo_slug.trim();
+        if !slug.is_empty() {
+            self.repo_slug = slug.to_owned();
+        }
+        self.tracker_name = "GitHub Issues".to_owned();
+
+        let open_numbers: BTreeSet<u32> = issues.iter().map(|i| i.number).collect();
+
+        // Remove ReadyForAgents tracker items that were closed remotely on GitHub (or no longer
+        // match a server-side search filter), keeping ad-hoc and already-active work.
+        self.items.retain(|item| {
+            item.stage != WorkQueueStage::ReadyForAgents
+                || item.label == "ad-hoc"
+                || open_numbers.contains(&item.issue_number)
+        });
+
+        let mut next_unmatched = Vec::new();
+        let mut newly_queued = Vec::new();
+
+        for issue in issues {
+            self.issue_labels.insert(issue.number, issue.labels.clone());
+            self.issue_snapshots.insert(issue.number, issue.clone());
+            let description = if issue.body.trim().is_empty() {
+                "No description provided.".to_owned()
+            } else {
+                issue.body.clone()
+            };
+            let primary_badge = self.pick_primary_badge(issue);
+
+            // Check if this issue is already tracked in `self.items`.
+            if let Some(existing_idx) = self
+                .items
+                .iter()
+                .position(|item| item.issue_number == issue.number)
+            {
+                let stage = self.items[existing_idx].stage;
+                let is_manual = self.items[existing_idx]
+                    .matched_rule
+                    .starts_with("manual override")
+                    || self.items[existing_idx]
+                        .description
+                        .starts_with("Manually queued");
+
+                self.items[existing_idx].title = issue.title.clone();
+                if !is_manual || !issue.body.trim().is_empty() {
+                    self.items[existing_idx].description = description.clone();
+                }
+                self.items[existing_idx].issue_url = issue.url.clone();
+                if self.items[existing_idx].label != "ad-hoc" {
+                    self.items[existing_idx].label = primary_badge;
+                }
+
+                if stage == WorkQueueStage::ReadyForAgents && !is_manual {
+                    if let Some(reason) = self.first_intake_filter_failure(issue, server_filtered) {
+                        self.items.remove(existing_idx);
+                        self.unmatched_details
+                            .insert(issue.number, (description, issue.url.clone()));
+                        next_unmatched.push(UnmatchedIssue {
+                            issue_number: issue.number,
+                            title: issue.title.clone(),
+                            labels: issue.labels.clone(),
+                            reason,
+                        });
+                    } else if let Some((workflow_name, matched_rule)) =
+                        self.match_workflow_for_issue(issue)
+                    {
+                        self.items[existing_idx].workflow_name = workflow_name;
+                        self.items[existing_idx].matched_rule = matched_rule;
+                    } else {
+                        self.items.remove(existing_idx);
+                        self.unmatched_details
+                            .insert(issue.number, (description, issue.url.clone()));
+                        next_unmatched.push(UnmatchedIssue {
+                            issue_number: issue.number,
+                            title: issue.title.clone(),
+                            labels: issue.labels.clone(),
+                            reason: "No matching intake rule".to_owned(),
+                        });
+                    }
+                }
+                continue;
+            }
+
+            // Issue is not in `self.items` yet.
+            if self.skipped_issue_numbers.contains(&issue.number) {
+                self.unmatched_details
+                    .insert(issue.number, (description, issue.url.clone()));
+                next_unmatched.push(UnmatchedIssue {
+                    issue_number: issue.number,
+                    title: issue.title.clone(),
+                    labels: issue.labels.clone(),
+                    reason: "Skipped from queue".to_owned(),
+                });
+                continue;
+            }
+
+            if let Some(reason) = self.first_intake_filter_failure(issue, server_filtered) {
+                self.unmatched_details
+                    .insert(issue.number, (description, issue.url.clone()));
+                next_unmatched.push(UnmatchedIssue {
+                    issue_number: issue.number,
+                    title: issue.title.clone(),
+                    labels: issue.labels.clone(),
+                    reason,
+                });
+                continue;
+            }
+
+            let Some((workflow_name, matched_rule)) = self.match_workflow_for_issue(issue) else {
+                self.unmatched_details
+                    .insert(issue.number, (description, issue.url.clone()));
+                next_unmatched.push(UnmatchedIssue {
+                    issue_number: issue.number,
+                    title: issue.title.clone(),
+                    labels: issue.labels.clone(),
+                    reason: "No matching intake rule".to_owned(),
+                });
+                continue;
+            };
+
+            self.unmatched_details.remove(&issue.number);
+            self.items.push(WorkQueueItem {
+                issue_number: issue.number,
+                title: issue.title.clone(),
+                description,
+                label: primary_badge,
+                workflow_name,
+                matched_rule,
+                stage: WorkQueueStage::ReadyForAgents,
+                run_number: None,
+                status_text: "Queued".to_owned(),
+                agent_provider: None,
+                issue_url: issue.url.clone(),
+            });
+            newly_queued.push(issue.number);
+        }
+
+        // Advance `next_ad_hoc_issue_number` past any real GitHub issue numbers so ad-hoc IDs never collide.
+        if let Some(max_issue) = issues.iter().map(|i| i.number).max()
+            && self.next_ad_hoc_issue_number <= max_issue
         {
-            (
-                rule.workflow_name.clone(),
-                format!("label {} → {}", rule.label, rule.workflow_name),
-            )
-        } else {
-            (
-                self.fallback_workflow.clone(),
-                format!("fallback → {}", self.fallback_workflow),
-            )
+            self.next_ad_hoc_issue_number = max_issue + 1;
+        }
+
+        self.unmatched_issues = next_unmatched;
+        self.refresh_ready_labels();
+
+        GitHubIntakeDiff {
+            total_open: issues.len(),
+            newly_queued,
+            ready_count: self.stage_count(WorkQueueStage::ReadyForAgents),
+            unmatched_count: self.unmatched_issues.len(),
         }
     }
 
     /// Plain-text intake rule summary sentence for accessibility and non-rich contexts.
     pub fn intake_summary_sentence(&self) -> String {
-        if self.required_label.trim().is_empty()
+        let filters = self.effective_intake_filter_clauses();
+        if filters.is_empty()
             && self.intake_rules.is_empty()
             && self.fallback_workflow.trim().is_empty()
         {
             return "No issue source or intake rules configured yet. Connect an issue source in Project Settings or add intake rules.".to_owned();
         }
+        let intake_prefix = if filters.is_empty() {
+            "All open issues become work.".to_owned()
+        } else if filters.len() == 1
+            && filters[0].qualifier == GitHubFilterQualifier::Label
+            && !filters[0].negated
+        {
+            format!("Open issues labeled {} become work.", filters[0].value)
+        } else {
+            let summary = filters
+                .iter()
+                .map(GitHubFilterClause::human_summary)
+                .collect::<Vec<_>>()
+                .join(" and ");
+            format!("Open issues matching {summary} become work.")
+        };
+
         let mut parts = Vec::new();
         for (idx, rule) in self.intake_rules.iter().enumerate() {
-            let subject = match rule.label.as_str() {
-                "bug" if idx == 0 => "Bugs go to".to_owned(),
-                "bug" => "bugs to".to_owned(),
-                other if idx == 0 => format!("{} go to", capitalize_first(other)),
-                other => format!("{other} to"),
+            let clauses = rule.effective_clauses();
+            let subject = if clauses.len() == 1
+                && clauses[0].qualifier == GitHubFilterQualifier::Label
+                && !clauses[0].negated
+            {
+                match clauses[0].value.as_str() {
+                    "bug" if idx == 0 => "Bugs go to".to_owned(),
+                    "bug" => "bugs to".to_owned(),
+                    other if idx == 0 => format!("{} go to", capitalize_first(other)),
+                    other => format!("{other} to"),
+                }
+            } else {
+                let cond = clauses
+                    .iter()
+                    .map(GitHubFilterClause::human_summary)
+                    .collect::<Vec<_>>()
+                    .join(" and ");
+                if idx == 0 {
+                    format!("{} go to", capitalize_first(&cond))
+                } else {
+                    format!("{cond} to")
+                }
             };
             parts.push(format!("{subject} {}", rule.workflow_name));
         }
         if parts.is_empty() {
-            let label = if self.required_label.trim().is_empty() {
-                "any"
-            } else {
-                self.required_label.as_str()
-            };
             let fallback = if self.fallback_workflow.trim().is_empty() {
                 "your default workflow"
             } else {
                 self.fallback_workflow.as_str()
             };
-            format!("Open issues labeled {label} become work. Everything goes to {fallback}.")
+            format!("{intake_prefix} Everything goes to {fallback}.")
+        } else if self.fallback_workflow.trim().is_empty() {
+            format!("{intake_prefix} {}.", parts.join(", "))
         } else {
             format!(
-                "Open issues labeled {} become work. {}, everything else to {}.",
-                self.required_label,
+                "{intake_prefix} {}, everything else to {}.",
                 parts.join(", "),
                 self.fallback_workflow
             )
@@ -912,12 +1380,24 @@ impl ProjectWorkQueue {
         }
 
         let removed = self.items.remove(idx);
+        if !self.skipped_issue_numbers.contains(&removed.issue_number) {
+            self.skipped_issue_numbers.push(removed.issue_number);
+        }
+        let labels = self
+            .issue_labels
+            .get(&removed.issue_number)
+            .cloned()
+            .unwrap_or_else(|| vec![removed.label.clone()]);
+        self.unmatched_details.insert(
+            removed.issue_number,
+            (removed.description.clone(), removed.issue_url.clone()),
+        );
         self.unmatched_issues.insert(
             0,
             UnmatchedIssue {
                 issue_number: removed.issue_number,
                 title: removed.title,
-                labels: vec![removed.label],
+                labels,
                 reason: "Skipped from queue".to_owned(),
             },
         );
@@ -1007,24 +1487,50 @@ impl ProjectWorkQueue {
             .ok_or(WorkQueueError::IssueNotFound(issue_number))?;
 
         let unmatched = self.unmatched_issues.remove(idx);
-        let primary_label = unmatched
-            .labels
-            .first()
+        self.skipped_issue_numbers
+            .retain(|num| *num != unmatched.issue_number);
+        let synthetic_issue = self
+            .issue_snapshots
+            .get(&unmatched.issue_number)
             .cloned()
-            .unwrap_or_else(|| "chore".to_owned());
-        let (workflow_name, matched_rule) = self.match_workflow_for_label(&primary_label);
-        let issue_url = format!(
-            "https://github.com/{}/issues/{}",
-            self.repo_slug, unmatched.issue_number
-        );
+            .unwrap_or_else(|| GitHubIssue {
+                number: unmatched.issue_number,
+                title: unmatched.title.clone(),
+                body: String::new(),
+                labels: unmatched.labels.clone(),
+                assignees: Vec::new(),
+                author: None,
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: String::new(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            });
+        let primary_label = self.pick_primary_badge(&synthetic_issue);
+        let (workflow_name, matched_rule) = self
+            .match_workflow_for_issue(&synthetic_issue)
+            .unwrap_or_else(|| self.match_workflow_for_label(&primary_label));
+        let (description, issue_url) = self
+            .unmatched_details
+            .remove(&unmatched.issue_number)
+            .unwrap_or_else(|| {
+                (
+                    format!(
+                        "Manually queued from unmatched tracker issues ({}).",
+                        unmatched.reason
+                    ),
+                    format!(
+                        "https://github.com/{}/issues/{}",
+                        self.repo_slug, unmatched.issue_number
+                    ),
+                )
+            });
 
         self.items.push(WorkQueueItem {
             issue_number: unmatched.issue_number,
             title: unmatched.title,
-            description: format!(
-                "Manually queued from unmatched tracker issues ({}).",
-                unmatched.reason
-            ),
+            description,
             label: primary_label,
             workflow_name,
             matched_rule,
@@ -1094,48 +1600,87 @@ impl ProjectWorkQueue {
         Ok((issue_number, run_number))
     }
 
-    /// Updates intake configuration and re-matches non-overridden queued items.
+    /// Updates intake filters, routing rules, and fallback workflow, then re-matches queued items.
     pub fn update_intake_rules(
         &mut self,
-        required_label: String,
+        intake_filters: Vec<GitHubFilterClause>,
         rules: Vec<IntakeRule>,
         fallback_workflow: String,
     ) {
-        let trimmed_req = required_label.trim();
-        if !trimmed_req.is_empty() {
-            let old_reason = format!("Missing label {}", self.required_label);
-            let new_reason = format!("Missing label {trimmed_req}");
-            self.required_label = trimmed_req.to_owned();
+        let old_single_label = if self.intake_filters.len() == 1
+            && self.intake_filters[0].qualifier == GitHubFilterQualifier::Label
+            && !self.intake_filters[0].negated
+        {
+            Some(self.intake_filters[0].value.clone())
+        } else {
+            None
+        };
+        self.intake_filters = intake_filters
+            .into_iter()
+            .filter(|clause| !clause.is_empty())
+            .collect();
+        if let (Some(old_label), Some(new_clause)) = (old_single_label, self.intake_filters.first())
+            && self.intake_filters.len() == 1
+            && new_clause.qualifier == GitHubFilterQualifier::Label
+            && !new_clause.negated
+        {
+            let old_reason = format!("Missing label {old_label}");
+            let new_reason = format!("Missing label {}", new_clause.value);
             for issue in &mut self.unmatched_issues {
                 if issue.reason == old_reason {
                     issue.reason = new_reason.clone();
                 }
             }
         }
-        let trimmed_fallback = fallback_workflow.trim();
-        if !trimmed_fallback.is_empty() {
-            self.fallback_workflow = trimmed_fallback.to_owned();
-        }
+        self.fallback_workflow = fallback_workflow.trim().to_owned();
         self.intake_rules = rules
             .into_iter()
-            .filter(|r| !r.label.trim().is_empty() && !r.workflow_name.trim().is_empty())
+            .filter(|r| !r.effective_clauses().is_empty() && !r.workflow_name.trim().is_empty())
             .collect();
 
         let rules_snapshot = self.intake_rules.clone();
         let fallback_snapshot = self.fallback_workflow.clone();
+        let labels_snapshot = self.issue_labels.clone();
+        let snapshots = self.issue_snapshots.clone();
         for item in &mut self.items {
             if item.stage == WorkQueueStage::ReadyForAgents
                 && !item.matched_rule.starts_with("manual override")
             {
+                let issue = snapshots
+                    .get(&item.issue_number)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        let item_labels = labels_snapshot
+                            .get(&item.issue_number)
+                            .cloned()
+                            .unwrap_or_else(|| vec![item.label.clone()]);
+                        GitHubIssue {
+                            number: item.issue_number,
+                            title: item.title.clone(),
+                            body: item.description.clone(),
+                            labels: item_labels,
+                            assignees: Vec::new(),
+                            author: None,
+                            milestone: None,
+                            comments_count: 0,
+                            created_at: None,
+                            url: item.issue_url.clone(),
+                            state: "OPEN".to_owned(),
+                            updated_at: None,
+                        }
+                    });
                 if let Some(rule) = rules_snapshot
                     .iter()
-                    .find(|rule| rule.label.eq_ignore_ascii_case(&item.label))
+                    .find(|rule| rule.matches_issue(&issue))
                 {
                     item.workflow_name = rule.workflow_name.clone();
-                    item.matched_rule = format!("label {} → {}", rule.label, rule.workflow_name);
-                } else {
+                    item.matched_rule = rule.matched_rule_text();
+                } else if !fallback_snapshot.is_empty() {
                     item.workflow_name = fallback_snapshot.clone();
                     item.matched_rule = format!("fallback → {fallback_snapshot}");
+                } else if rules_snapshot.is_empty() {
+                    item.workflow_name = "Unassigned".to_owned();
+                    item.matched_rule = "no workflow rule (assign in inspector)".to_owned();
                 }
             }
         }
@@ -1248,16 +1793,206 @@ mod tests {
     fn update_intake_rules_rematches_queued_issues() {
         let mut queue = ProjectWorkQueue::for_project("api-gateway");
         queue.update_intake_rules(
-            "ready-for-bot".to_owned(),
-            vec![IntakeRule {
-                label: "bug".to_owned(),
-                workflow_name: "Triage new issues".to_owned(),
-            }],
+            vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "ready-for-bot",
+            )],
+            vec![IntakeRule::by_label("bug", "Triage new issues")],
             "Dependency upgrade".to_owned(),
         );
 
-        assert_eq!(queue.required_label, "ready-for-bot");
+        assert_eq!(queue.intake_filters.len(), 1);
+        assert_eq!(queue.intake_filters[0].value, "ready-for-bot");
         assert_eq!(queue.item(331).unwrap().workflow_name, "Triage new issues");
         assert_eq!(queue.item(329).unwrap().workflow_name, "Dependency upgrade");
+    }
+
+    #[test]
+    fn applies_live_github_issues_and_preserves_in_flight_and_skipped_items() {
+        let mut queue = ProjectWorkQueue::empty("my-app");
+        queue.update_intake_rules(
+            vec![GitHubFilterClause::new(
+                GitHubFilterQualifier::Label,
+                "agent-ready",
+            )],
+            vec![
+                IntakeRule::by_label("bug", "Fix issue"),
+                IntakeRule::by_label("docs", "Docs refresh"),
+            ],
+            "Triage new issues".to_owned(),
+        );
+
+        let issues = vec![
+            GitHubIssue {
+                number: 10,
+                title: "Crash on empty payload".to_owned(),
+                body: "Panics when body is empty.".to_owned(),
+                labels: vec!["agent-ready".to_owned(), "bug".to_owned()],
+                assignees: Vec::new(),
+                author: Some("alice".to_owned()),
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/10".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+            GitHubIssue {
+                number: 11,
+                title: "Clarify CLI flags".to_owned(),
+                body: "".to_owned(),
+                labels: vec!["agent-ready".to_owned()],
+                assignees: Vec::new(),
+                author: None,
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/11".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+            GitHubIssue {
+                number: 12,
+                title: "RFC: plugin system".to_owned(),
+                body: "Needs design.".to_owned(),
+                labels: vec!["rfc".to_owned()],
+                assignees: Vec::new(),
+                author: None,
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/12".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+        ];
+
+        let diff = queue.apply_github_issues("acme/my-app", &issues);
+        assert_eq!(diff.total_open, 3);
+        assert_eq!(diff.newly_queued, vec![10, 11]);
+        assert_eq!(diff.ready_count, 2);
+        assert_eq!(diff.unmatched_count, 1);
+        assert_eq!(queue.item(10).unwrap().workflow_name, "Fix issue");
+        assert_eq!(queue.item(10).unwrap().label, "bug");
+        assert_eq!(queue.item(11).unwrap().workflow_name, "Triage new issues");
+        assert_eq!(queue.unmatched_issues[0].issue_number, 12);
+        assert_eq!(
+            queue.unmatched_issues[0].reason,
+            "Missing label agent-ready"
+        );
+
+        // Start #10, skip #11, and re-sync: #10 stays InProgress and #11 stays skipped.
+        queue.start_issue(10).unwrap();
+        queue.skip_issue(11).unwrap();
+        let diff2 = queue.apply_github_issues("acme/my-app", &issues);
+        assert!(diff2.newly_queued.is_empty());
+        assert_eq!(queue.item(10).unwrap().stage, WorkQueueStage::InProgress);
+        assert!(queue.item(11).is_none());
+        assert_eq!(queue.unmatched_issues.len(), 2);
+    }
+
+    #[test]
+    fn routes_and_filters_issues_by_assignee_and_multi_clause_github_filters() {
+        let mut queue = ProjectWorkQueue::empty("my-app");
+        queue.update_intake_rules(
+            vec![GitHubFilterClause::negated(
+                GitHubFilterQualifier::Label,
+                "blocked",
+            )],
+            vec![
+                IntakeRule::with_clauses(
+                    vec![
+                        GitHubFilterClause::new(GitHubFilterQualifier::Assignee, "@factory-bot"),
+                        GitHubFilterClause::new(GitHubFilterQualifier::Label, "bug"),
+                    ],
+                    "Urgent Bugfix",
+                ),
+                IntakeRule::by_assignee("@factory-bot", "Agent Triage"),
+                IntakeRule::with_clauses(
+                    vec![GitHubFilterClause::new(
+                        GitHubFilterQualifier::Milestone,
+                        "v2.0",
+                    )],
+                    "Release Prep",
+                ),
+            ],
+            String::new(),
+        );
+
+        let issues = vec![
+            GitHubIssue {
+                number: 201,
+                title: "Fix memory leak".to_owned(),
+                body: String::new(),
+                labels: vec!["bug".to_owned()],
+                assignees: vec!["factory-bot".to_owned()],
+                author: Some("alice".to_owned()),
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/201".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+            GitHubIssue {
+                number: 202,
+                title: "Investigate flaky test".to_owned(),
+                body: String::new(),
+                labels: Vec::new(),
+                assignees: vec!["factory-bot".to_owned()],
+                author: None,
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/202".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+            GitHubIssue {
+                number: 203,
+                title: "Cut v2.0 changelog".to_owned(),
+                body: String::new(),
+                labels: Vec::new(),
+                assignees: Vec::new(),
+                author: None,
+                milestone: Some("v2.0".to_owned()),
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/203".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+            GitHubIssue {
+                number: 204,
+                title: "Blocked migration".to_owned(),
+                body: String::new(),
+                labels: vec!["blocked".to_owned()],
+                assignees: vec!["factory-bot".to_owned()],
+                author: None,
+                milestone: None,
+                comments_count: 0,
+                created_at: None,
+                url: "https://github.com/acme/my-app/issues/204".to_owned(),
+                state: "OPEN".to_owned(),
+                updated_at: None,
+            },
+        ];
+
+        let diff = queue.apply_github_issues("acme/my-app", &issues);
+        assert_eq!(diff.ready_count, 3);
+        assert_eq!(diff.unmatched_count, 1);
+        assert_eq!(queue.item(201).unwrap().workflow_name, "Urgent Bugfix");
+        assert_eq!(
+            queue.item(201).unwrap().matched_rule,
+            "assigned to @factory-bot and has label bug → Urgent Bugfix"
+        );
+        assert_eq!(queue.item(202).unwrap().workflow_name, "Agent Triage");
+        assert_eq!(queue.item(202).unwrap().label, "@factory-bot");
+        assert_eq!(queue.item(203).unwrap().workflow_name, "Release Prep");
+        assert_eq!(queue.unmatched_issues[0].issue_number, 204);
+        assert_eq!(
+            queue.unmatched_issues[0].reason,
+            "Has excluded label blocked"
+        );
     }
 }
