@@ -16,6 +16,8 @@ use crate::{
 
 const RIGHT_COLUMN_WIDTH: f32 = 344.0;
 const CHART_PLOT_HEIGHT: f32 = 196.0;
+/// Fits y-axis labels such as "27.5M" on one line.
+const CHART_AXIS_WIDTH: f32 = 50.0;
 
 /// Main scrollable Dashboard canvas matching the reference overview layout.
 pub(crate) fn dashboard_view() -> impl IntoElement {
@@ -259,12 +261,14 @@ fn kpi_card(label: &'static str, value: String, subtitle: String) -> impl IntoEl
         .gap(px(5.0))
         .child(
             text(label)
+                .truncate()
                 .text_size(px(12.0))
                 .font_weight(FontWeight::NORMAL)
                 .text_color(palette::text_muted()),
         )
         .child(
             text(value)
+                .truncate()
                 .text_size(px(26.0))
                 .font_weight(FontWeight::BOLD)
                 .tabular_nums()
@@ -280,7 +284,13 @@ fn kpi_card(label: &'static str, value: String, subtitle: String) -> impl IntoEl
 // --- Row 2 Left: Tokens per day ---------------------------------------------------------
 
 fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoElement {
-    let mut legend = view().flex_row().items_center().gap(px(12.0));
+    let mut legend = view()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap(px(12.0));
     for project in &snap.project_tokens {
         legend = legend.child(legend_item(&project.project_name, project.color));
     }
@@ -292,11 +302,19 @@ fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoE
         "Show table"
     };
 
-    let mut header_right = view().flex_row().items_center().gap(px(14.0)).child(legend);
+    let mut header_right = view()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex_row()
+        .items_center()
+        .justify_end()
+        .gap(px(14.0))
+        .child(legend);
     if has_buckets {
         header_right = header_right.child(
             button()
                 .on_press(store::toggle_tokens_show_table)
+                .flex_shrink_0()
                 .px(px(10.0))
                 .py(px(4.5))
                 .rounded(px(7.0))
@@ -327,6 +345,7 @@ fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoE
                 .gap(px(12.0))
                 .child(
                     text("Tokens per day")
+                        .flex_shrink_0()
                         .text_size(px(14.0))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette::text_primary()),
@@ -360,12 +379,15 @@ fn tokens_per_day_card(snap: &DashboardSnapshot, show_table: bool) -> impl IntoE
 
 fn legend_item(name: &str, color: ProjectColor) -> impl IntoElement {
     view()
+        .min_w(px(0.0))
         .flex_row()
         .items_center()
         .gap(px(6.0))
         .child(project_dot(color))
         .child(
             text(name.to_owned())
+                .min_w(px(0.0))
+                .truncate()
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
         )
@@ -386,13 +408,14 @@ fn tokens_chart_view(snap: &DashboardSnapshot) -> impl IntoElement {
         .items_end()
         .px(px(12.0));
 
-    let mut x_axis_row = view().flex_row().flex_1().px(px(12.0));
+    let mut x_axis_row = view().flex_row().flex_1().min_w(px(0.0)).px(px(12.0));
 
     for bucket in &snap.buckets {
         bars_row = bars_row.child(stacked_bar_column(bucket, max_tokens, bar_width));
         x_axis_row = x_axis_row.child(
-            view().flex_1().items_center().child(
+            view().flex_1().min_w(px(0.0)).items_center().child(
                 text(bucket.label.clone())
+                    .truncate()
                     .text_size(px(11.5))
                     .text_color(palette::text_muted()),
             ),
@@ -407,7 +430,8 @@ fn tokens_chart_view(snap: &DashboardSnapshot) -> impl IntoElement {
                 .items_stretch()
                 .child(
                     view()
-                        .w(px(36.0))
+                        .w(px(CHART_AXIS_WIDTH))
+                        .flex_shrink_0()
                         .h(px(CHART_PLOT_HEIGHT))
                         .pr(px(10.0))
                         .justify_between()
@@ -436,11 +460,17 @@ fn tokens_chart_view(snap: &DashboardSnapshot) -> impl IntoElement {
                         .child(bars_row),
                 ),
         )
-        .child(view().flex_row().pl(px(36.0)).child(x_axis_row))
+        .child(
+            view()
+                .flex_row()
+                .pl(px(CHART_AXIS_WIDTH))
+                .child(x_axis_row),
+        )
 }
 
 fn axis_tick(label: String) -> impl IntoElement {
     text(label)
+        .truncate()
         .text_size(px(11.0))
         .tabular_nums()
         .text_color(palette::text_muted())
@@ -509,6 +539,8 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
         .child(
             text("Period")
                 .w(px(64.0))
+                .flex_shrink_0()
+                .truncate()
                 .text_size(px(11.5))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(palette::text_muted()),
@@ -518,6 +550,8 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
         header = header.child(
             text(name.clone())
                 .flex_1()
+                .min_w(px(0.0))
+                .truncate()
                 .text_right()
                 .text_size(px(11.5))
                 .font_weight(FontWeight::MEDIUM)
@@ -528,6 +562,7 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
     header = header.child(
         text("Total")
             .w(px(76.0))
+            .flex_shrink_0()
             .text_right()
             .text_size(px(11.5))
             .font_weight(FontWeight::MEDIUM)
@@ -539,6 +574,8 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
         let mut row = view().flex_row().items_center().py(px(7.0)).child(
             text(bucket.label.clone())
                 .w(px(64.0))
+                .flex_shrink_0()
+                .truncate()
                 .text_size(px(12.5))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(palette::text_primary()),
@@ -558,6 +595,8 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
             row = row.child(
                 text(format_tokens(value))
                     .flex_1()
+                    .min_w(px(0.0))
+                    .truncate()
                     .text_right()
                     .tabular_nums()
                     .text_size(px(12.5))
@@ -568,6 +607,7 @@ fn tokens_table_view(snap: &DashboardSnapshot) -> impl IntoElement {
         row = row.child(
             text(format_tokens(bucket.total_tokens))
                 .w(px(76.0))
+                .flex_shrink_0()
                 .text_right()
                 .tabular_nums()
                 .text_size(px(12.5))
@@ -671,14 +711,19 @@ fn project_token_bar_row(item: &ProjectTokens, max_tokens: u64) -> impl IntoElem
                 .flex_row()
                 .items_center()
                 .justify_between()
+                .gap(px(8.0))
                 .child(
                     text(item.project_name.clone())
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
                         .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette::text_primary()),
                 )
                 .child(
                     view()
+                        .flex_shrink_0()
                         .flex_row()
                         .items_center()
                         .gap(px(8.0))
@@ -691,7 +736,8 @@ fn project_token_bar_row(item: &ProjectTokens, max_tokens: u64) -> impl IntoElem
                         )
                         .child(
                             text(format!("{}%", item.share_pct))
-                                .w(px(30.0))
+                                .w(px(38.0))
+                                .truncate()
                                 .text_right()
                                 .text_size(px(12.0))
                                 .tabular_nums()
@@ -724,11 +770,13 @@ fn provider_usage_row(provider: &ProviderUsage, max_tokens: u64) -> impl IntoEle
         .child(
             text(provider.provider_name.clone())
                 .w(px(74.0))
+                .flex_shrink_0()
+                .truncate()
                 .text_size(px(12.0))
                 .text_color(palette::text_secondary()),
         )
         .child(
-            view().flex_1().h(px(7.0)).flex_row().child(
+            view().flex_1().min_w(px(0.0)).h(px(7.0)).flex_row().child(
                 view()
                     .h_full()
                     .w(relative(fraction * 0.88))
@@ -738,7 +786,8 @@ fn provider_usage_row(provider: &ProviderUsage, max_tokens: u64) -> impl IntoEle
         )
         .child(
             text(format_tokens(provider.tokens))
-                .w(px(40.0))
+                .min_w(px(40.0))
+                .flex_shrink_0()
                 .text_right()
                 .tabular_nums()
                 .text_size(px(12.0))
@@ -784,17 +833,13 @@ fn projects_worked_on_card(snap: &DashboardSnapshot) -> impl IntoElement {
                 .pb(px(8.0))
                 .border_b_1()
                 .border_color(palette::divider_color())
-                .child(table_col_header("Project").flex_1())
-                .child(
-                    table_col_header("Issues resolved")
-                        .w(px(100.0))
-                        .text_right(),
-                )
-                .child(table_col_header("PRs merged").w(px(84.0)).text_right())
-                .child(table_col_header("Runs").w(px(56.0)).text_right())
-                .child(table_col_header("Chats").w(px(56.0)).text_right())
-                .child(table_col_header("Succeeded").w(px(92.0)).text_right())
-                .child(table_col_header("Est. cost").w(px(76.0)).text_right()),
+                .child(table_col_header("Project").flex_1().min_w(px(0.0)))
+                .child(table_num_header("Issues resolved", 100.0))
+                .child(table_num_header("PRs merged", 84.0))
+                .child(table_num_header("Runs", 56.0))
+                .child(table_num_header("Chats", 56.0))
+                .child(table_num_header("Succeeded", 92.0))
+                .child(table_num_header("Est. cost", 76.0)),
         )
         .child(rows)
 }
@@ -804,6 +849,27 @@ fn table_col_header(label: &'static str) -> Text {
         .text_size(px(11.5))
         .font_weight(FontWeight::MEDIUM)
         .text_color(palette::text_muted())
+        .truncate()
+}
+
+/// Fixed-width, right-aligned header over a numeric column.
+fn table_num_header(label: &'static str, width: f32) -> Text {
+    table_col_header(label)
+        .w(px(width))
+        .flex_shrink_0()
+        .text_right()
+}
+
+/// Fixed-width, right-aligned numeric cell in the projects table.
+fn table_num_cell(value: String, width: f32) -> Text {
+    text(value)
+        .w(px(width))
+        .flex_shrink_0()
+        .truncate()
+        .text_right()
+        .tabular_nums()
+        .text_size(px(12.5))
+        .text_color(palette::text_primary())
 }
 
 fn project_activity_row(row: &ProjectActivityRow, is_last: bool) -> impl IntoElement {
@@ -836,70 +902,33 @@ fn project_activity_row(row: &ProjectActivityRow, is_last: bool) -> impl IntoEle
         .child(
             view()
                 .flex_1()
+                .min_w(px(0.0))
                 .flex_row()
                 .items_center()
                 .gap(px(8.0))
                 .child(project_dot(row.color))
                 .child(
                     text(row.project_name.clone())
+                        .min_w(px(0.0))
+                        .truncate()
                         .text_size(px(12.5))
                         .font_weight(FontWeight::SEMIBOLD)
                         .text_color(palette::text_primary()),
                 )
                 .child(
                     text(format!("· {}", row.source))
+                        .min_w(px(0.0))
+                        .truncate()
                         .text_size(px(12.0))
                         .text_color(palette::text_muted()),
                 ),
         )
-        .child(
-            text(row.issues_resolved.to_string())
-                .w(px(100.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            text(row.prs_merged.to_string())
-                .w(px(84.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            text(row.runs.to_string())
-                .w(px(56.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            text(row.chats.to_string())
-                .w(px(56.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            text(succeeded_text)
-                .w(px(92.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        )
-        .child(
-            text(format_currency(row.est_cost_cents))
-                .w(px(76.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(12.5))
-                .text_color(palette::text_primary()),
-        );
+        .child(table_num_cell(row.issues_resolved.to_string(), 100.0))
+        .child(table_num_cell(row.prs_merged.to_string(), 84.0))
+        .child(table_num_cell(row.runs.to_string(), 56.0))
+        .child(table_num_cell(row.chats.to_string(), 56.0))
+        .child(table_num_cell(succeeded_text, 92.0))
+        .child(table_num_cell(format_currency(row.est_cost_cents), 76.0));
 
     if !is_last {
         container = container
@@ -980,12 +1009,16 @@ fn high_token_run_item(run: &HighTokenRun) -> impl IntoElement {
                         .gap(px(8.0))
                         .child(
                             text(run.title.clone())
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
                                 .text_size(px(12.5))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette::text_primary()),
                         )
                         .child(
                             text(format_tokens(run.tokens))
+                                .flex_shrink_0()
                                 .text_size(px(12.5))
                                 .font_weight(FontWeight::BOLD)
                                 .tabular_nums()
@@ -994,6 +1027,7 @@ fn high_token_run_item(run: &HighTokenRun) -> impl IntoElement {
                 )
                 .child(
                     text(format!("{} · {}", run.project_name, run.subtitle))
+                        .truncate()
                         .text_size(px(11.5))
                         .text_color(palette::text_muted()),
                 )
@@ -1012,6 +1046,7 @@ fn high_token_run_item(run: &HighTokenRun) -> impl IntoElement {
                             run.outcome_note
                         )
                     })
+                    .truncate()
                     .text_size(px(11.5))
                     .text_color(palette::text_muted()),
                 ),
@@ -1048,6 +1083,7 @@ fn wait_time_card(snap: &DashboardSnapshot) -> impl IntoElement {
             view()
                 .flex_row()
                 .items_start()
+                .min_w(px(0.0))
                 .gap(px(32.0))
                 .child(wait_stat(median_display, "Median answer time"))
                 .child(wait_stat(longest_display, "Longest wait"))
@@ -1065,9 +1101,11 @@ fn wait_time_card(snap: &DashboardSnapshot) -> impl IntoElement {
 
 fn wait_stat(value: String, label: &'static str) -> impl IntoElement {
     view()
+        .min_w(px(0.0))
         .gap(px(3.0))
         .child(
             text(value)
+                .truncate()
                 .text_size(px(21.0))
                 .font_weight(FontWeight::BOLD)
                 .tabular_nums()
@@ -1075,6 +1113,7 @@ fn wait_stat(value: String, label: &'static str) -> impl IntoElement {
         )
         .child(
             text(label)
+                .truncate()
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
         )
