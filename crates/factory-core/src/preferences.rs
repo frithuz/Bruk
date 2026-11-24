@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    antigravity_cli::{
+        ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,
+        AntigravityCliDetails, AntigravityCliProbe,
+    },
     bruk_home::BrukHome,
     claude_cli::{
         ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
@@ -113,14 +117,20 @@ impl DefaultLandingView {
 pub enum ProviderKind {
     Claude,
     Codex,
+    Antigravity,
     OpenRouter,
 }
 
 impl ProviderKind {
+    /// The agent CLIs Bruk can run, in the order Settings and pickers list them.
+    pub const CLI_PROVIDERS: &'static [ProviderKind] =
+        &[Self::Claude, Self::Codex, Self::Antigravity];
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Claude => "Claude",
             Self::Codex => "Codex",
+            Self::Antigravity => "Antigravity",
             Self::OpenRouter => "OpenRouter",
         }
     }
@@ -129,13 +139,29 @@ impl ProviderKind {
         match self {
             Self::Claude => "Cl",
             Self::Codex => "Cx",
+            Self::Antigravity => "Ag",
             Self::OpenRouter => "OR",
         }
     }
 
+    /// Lowercase id used for account ids and UI test ids (`"claude"`, `"antigravity"`).
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::Antigravity => "antigravity",
+            Self::OpenRouter => "openrouter",
+        }
+    }
+
+    /// Whether this provider is an agent CLI (as opposed to an API key).
+    pub fn is_cli(self) -> bool {
+        !matches!(self, Self::OpenRouter)
+    }
+
     pub fn group_hint(self) -> &'static str {
         match self {
-            Self::Claude | Self::Codex => "one account",
+            Self::Claude | Self::Codex | Self::Antigravity => "one account",
             Self::OpenRouter => "one or more keys",
         }
     }
@@ -155,7 +181,7 @@ fn default_true() -> bool {
     true
 }
 
-/// Single-account CLI provider configuration (Claude or Codex).
+/// Single-account CLI provider configuration (Claude, Codex, or Antigravity).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CliAccount {
     pub id: String,
@@ -249,6 +275,10 @@ impl CliAccount {
             }
         } else if self.provider == ProviderKind::Codex {
             for fallback in ["Codex", "o-series"] {
+                push_unique(fallback.to_owned());
+            }
+        } else if self.provider == ProviderKind::Antigravity {
+            for fallback in ["Neon", "Flash"] {
                 push_unique(fallback.to_owned());
             }
         }
@@ -598,6 +628,9 @@ pub struct AppPreferences {
     pub codex: Option<CliAccount>,
     #[serde(default)]
     pub codex_spawn_settings: CodexSpawnSettings,
+    /// The Antigravity CLI (`agy`), registered on request like Codex.
+    #[serde(default)]
+    pub antigravity: Option<CliAccount>,
     pub openrouter_keys: Vec<OpenRouterKey>,
     pub machines: MachinesSettings,
     pub extensions: ExtensionsSettings,
@@ -647,6 +680,7 @@ impl AppPreferences {
             claude_spawn_settings: ClaudeSpawnSettings::default(),
             codex: None,
             codex_spawn_settings: CodexSpawnSettings::default(),
+            antigravity: None,
             openrouter_keys: Vec::new(),
             machines: MachinesSettings::default(),
             extensions: ExtensionsSettings::empty(),
@@ -798,6 +832,58 @@ impl AppPreferences {
                 used_by_projects: vec!["api-gateway".to_owned(), "mobile-app".to_owned()],
             }),
             codex_spawn_settings: CodexSpawnSettings::default(),
+            antigravity: Some(CliAccount {
+                id: "antigravity".to_owned(),
+                provider: ProviderKind::Antigravity,
+                display_name: "Antigravity".to_owned(),
+                email: String::new(),
+                plan: String::new(),
+                connected: true,
+                cli_binary: "agy".to_owned(),
+                custom_cli_path: None,
+                binary_found: true,
+                uses_system_login: true,
+                config_dir: ANTIGRAVITY_DEFAULT_CONFIG_DIR.to_owned(),
+                default_model: ANTIGRAVITY_DEFAULT_MODEL.to_owned(),
+                hidden_model_families: Vec::new(),
+                available_models: vec![
+                    ClaudeModelOption {
+                        value: "gemini-4-neon-medium".to_owned(),
+                        resolved_model: "gemini-4-neon-medium".to_owned(),
+                        display_name: "Gemini 4 Neon (Medium)".to_owned(),
+                        description: String::new(),
+                    },
+                    ClaudeModelOption {
+                        value: "gemini-3.8-flash-medium".to_owned(),
+                        resolved_model: "gemini-3.8-flash-medium".to_owned(),
+                        display_name: "Gemini 3.8 Flash (Medium)".to_owned(),
+                        description: String::new(),
+                    },
+                ],
+                usage: Some(ClaudeUsageSummary {
+                    rate_limits_available: true,
+                    windows: vec![
+                        ClaudeUsageWindow {
+                            label: "5-hour (Gemini Models)".to_owned(),
+                            used_percent: 22,
+                            remaining_percent: 78,
+                            resets_at: Some("2026-11-23T02:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                        ClaudeUsageWindow {
+                            label: "Weekly (Gemini Models)".to_owned(),
+                            used_percent: 8,
+                            remaining_percent: 92,
+                            resets_at: Some("2026-11-30T12:00:00+00:00".to_owned()),
+                            severity: "normal".to_owned(),
+                        },
+                    ],
+                    extra_usage_note: None,
+                }),
+                usage_warning: None,
+                test_state: ConnectionTestState::Works,
+                used_by_projects: vec!["marketing-site".to_owned()],
+            }),
             openrouter_keys: vec![
                 OpenRouterKey {
                     id: "openrouter-personal".to_owned(),
@@ -876,7 +962,7 @@ impl AppPreferences {
         self.openrouter_keys.iter().find(|key| key.id == id)
     }
 
-    /// Looks up a registered CLI account by id (`"claude"` or `"codex"`).
+    /// Looks up a registered CLI account by id (`"claude"`, `"codex"` or `"antigravity"`).
     pub fn cli_account(&self, id: &str) -> Option<&CliAccount> {
         if self.claude.id == id {
             Some(&self.claude)
@@ -884,9 +970,203 @@ impl AppPreferences {
             && codex.id == id
         {
             Some(codex)
+        } else if let Some(antigravity) = &self.antigravity
+            && antigravity.id == id
+        {
+            Some(antigravity)
         } else {
             None
         }
+    }
+
+    fn cli_account_mut(&mut self, id: &str) -> Option<&mut CliAccount> {
+        if self.claude.id == id {
+            Some(&mut self.claude)
+        } else if let Some(codex) = self.codex.as_mut().filter(|c| c.id == id) {
+            Some(codex)
+        } else {
+            self.antigravity.as_mut().filter(|a| a.id == id)
+        }
+    }
+
+    /// The registered account of a CLI provider, if any.
+    pub fn cli_account_for(&self, provider: ProviderKind) -> Option<&CliAccount> {
+        match provider {
+            ProviderKind::Claude => Some(&self.claude),
+            ProviderKind::Codex => self.codex.as_ref(),
+            ProviderKind::Antigravity => self.antigravity.as_ref(),
+            ProviderKind::OpenRouter => None,
+        }
+    }
+
+    /// Registers the Antigravity CLI provider account with the requested binary and default
+    /// model.
+    pub fn add_antigravity_account(
+        &mut self,
+        cli_binary: &str,
+        default_model: &str,
+    ) -> Result<String, PreferencesError> {
+        let binary = cli_binary.trim();
+        let is_default_binary =
+            binary.is_empty() || binary == "agy" || binary == ANTIGRAVITY_BINARY_NAME;
+        let model = default_model.trim();
+        self.antigravity = Some(CliAccount {
+            id: "antigravity".to_owned(),
+            provider: ProviderKind::Antigravity,
+            display_name: "Antigravity".to_owned(),
+            email: String::new(),
+            plan: String::new(),
+            connected: false,
+            cli_binary: if is_default_binary {
+                "agy".to_owned()
+            } else {
+                binary.to_owned()
+            },
+            custom_cli_path: (!is_default_binary).then(|| binary.to_owned()),
+            binary_found: false,
+            uses_system_login: true,
+            config_dir: ANTIGRAVITY_DEFAULT_CONFIG_DIR.to_owned(),
+            default_model: if model.is_empty() {
+                ANTIGRAVITY_DEFAULT_MODEL.to_owned()
+            } else {
+                model.to_owned()
+            },
+            hidden_model_families: Vec::new(),
+            available_models: Vec::new(),
+            usage: None,
+            usage_warning: None,
+            test_state: ConnectionTestState::Untested,
+            used_by_projects: Vec::new(),
+        });
+        Ok("antigravity".to_owned())
+    }
+
+    /// Unregisters the Antigravity CLI provider account. Returns the next provider id to select.
+    pub fn remove_antigravity_account(&mut self) -> Result<String, PreferencesError> {
+        if self.antigravity.take().is_none() {
+            return Err(PreferencesError::ProviderNotFound("antigravity".to_owned()));
+        }
+        Ok(self.claude.id.clone())
+    }
+
+    /// Sets or clears the optional custom binary path override for the Antigravity CLI.
+    ///
+    /// Empty or whitespace-only input clears the override and reverts to default `PATH` lookup.
+    pub fn set_antigravity_custom_path(&mut self, custom_path: Option<&str>) {
+        let Some(antigravity) = &mut self.antigravity else {
+            return;
+        };
+        antigravity.custom_cli_path = custom_path
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+    }
+
+    /// Applies the outcome of probing the local `agy` CLI onto `self.antigravity` (if
+    /// registered). A signed-in probe also carries the model list.
+    pub fn apply_antigravity_probe(&mut self, probe: &AntigravityCliProbe, explicit_test: bool) {
+        let Some(account) = &mut self.antigravity else {
+            return;
+        };
+        account.uses_system_login = true;
+        let clear_live = |account: &mut CliAccount| {
+            account.email.clear();
+            account.plan.clear();
+            account.available_models.clear();
+            account.usage = None;
+            account.usage_warning = None;
+        };
+        match probe {
+            AntigravityCliProbe::Authenticated {
+                binary_path,
+                models,
+                config_dir,
+            } => {
+                account.binary_found = true;
+                account.connected = true;
+                account.cli_binary = binary_path.display().to_string();
+                account.config_dir = config_dir.clone();
+                if !models.is_empty() {
+                    account.available_models = models.clone();
+                }
+                account.test_state = ConnectionTestState::Works;
+            }
+            AntigravityCliProbe::NotAuthenticated {
+                binary_path,
+                config_dir,
+            } => {
+                clear_live(account);
+                account.binary_found = true;
+                account.connected = false;
+                account.cli_binary = binary_path.display().to_string();
+                account.config_dir = config_dir.clone();
+                account.test_state = if explicit_test {
+                    ConnectionTestState::Failed("Sign in to the Antigravity CLI first".to_owned())
+                } else {
+                    ConnectionTestState::Untested
+                };
+            }
+            AntigravityCliProbe::BinaryNotFound { error } => {
+                clear_live(account);
+                account.binary_found = false;
+                account.connected = false;
+                account.cli_binary = account
+                    .custom_cli_path
+                    .clone()
+                    .unwrap_or_else(|| "agy".to_owned());
+                account.config_dir = ANTIGRAVITY_DEFAULT_CONFIG_DIR.to_owned();
+                account.test_state = ConnectionTestState::Failed(error.short_status());
+            }
+            AntigravityCliProbe::ProbeFailed {
+                binary_path,
+                message,
+            } => {
+                clear_live(account);
+                account.binary_found = true;
+                account.connected = false;
+                account.cli_binary = binary_path.display().to_string();
+                account.test_state = ConnectionTestState::Failed(message.clone());
+            }
+        }
+    }
+
+    /// Applies live model options fetched from the Antigravity CLI.
+    pub fn apply_antigravity_details(&mut self, details: AntigravityCliDetails) {
+        let Some(account) = &mut self.antigravity else {
+            return;
+        };
+        if !details.models.is_empty() {
+            account.available_models = details.models;
+        }
+        if details.usage.is_some() {
+            account.usage = details.usage;
+        }
+        account.usage_warning = details.warning;
+    }
+
+    /// Toggles visibility of an Antigravity model family (e.g. `"Flash"`) in the model picker.
+    ///
+    /// Returns `true` if the family is now visible (checked), or `false` if hidden (unchecked).
+    pub fn toggle_antigravity_model_family(&mut self, family: &str) -> bool {
+        let Some(account) = &mut self.antigravity else {
+            return true;
+        };
+        toggle_account_model_family(account, family)
+    }
+
+    /// The `agy` binary turns spawn: the custom path, else the probed binary, else `agy`.
+    pub fn antigravity_binary(&self) -> Option<String> {
+        let account = self.antigravity.as_ref()?;
+        Some(
+            account
+                .custom_cli_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| Some(account.cli_binary.trim()).filter(|s| !s.is_empty()))
+                .unwrap_or("agy")
+                .to_owned(),
+        )
     }
 
     /// Registers the Codex CLI provider account with the requested binary and default model.
@@ -1036,14 +1316,8 @@ impl AppPreferences {
         if model.is_empty() {
             return Err(PreferencesError::EmptyModel);
         }
-        if self.claude.id == id {
-            self.claude.default_model = model.to_owned();
-            return Ok(());
-        }
-        if let Some(codex) = &mut self.codex
-            && codex.id == id
-        {
-            codex.default_model = model.to_owned();
+        if let Some(account) = self.cli_account_mut(id) {
+            account.default_model = model.to_owned();
             return Ok(());
         }
         let key = self
@@ -1124,15 +1398,16 @@ impl AppPreferences {
             };
             return Ok(self.claude.test_state.clone());
         }
-        if let Some(codex) = &mut self.codex
-            && codex.id == id
-        {
-            codex.test_state = if codex.connected {
+        if let Some(account) = self.cli_account_mut(id) {
+            account.test_state = if account.connected {
                 ConnectionTestState::Works
             } else {
-                ConnectionTestState::Failed("Sign in to the Codex CLI first".to_owned())
+                ConnectionTestState::Failed(format!(
+                    "Sign in to the {} CLI first",
+                    account.provider.label()
+                ))
             };
-            return Ok(codex.test_state.clone());
+            return Ok(account.test_state.clone());
         }
         let key = self
             .openrouter_keys
@@ -1147,15 +1422,10 @@ impl AppPreferences {
         Ok(key.test_state.clone())
     }
 
-    /// Connects or disconnects a registered CLI provider account (`"claude"` or `"codex"`).
+    /// Connects or disconnects a registered CLI provider account (`"claude"`, `"codex"` or
+    /// `"antigravity"`).
     pub fn set_cli_connected(&mut self, id: &str, connected: bool) -> Result<(), PreferencesError> {
-        let account = if self.claude.id == id {
-            &mut self.claude
-        } else if let Some(codex) = &mut self.codex
-            && codex.id == id
-        {
-            codex
-        } else {
+        let Some(account) = self.cli_account_mut(id) else {
             return Err(PreferencesError::ProviderNotFound(id.to_owned()));
         };
         account.connected = connected;
@@ -1757,6 +2027,93 @@ mod tests {
         assert_eq!(next, "claude");
         assert!(prefs.codex.is_none());
         assert!(prefs.cli_account("codex").is_none());
+    }
+
+    #[test]
+    fn antigravity_account_is_opt_in_and_tracks_probe_state() {
+        use std::path::PathBuf;
+
+        use crate::antigravity_cli::AntigravityBinaryError;
+
+        let mut prefs = AppPreferences::empty();
+        assert!(prefs.antigravity.is_none());
+        assert!(prefs.cli_account_for(ProviderKind::Antigravity).is_none());
+
+        assert_eq!(
+            prefs.add_antigravity_account("", "").unwrap(),
+            "antigravity"
+        );
+        let account = prefs.cli_account("antigravity").unwrap();
+        assert_eq!(account.cli_binary, "agy");
+        assert_eq!(account.default_model, ANTIGRAVITY_DEFAULT_MODEL);
+        assert!(account.custom_cli_path.is_none());
+
+        prefs.apply_antigravity_probe(
+            &AntigravityCliProbe::Authenticated {
+                binary_path: PathBuf::from("/opt/homebrew/bin/agy"),
+                models: vec![
+                    ClaudeModelOption {
+                        value: "gemini-4-neon-high".to_owned(),
+                        resolved_model: "gemini-4-neon-high".to_owned(),
+                        display_name: "Gemini 4 Neon (High)".to_owned(),
+                        description: String::new(),
+                    },
+                    ClaudeModelOption {
+                        value: "gemini-3.8-flash-low".to_owned(),
+                        resolved_model: "gemini-3.8-flash-low".to_owned(),
+                        display_name: "Gemini 3.8 Flash (Low)".to_owned(),
+                        description: String::new(),
+                    },
+                ],
+                config_dir: "~/.gemini".to_owned(),
+            },
+            false,
+        );
+        let account = prefs.antigravity.as_ref().unwrap();
+        assert!(account.connected);
+        assert_eq!(account.list_subtitle(), "Signed in");
+        assert_eq!(account.available_model_families(), vec!["Neon", "Flash"]);
+        assert!(!prefs.toggle_antigravity_model_family("Flash"));
+        assert_eq!(
+            prefs
+                .antigravity
+                .as_ref()
+                .unwrap()
+                .visible_available_models()
+                .len(),
+            1
+        );
+
+        prefs
+            .update_provider_model("antigravity", "gemini-3.8-flash-low")
+            .unwrap();
+        assert_eq!(
+            prefs.antigravity.as_ref().unwrap().default_model,
+            "gemini-3.8-flash-low"
+        );
+        assert_eq!(
+            prefs.antigravity_binary().as_deref(),
+            Some("/opt/homebrew/bin/agy")
+        );
+
+        prefs.set_antigravity_custom_path(Some("/opt/agy/agy"));
+        prefs.apply_antigravity_probe(
+            &AntigravityCliProbe::BinaryNotFound {
+                error: AntigravityBinaryError::CustomPathNotFound(PathBuf::from("/opt/agy/agy")),
+            },
+            true,
+        );
+        let account = prefs.antigravity.as_ref().unwrap();
+        assert!(!account.connected);
+        assert_eq!(account.cli_binary, "/opt/agy/agy");
+        assert!(account.available_models.is_empty());
+        assert_eq!(
+            prefs.test_provider("antigravity").unwrap(),
+            ConnectionTestState::Failed("Sign in to the Antigravity CLI first".to_owned())
+        );
+
+        assert_eq!(prefs.remove_antigravity_account().unwrap(), "claude");
+        assert!(prefs.antigravity.is_none());
     }
 
     #[test]

@@ -381,10 +381,11 @@ fn provider_picker() -> impl IntoElement {
         })
         .value(|| SelectValue::from(store::chat_new_provider().label().to_owned()))
         .on_change(|value: &Option<SharedString>| {
-            let provider = match value.as_deref() {
-                Some(label) if label == ProviderKind::Codex.label() => ProviderKind::Codex,
-                _ => ProviderKind::Claude,
-            };
+            let provider = ProviderKind::CLI_PROVIDERS
+                .iter()
+                .copied()
+                .find(|p| value.as_deref() == Some(p.label()))
+                .unwrap_or(ProviderKind::Claude);
             store::set_chat_new_provider(provider);
         })
         .trigger(picker_trigger("Provider", || {

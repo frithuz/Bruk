@@ -30,6 +30,7 @@ use crate::{
 enum ProviderEditor {
     AddOpenRouterKey,
     AddCodexAccount,
+    AddAntigravityAccount,
     ReplaceKey(String),
     EditCap(String),
     EditCliPath(String),
@@ -266,7 +267,7 @@ fn providers_tab() -> impl IntoElement {
             )
             .child(
                 text(
-                    "Claude and Codex use your existing system CLI logins on PATH (or a custom binary path if installed elsewhere). OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
+                    "Claude, Codex and Antigravity use your existing system CLI logins on PATH (or a custom binary path if installed elsewhere). OpenRouter keys stay in the macOS Keychain. Workflow and agent files name a provider, never a key, so they stay portable; each project picks its OpenRouter key in Project Settings › Providers.",
                 )
                 .text_size(px(12.0))
                 .text_color(palette::text_muted()),
@@ -291,7 +292,11 @@ fn providers_left_rail(
             let selected_id = store::selected_provider_id();
             let is_adding_account = matches!(
                 active_editor.get(),
-                Some(ProviderEditor::AddOpenRouterKey | ProviderEditor::AddCodexAccount)
+                Some(
+                    ProviderEditor::AddOpenRouterKey
+                        | ProviderEditor::AddCodexAccount
+                        | ProviderEditor::AddAntigravityAccount
+                )
             );
 
             let mut card = view()
@@ -332,6 +337,29 @@ fn providers_left_rail(
             } else {
                 card = card.child(
                     text("No Codex account configured")
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                );
+            }
+
+            // Antigravity group
+            card = card.child(provider_group_header(ProviderKind::Antigravity));
+            if let Some(antigravity) = &prefs.antigravity {
+                card = card.child(provider_list_row(
+                    antigravity.id.clone(),
+                    ProviderKind::Antigravity.badge(),
+                    antigravity.display_name.clone(),
+                    antigravity.list_subtitle(),
+                    false,
+                    selected_id == antigravity.id && !is_adding_account,
+                    active_editor,
+                    add_menu_open,
+                ));
+            } else {
+                card = card.child(
+                    text("No Antigravity account configured")
                         .px(px(6.0))
                         .py(px(4.0))
                         .text_size(px(12.0))
@@ -420,6 +448,25 @@ fn providers_left_rail(
                                 })
                                 .into_element()
                             };
+                            let has_antigravity = store::preferences().antigravity.is_some();
+                            let antigravity_option = if has_antigravity {
+                                menu_option_button("Manage Antigravity CLI account", move || {
+                                    add_menu_open.set(false);
+                                    active_editor.set(None);
+                                    store::select_provider("antigravity".to_owned());
+                                })
+                                .into_element()
+                            } else {
+                                menu_option_button("Add Antigravity CLI account...", move || {
+                                    add_menu_open.set(false);
+                                    store::clear_preferences_messages();
+                                    draft_primary.set("agy".to_owned());
+                                    draft_model
+                                        .set(factory_core::ANTIGRAVITY_DEFAULT_MODEL.to_owned());
+                                    active_editor.set(Some(ProviderEditor::AddAntigravityAccount));
+                                })
+                                .into_element()
+                            };
 
                             view()
                                 .w_full()
@@ -444,6 +491,7 @@ fn providers_left_rail(
                                     store::select_provider("claude".to_owned());
                                 }))
                                 .child(codex_option)
+                                .child(antigravity_option)
                         })
                     },
                 )),
@@ -650,8 +698,22 @@ fn providers_detail_column(
                 .into_element();
             }
             if editor == Some(ProviderEditor::AddCodexAccount) {
-                return add_codex_account_card(active_editor, draft_primary, draft_model)
-                    .into_element();
+                return add_cli_account_card(
+                    ProviderKind::Codex,
+                    active_editor,
+                    draft_primary,
+                    draft_model,
+                )
+                .into_element();
+            }
+            if editor == Some(ProviderEditor::AddAntigravityAccount) {
+                return add_cli_account_card(
+                    ProviderKind::Antigravity,
+                    active_editor,
+                    draft_primary,
+                    draft_model,
+                )
+                .into_element();
             }
 
             let prefs = store::preferences();
@@ -826,15 +888,30 @@ fn add_openrouter_key_card(
         )
 }
 
-fn add_codex_account_card(
+/// The form that registers an opt-in CLI provider (Codex or Antigravity).
+fn add_cli_account_card(
+    provider: ProviderKind,
     active_editor: Signal<Option<ProviderEditor>>,
     draft_binary: Signal<String>,
     draft_model: Signal<String>,
 ) -> impl IntoElement {
+    let is_antigravity = provider == ProviderKind::Antigravity;
+    let label = provider.label();
+    let slug = provider.slug();
+    let (binary_placeholder, model_placeholder) = if is_antigravity {
+        ("agy", factory_core::ANTIGRAVITY_DEFAULT_MODEL)
+    } else {
+        ("codex", "gpt-5.3-codex")
+    };
     let submit = move || {
         let binary = draft_binary.get_untracked();
         let model = draft_model.get_untracked();
-        if store::add_codex_account(&binary, &model) {
+        let added = if is_antigravity {
+            store::add_antigravity_account(&binary, &model)
+        } else {
+            store::add_codex_account(&binary, &model)
+        };
+        if added {
             active_editor.set(None);
         }
     };
@@ -846,37 +923,37 @@ fn add_codex_account_card(
                 .flex_row()
                 .items_center()
                 .gap(px(10.0))
-                .child(detail_badge(ProviderKind::Codex.badge()))
+                .child(detail_badge(provider.badge()))
                 .child(
                     view()
                         .gap(px(1.5))
                         .child(
-                            text("Add Codex CLI account")
+                            text(format!("Add {label} CLI account"))
                                 .text_size(px(15.5))
                                 .font_weight(FontWeight::SEMIBOLD)
                                 .text_color(palette::text_primary()),
                         )
                         .child(
-                            text(
-                                "Uses your existing system Codex CLI login on PATH (or a custom binary path)",
-                            )
+                            text(format!(
+                                "Uses your existing system {label} CLI login on PATH (or a custom binary path)",
+                            ))
                             .text_size(px(12.0))
                             .text_color(palette::text_muted()),
                         ),
                 ),
         )
         .child(
-            grouped_card("Codex CLI").child(card_divider()).child(
+            grouped_card(&format!("{label} CLI")).child(card_divider()).child(
                 view()
                     .p(px(16.0))
                     .gap(px(12.0))
                     .child(form_field(
                         "CLI binary",
                         input()
-                            .test_id("prefs-new-codex-binary")
+                            .test_id(&format!("prefs-new-{slug}-binary"))
                             .value(move || draft_binary.get())
                             .on_change(move |v: &str| draft_binary.set(v.to_owned()))
-                            .placeholder("codex")
+                            .placeholder(binary_placeholder)
                             .app_class("font-mono")
                             .px(px(10.0))
                             .py(px(7.0))
@@ -889,10 +966,10 @@ fn add_codex_account_card(
                     .child(form_field(
                         "Default model",
                         input()
-                            .test_id("prefs-new-codex-model")
+                            .test_id(&format!("prefs-new-{slug}-model"))
                             .value(move || draft_model.get())
                             .on_change(move |v: &str| draft_model.set(v.to_owned()))
-                            .placeholder("gpt-5.3-codex")
+                            .placeholder(model_placeholder)
                             .app_class("font-mono")
                             .px(px(10.0))
                             .py(px(7.0))
@@ -915,7 +992,7 @@ fn add_codex_account_card(
                             }))
                             .child(
                                 button()
-                                    .test_id("prefs-new-codex-submit")
+                                    .test_id(&format!("prefs-new-{slug}-submit"))
                                     .on_press(submit)
                                     .px(px(13.0))
                                     .py(px(6.0))
@@ -923,7 +1000,7 @@ fn add_codex_account_card(
                                     .bg(palette::nav_active_bg())
                                     .active(|s| s.opacity(0.8))
                                     .child(
-                                        text("Add Codex")
+                                        text(format!("Add {label}"))
                                             .text_size(px(12.5))
                                             .font_weight(FontWeight::SEMIBOLD)
                                             .text_color(palette::nav_active_fg()),
@@ -1328,11 +1405,9 @@ fn cli_account_detail_pane(
     let provider = account.provider;
     let is_claude = provider == ProviderKind::Claude;
     let is_codex = provider == ProviderKind::Codex;
-    let provider_slug = match provider {
-        ProviderKind::Claude => "claude",
-        ProviderKind::Codex => "codex",
-        ProviderKind::OpenRouter => "openrouter",
-    };
+    // Codex and Antigravity are registered on request, so they can be removed again.
+    let is_removable = matches!(provider, ProviderKind::Codex | ProviderKind::Antigravity);
+    let provider_slug = provider.slug();
     let account_id_model = account.id.clone();
     let account_id_remove = account.id.clone();
     let account_id_path = account.id.clone();
@@ -1387,6 +1462,18 @@ fn cli_account_detail_pane(
                     .unwrap_or(true)
             })
             .collect(),
+        ProviderKind::Antigravity => [
+            "gemini-4-neon-medium",
+            "gemini-4-neon-high",
+            "gemini-3.8-flash-medium",
+        ]
+        .into_iter()
+        .filter(|id| {
+            model_family_from_id(id)
+                .map(|family| account.is_model_family_visible(&family))
+                .unwrap_or(true)
+        })
+        .collect(),
         ProviderKind::OpenRouter => vec!["openrouter/auto"],
     };
 
@@ -1526,10 +1613,11 @@ fn cli_account_detail_pane(
             .into_element()
     };
 
-    let remove_codex_button = move || {
+    let remove_test_id = format!("prefs-{provider_slug}-remove");
+    let remove_account_button = move || {
         let remove_id = account_id_remove.clone();
         button()
-            .test_id("prefs-codex-remove")
+            .test_id(&remove_test_id)
             .on_press(move || {
                 add_menu_open.set(false);
                 store::clear_preferences_messages();
@@ -1566,23 +1654,19 @@ fn cli_account_detail_pane(
             );
         } else if binary_found {
             let sign_in_test_id = format!("prefs-{provider_slug}-sign-in");
-            let sign_in_busy = move || {
-                if is_claude {
-                    store::claude_sign_in_in_progress()
-                } else {
-                    store::codex_sign_in_in_progress()
-                }
+            let sign_in_busy = move || match provider {
+                ProviderKind::Claude => store::claude_sign_in_in_progress(),
+                ProviderKind::Antigravity => store::antigravity_sign_in_in_progress(),
+                _ => store::codex_sign_in_in_progress(),
             };
             row = row.child(
                 button()
                     .test_id(&sign_in_test_id)
                     .disabled(sign_in_busy)
-                    .on_press(move || {
-                        if is_claude {
-                            store::sign_in_claude();
-                        } else {
-                            store::sign_in_codex();
-                        }
+                    .on_press(move || match provider {
+                        ProviderKind::Claude => store::sign_in_claude(),
+                        ProviderKind::Antigravity => store::sign_in_antigravity(),
+                        _ => store::sign_in_codex(),
                     })
                     .px(px(12.0))
                     .py(px(6.0))
@@ -1631,8 +1715,8 @@ fn cli_account_detail_pane(
             );
         }
 
-        if is_codex {
-            row = row.child(remove_codex_button());
+        if is_removable {
+            row = row.child(remove_account_button());
         }
 
         row.into_element()
@@ -1665,10 +1749,10 @@ fn cli_account_detail_pane(
         .child(when(
             move || connected,
             move || {
-                let loading = if is_claude {
-                    store::claude_details_loading()
-                } else {
-                    store::codex_details_loading()
+                let loading = match provider {
+                    ProviderKind::Claude => store::claude_details_loading(),
+                    ProviderKind::Antigravity => store::antigravity_details_loading(),
+                    _ => store::codex_details_loading(),
                 };
                 cli_usage_card(
                     provider,
@@ -1781,7 +1865,7 @@ fn cli_account_detail_pane(
         .child(preferences_error_banner())
         .child(bottom_actions)
         .child(when(
-            move || is_codex && is_confirming_remove,
+            move || is_removable && is_confirming_remove,
             move || {
                 view()
                     .flex_row()
@@ -1794,9 +1878,12 @@ fn cli_account_detail_pane(
                     .border_color(palette::destructive_text())
                     .bg(palette::card_bg())
                     .child(
-                        text("Remove Codex CLI account from Bruk?")
-                            .text_size(px(12.5))
-                            .text_color(palette::text_primary()),
+                        text(format!(
+                            "Remove {} CLI account from Bruk?",
+                            provider.label()
+                        ))
+                        .text_size(px(12.5))
+                        .text_color(palette::text_primary()),
                     )
                     .child(
                         view()
@@ -1808,9 +1895,13 @@ fn cli_account_detail_pane(
                             }))
                             .child(
                                 button()
-                                    .test_id("prefs-codex-confirm-remove")
+                                    .test_id(&format!("prefs-{provider_slug}-confirm-remove"))
                                     .on_press(move || {
-                                        store::remove_codex_account();
+                                        if provider == ProviderKind::Antigravity {
+                                            store::remove_antigravity_account();
+                                        } else {
+                                            store::remove_codex_account();
+                                        }
                                         active_editor.set(None);
                                     })
                                     .px(px(12.0))
@@ -1837,12 +1928,7 @@ fn cli_usage_card(
     warning: Option<String>,
     loading: bool,
 ) -> impl IntoElement {
-    let is_claude = provider == ProviderKind::Claude;
-    let refresh_test_id = if is_claude {
-        "prefs-claude-usage-refresh"
-    } else {
-        "prefs-codex-usage-refresh"
-    };
+    let refresh_test_id = format!("prefs-{}-usage-refresh", provider.slug());
     let mut card = view()
         .rounded(px(10.0))
         .border_1()
@@ -1863,14 +1949,14 @@ fn cli_usage_card(
                 )
                 .child(
                     button()
-                        .test_id(refresh_test_id)
+                        .test_id(&refresh_test_id)
                         .disabled(loading)
-                        .on_press(move || {
-                            if is_claude {
-                                store::refresh_claude_details_async();
-                            } else {
-                                store::refresh_codex_details_async();
+                        .on_press(move || match provider {
+                            ProviderKind::Claude => store::refresh_claude_details_async(),
+                            ProviderKind::Antigravity => {
+                                store::refresh_antigravity_details_async();
                             }
+                            _ => store::refresh_codex_details_async(),
                         })
                         .px(px(9.0))
                         .py(px(3.5))
@@ -2057,8 +2143,7 @@ fn cli_model_family_filter_row(
     provider: ProviderKind,
     families: Vec<(String, bool)>,
 ) -> impl IntoElement {
-    let is_claude = provider == ProviderKind::Claude;
-    let provider_slug = if is_claude { "claude" } else { "codex" };
+    let provider_slug = provider.slug();
     let mut checkboxes = view().flex_row().flex_wrap().gap(px(8.0));
     for (family, checked) in families {
         let family_for_press = family.clone();
@@ -2071,12 +2156,12 @@ fn cli_model_family_filter_row(
             button()
                 .test_id(&test_id)
                 .accessibility_label(label_for_a11y)
-                .on_press(move || {
-                    if is_claude {
-                        store::toggle_claude_model_family(&family_for_press);
-                    } else {
-                        store::toggle_codex_model_family(&family_for_press);
+                .on_press(move || match provider {
+                    ProviderKind::Claude => store::toggle_claude_model_family(&family_for_press),
+                    ProviderKind::Antigravity => {
+                        store::toggle_antigravity_model_family(&family_for_press);
                     }
+                    _ => store::toggle_codex_model_family(&family_for_press),
                 })
                 .px(px(9.0))
                 .py(px(5.0))
@@ -2167,11 +2252,7 @@ fn cli_dynamic_model_picker(
     active_editor: Signal<Option<ProviderEditor>>,
 ) -> impl IntoElement {
     let provider_label = provider.label();
-    let provider_slug = if provider == ProviderKind::Claude {
-        "claude"
-    } else {
-        "codex"
-    };
+    let provider_slug = provider.slug();
     let visible_count = models.len();
     let caption = if hidden_families.is_empty() {
         format!("Available from {provider_label} CLI ({total_count} models)")
@@ -2296,9 +2377,11 @@ fn cli_path_editor(
     has_custom_path: bool,
     active_editor: Signal<Option<ProviderEditor>>,
 ) -> impl IntoElement {
-    let is_claude = provider == ProviderKind::Claude;
-    let provider_slug = if is_claude { "claude" } else { "codex" };
-    let bin_name = if is_claude { "claude" } else { "codex" };
+    let provider_slug = provider.slug();
+    let bin_name = match provider {
+        ProviderKind::Antigravity => "agy",
+        other => other.slug(),
+    };
     let dialog_title = format!("Select {} CLI Binary", provider.label());
     let helper_copy = format!(
         "Leave blank to auto-detect '{bin_name}' on the default PATH, or enter the full path to the executable."
@@ -2310,10 +2393,11 @@ fn cli_path_editor(
     let save_test_id = format!("prefs-{provider_slug}-path-save");
 
     let save_path = move || {
-        let ok = if is_claude {
-            store::update_claude_cli_path(&draft_path.get_untracked())
-        } else {
-            store::update_codex_cli_path(&draft_path.get_untracked())
+        let raw = draft_path.get_untracked();
+        let ok = match provider {
+            ProviderKind::Claude => store::update_claude_cli_path(&raw),
+            ProviderKind::Antigravity => store::update_antigravity_cli_path(&raw),
+            _ => store::update_codex_cli_path(&raw),
         };
         if ok {
             active_editor.set(None);
@@ -2400,10 +2484,12 @@ fn cli_path_editor(
                         button()
                             .test_id(&reset_test_id)
                             .on_press(move || {
-                                if is_claude {
-                                    store::reset_claude_cli_path();
-                                } else {
-                                    store::reset_codex_cli_path();
+                                match provider {
+                                    ProviderKind::Claude => store::reset_claude_cli_path(),
+                                    ProviderKind::Antigravity => {
+                                        store::reset_antigravity_cli_path();
+                                    }
+                                    _ => store::reset_codex_cli_path(),
                                 }
                                 active_editor.set(None);
                             })

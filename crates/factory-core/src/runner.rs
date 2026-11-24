@@ -35,8 +35,9 @@ use crate::{
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
     step_context::{
-        TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
-        compile_step_context, default_step_runtime_dir, materialize_step_context,
+        TemplateContext, build_isolated_antigravity_spawn_plan, build_isolated_claude_spawn_plan,
+        build_isolated_codex_spawn_plan, compile_step_context, default_step_runtime_dir,
+        materialize_step_context,
     },
     workflow_editor::{ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode},
     workflow_run::{
@@ -88,6 +89,8 @@ pub struct WorkflowRunRequest {
     pub codex_default_model: Option<String>,
     pub codex_settings: CodexSpawnSettings,
     pub source_codex_home: Option<PathBuf>,
+    pub antigravity_binary: Option<PathBuf>,
+    pub antigravity_default_model: Option<String>,
     pub use_isolated_worktrees: bool,
     pub branch_prefix: String,
     pub open_prs_as_draft: bool,
@@ -632,6 +635,22 @@ fn execute_agent_step(
             )?;
             plan.to_command()
         }
+        ProviderKind::Antigravity => {
+            let bin = cursor.request.antigravity_binary.as_ref().ok_or(
+                RunnerError::ProviderBinaryMissing(ProviderKind::Antigravity),
+            )?;
+            let mut plan = build_isolated_antigravity_spawn_plan(
+                bin,
+                cursor.request.antigravity_default_model.as_deref(),
+                cursor.working_dir,
+                &materialized,
+                &cursor.request.project_env,
+            );
+            // `--print=<prompt>` keeps a prompt that starts with `-` from reading as a flag.
+            let prompt = plan.first_message(&materialized.bundle.rendered_prompt);
+            plan.args.push(format!("--print={prompt}"));
+            plan.to_command()
+        }
         ProviderKind::OpenRouter => {
             return Err(RunnerError::ProviderBinaryMissing(ProviderKind::OpenRouter));
         }
@@ -684,6 +703,7 @@ fn execute_agent_step(
             let parsed = match provider {
                 ProviderKind::Claude => parse_claude_stream_json_line(&line),
                 ProviderKind::Codex => parse_codex_json_line(&line),
+                ProviderKind::Antigravity => parse_antigravity_json_line(&line),
                 ProviderKind::OpenRouter => None,
             };
 
@@ -1874,6 +1894,63 @@ pub fn parse_codex_json_line(line: &str) -> Option<ParsedStreamEvent> {
     }
 }
 
+/// Parses one line of `agy --output-format stream-json` output.
+pub fn parse_antigravity_json_line(line: &str) -> Option<ParsedStreamEvent> {
+    let val: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
+    match val.get("event")?.as_str()? {
+        "step_update" => {
+            let step = val.get("step_update")?;
+            if step.get("step_type").and_then(|t| t.as_str()) != Some("tool") {
+                return None;
+            }
+            let state = step.get("state").and_then(|s| s.as_str()).unwrap_or("");
+            if state == "ACTIVE" {
+                return None;
+            }
+            let info = step.get("tool_info");
+            let name = step
+                .get("tool_name")
+                .and_then(|n| n.as_str())
+                .or_else(|| info.and_then(|i| i.get("name")).and_then(|n| n.as_str()))
+                .unwrap_or("tool");
+            let (verb, target) =
+                crate::chat::antigravity_tool_label(name, info.and_then(|i| i.get("parameters")));
+            let failed = state != "DONE"
+                || info
+                    .and_then(|i| i.get("error"))
+                    .is_some_and(|e| !e.is_null() && e.as_str() != Some(""));
+            Some(ParsedStreamEvent::ToolCall {
+                verb,
+                target,
+                status_text: if failed { "failed" } else { "done" }.to_owned(),
+                tone: if failed {
+                    ToolStatusTone::Error
+                } else {
+                    ToolStatusTone::Success
+                },
+            })
+        }
+        "result" => {
+            let result = val.get("result")?;
+            let ok = result
+                .get("status")
+                .and_then(|s| s.as_str())
+                .is_some_and(|s| s.eq_ignore_ascii_case("success"));
+            let text_key = if ok { "response" } else { "error" };
+            Some(ParsedStreamEvent::Usage {
+                tokens: crate::chat::antigravity_usage_tokens(result.get("usage")),
+                cost_cents: 0,
+                result_text: result
+                    .get(text_key)
+                    .and_then(|v| v.as_str())
+                    .filter(|t| !t.trim().is_empty())
+                    .map(str::to_owned),
+            })
+        }
+        _ => None,
+    }
+}
+
 /// Applies a [`RunnerEvent`] directly onto a [`WorkflowRunViewData`] model for live UI rendering.
 pub fn apply_runner_event_to_view_data(
     view: &mut WorkflowRunViewData,
@@ -2126,6 +2203,35 @@ mod tests {
     use crate::definitions::{ApprovalGateStepDef, LoopExitConditionDef, WorkflowTriggersDef};
 
     #[test]
+    fn parses_antigravity_stream_json_events() {
+        let tool = r#"{"event":"step_update","step_update":{"step_index":5,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"parameters":{"CommandLine":"npm test"},"output":"ok"}}}"#;
+        assert_eq!(
+            parse_antigravity_json_line(tool),
+            Some(ParsedStreamEvent::ToolCall {
+                verb: "Shell".to_owned(),
+                target: "npm test".to_owned(),
+                status_text: "done".to_owned(),
+                tone: ToolStatusTone::Success,
+            })
+        );
+        let result = r#"{"event":"result","result":{"status":"SUCCESS","response":"All green.","usage":{"input_tokens":100,"output_tokens":5,"cache_read_tokens":50}}}"#;
+        assert_eq!(
+            parse_antigravity_json_line(result),
+            Some(ParsedStreamEvent::Usage {
+                tokens: 155,
+                cost_cents: 0,
+                result_text: Some("All green.".to_owned()),
+            })
+        );
+        assert_eq!(
+            parse_antigravity_json_line(
+                r#"{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"agent_response","text_delta":"All"}}"#
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn parses_claude_stream_json_and_codex_jsonl_events() {
         let claude_text = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Analyzing bug root cause."}]}}"#;
         assert_eq!(
@@ -2286,6 +2392,8 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             codex_default_model: None,
             codex_settings: CodexSpawnSettings::default(),
             source_codex_home: None,
+            antigravity_binary: None,
+            antigravity_default_model: None,
             use_isolated_worktrees: true,
             branch_prefix: "agent/".to_owned(),
             open_prs_as_draft: false,

@@ -55,6 +55,7 @@ impl PaletteCategory {
 pub enum StepTypeKind {
     ClaudeTask,
     CodexTask,
+    AntigravityTask,
     ModelCall,
     Loop,
     Condition,
@@ -72,6 +73,7 @@ impl StepTypeKind {
     pub const ALL: &'static [Self] = &[
         Self::ClaudeTask,
         Self::CodexTask,
+        Self::AntigravityTask,
         Self::ModelCall,
         Self::Loop,
         Self::Condition,
@@ -87,7 +89,9 @@ impl StepTypeKind {
 
     pub fn category(self) -> PaletteCategory {
         match self {
-            Self::ClaudeTask | Self::CodexTask | Self::ModelCall => PaletteCategory::Agents,
+            Self::ClaudeTask | Self::CodexTask | Self::AntigravityTask | Self::ModelCall => {
+                PaletteCategory::Agents
+            }
             Self::Loop | Self::Condition | Self::ApprovalGate | Self::ShellCommand => {
                 PaletteCategory::Control
             }
@@ -103,6 +107,7 @@ impl StepTypeKind {
         match self {
             Self::ClaudeTask => "Claude task",
             Self::CodexTask => "Codex task",
+            Self::AntigravityTask => "Antigravity task",
             Self::ModelCall => "Model call",
             Self::Loop => "Loop",
             Self::Condition => "Condition",
@@ -121,6 +126,7 @@ impl StepTypeKind {
         match self {
             Self::ClaudeTask => "Claude Code in the project",
             Self::CodexTask => "Codex CLI in the project",
+            Self::AntigravityTask => "Antigravity CLI in the project",
             Self::ModelCall => "One OpenRouter request",
             Self::Loop => "Repeat steps until a check passes",
             Self::Condition => "Branch on an output",
@@ -140,6 +146,7 @@ impl StepTypeKind {
         match self {
             Self::ClaudeTask => Some("Cl"),
             Self::CodexTask => Some("Cx"),
+            Self::AntigravityTask => Some("Ag"),
             Self::ModelCall => Some("OR"),
             Self::Loop => None,
             Self::Condition => Some("If"),
@@ -167,6 +174,7 @@ impl StepTypeKind {
         match self {
             Self::ClaudeTask => "Claude",
             Self::CodexTask => "Codex",
+            Self::AntigravityTask => "Antigravity",
             Self::ModelCall => "OpenRouter",
             Self::Loop => "Loop",
             Self::Condition => "Condition",
@@ -185,6 +193,7 @@ impl StepTypeKind {
         match self {
             Self::ClaudeTask => "wfe-palette-claude-task",
             Self::CodexTask => "wfe-palette-codex-task",
+            Self::AntigravityTask => "wfe-palette-antigravity-task",
             Self::ModelCall => "wfe-palette-model-call",
             Self::Loop => "wfe-palette-loop",
             Self::Condition => "wfe-palette-condition",
@@ -1684,6 +1693,7 @@ impl WorkflowEditorDocument {
                 step.agent_ref = normalized.clone();
                 let provider_prefix = match step.kind {
                     StepTypeKind::CodexTask => "Codex",
+                    StepTypeKind::AntigravityTask => "Antigravity",
                     StepTypeKind::ClaudeTask => "Claude",
                     _ => "Agent",
                 };
@@ -1767,6 +1777,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             });
             let kind = match resolved_provider {
                 Some(ProviderKind::Codex) => StepTypeKind::CodexTask,
+                Some(ProviderKind::Antigravity) => StepTypeKind::AntigravityTask,
                 Some(ProviderKind::OpenRouter) => StepTypeKind::ModelCall,
                 _ => StepTypeKind::ClaudeTask,
             };
@@ -1970,6 +1981,17 @@ fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
         }),
+        StepTypeKind::AntigravityTask => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+            id: step.id.clone(),
+            name: step.name.clone(),
+            agent: step.agent_ref.clone(),
+            provider: Some(ProviderKind::Antigravity),
+            model: None,
+            skills: step.skills.clone(),
+            prompt: step.detail.clone(),
+            inputs: BTreeMap::new(),
+            outputs: Vec::new(),
+        }),
         StepTypeKind::ModelCall => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
             id: step.id.clone(),
             name: step.name.clone(),
@@ -2058,6 +2080,8 @@ fn infer_step_kind(actor: &str, name: &str) -> StepTypeKind {
     let name_lower = name.to_ascii_lowercase();
     if actor_lower.contains("codex") {
         StepTypeKind::CodexTask
+    } else if actor_lower.contains("antigravity") {
+        StepTypeKind::AntigravityTask
     } else if actor_lower.contains("claude") {
         StepTypeKind::ClaudeTask
     } else if actor_lower.contains("openrouter") {

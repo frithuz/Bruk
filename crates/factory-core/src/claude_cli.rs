@@ -110,7 +110,8 @@ impl ClaudeModelOption {
 
 /// Extracts a normalized model family name from a model identifier or alias
 /// (e.g. `"claude-fable-5-2"` -> `"Fable"`, `"opus"` -> `"Opus"`,
-/// `"gpt-6.2-sol"` -> `"Sol"`, `"gpt-5.3-codex"` -> `"Codex"`, `"o4-mini"` -> `"o-series"`).
+/// `"gpt-6.2-sol"` -> `"Sol"`, `"gpt-5.3-codex"` -> `"Codex"`, `"o4-mini"` -> `"o-series"`,
+/// `"gemini-4-neon-high"` -> `"Neon"`).
 pub fn model_family_from_id(id: &str) -> Option<String> {
     let trimmed = id.trim();
     if trimmed.is_empty() {
@@ -127,6 +128,7 @@ pub fn model_family_from_id(id: &str) -> Option<String> {
         if !segment.is_empty()
             && segment.chars().all(|c| c.is_ascii_alphabetic())
             && !segment.eq_ignore_ascii_case("claude")
+            && !segment.eq_ignore_ascii_case("gemini")
             && !segment.eq_ignore_ascii_case("default")
         {
             return Some(title_case_word(segment));
@@ -147,6 +149,7 @@ fn model_family_from_display_name(display_name: &str) -> Option<String> {
         let cleaned = word.trim_matches(|c: char| !c.is_ascii_alphabetic());
         if cleaned.is_empty()
             || cleaned.eq_ignore_ascii_case("claude")
+            || cleaned.eq_ignore_ascii_case("gemini")
             || cleaned.eq_ignore_ascii_case("default")
         {
             continue;

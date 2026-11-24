@@ -4,6 +4,7 @@
 //! workflow orchestration, persistence, and agent integrations can be tested
 //! and reused across the macOS app, CLI tools, or background daemons.
 
+pub mod antigravity_cli;
 pub mod bruk_home;
 pub mod chat;
 pub mod claude_cli;
@@ -27,6 +28,15 @@ pub mod workflow_editor;
 pub mod workflow_run;
 pub mod workflows_overview;
 
+pub use antigravity_cli::{
+    ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,
+    ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV, ANTIGRAVITY_DISABLE_AUTO_UPDATE_VALUE,
+    AntigravityBinaryError, AntigravityCliDetails, AntigravityCliProbe, AntigravityContextReading,
+    apply_mandatory_antigravity_spawn_env, fetch_antigravity_details, new_antigravity_command,
+    parse_antigravity_models_output, parse_antigravity_usage_output, probe_antigravity_cli,
+    probe_antigravity_cli_from_env, read_antigravity_context, resolve_antigravity_binary,
+    resolve_antigravity_binary_from_env, run_antigravity_login,
+};
 pub use bruk_home::{
     BRUK_HOME_ENV, BrukHome, CloneError, CloneSource, ClonedRepository, DEFAULT_HOME_DIR_NAME,
     HOME_DATABASE_FILE, HomeEnvironment, HomeError, HomeResolution, HomeSetup, clone_repository,
@@ -38,9 +48,9 @@ pub use chat::{
     ChatSessionSummary, ChatStreamItem, ChatToolStatus, ChatTurnControl, ChatTurnError,
     ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
     UNTITLED_CHAT_TITLE, UsageCount, build_chat_turn_command, chat_title_from_message,
-    chat_worktree_branch, execute_chat_turn_blocking, micros_to_cents, parse_claude_chat_line,
-    parse_claude_context_usage, parse_codex_chat_line, parse_codex_rollout_context,
-    query_chat_context, remove_chat_worktree, spawn_chat_turn,
+    chat_worktree_branch, execute_chat_turn_blocking, micros_to_cents, parse_antigravity_chat_line,
+    parse_claude_chat_line, parse_claude_context_usage, parse_codex_chat_line,
+    parse_codex_rollout_context, query_chat_context, remove_chat_worktree, spawn_chat_turn,
 };
 pub use claude_cli::{
     CLAUDE_BINARY_NAME, ClaudeBinaryError, ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption,
@@ -128,13 +138,15 @@ pub use project_settings::{
 pub use runner::{
     GateDecision, ParsedStreamEvent, PlannedStepSummary, RunControlHandle, RunOutcomeSummary,
     RunnerError, RunnerEvent, WorkflowRunRequest, apply_runner_event_to_view_data,
-    collect_git_diffs, execute_workflow_blocking, parse_claude_stream_json_line,
-    parse_codex_json_line, parse_unified_diff, spawn_workflow_run,
+    collect_git_diffs, execute_workflow_blocking, parse_antigravity_json_line,
+    parse_claude_stream_json_line, parse_codex_json_line, parse_unified_diff, spawn_workflow_run,
 };
 pub use step_context::{
-    MaterializedStepContext, StepContextBundle, StepContextError, SubagentContextSpec,
-    TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
-    compile_step_context, default_step_runtime_dir, materialize_step_context,
+    ANTIGRAVITY_READ_ONLY_DENY_RULES, ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES,
+    AntigravitySpawnPlan, MaterializedStepContext, StepContextBundle, StepContextError,
+    SubagentContextSpec, TemplateContext, build_isolated_antigravity_spawn_plan,
+    build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
+    default_step_runtime_dir, materialize_step_context,
 };
 pub use storage::{PersistedChatUsage, PersistedWorkflowRun, ProjectDatabase, StorageError};
 pub use work_queue::{

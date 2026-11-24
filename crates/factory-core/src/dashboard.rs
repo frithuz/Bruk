@@ -894,7 +894,7 @@ impl DashboardDataset {
             "No provider usage recorded yet.".to_owned()
         } else {
             format!(
-                "Claude and Codex use your subscriptions. OpenRouter billed {} this {}.",
+                "Claude, Codex and Antigravity use your subscriptions. OpenRouter billed {} this {}.",
                 format_currency(billed_cost_cents),
                 period_unit
             )

@@ -2309,7 +2309,12 @@ fn step_inspector(step_id: &str) -> impl IntoElement {
                         store::active_workflow_editor()
                             .find_step(&id_agent_cond)
                             .is_some_and(|s| {
-                                matches!(s.kind, StepTypeKind::ClaudeTask | StepTypeKind::CodexTask)
+                                matches!(
+                                    s.kind,
+                                    StepTypeKind::ClaudeTask
+                                        | StepTypeKind::CodexTask
+                                        | StepTypeKind::AntigravityTask
+                                )
                             })
                     },
                     move || {

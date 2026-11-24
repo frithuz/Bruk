@@ -12,32 +12,34 @@ use std::{
 
 use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
-    AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest,
-    AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome, CatalogLoadOptions,
-    ChatContextUsage, ChatEvent, ChatSession, ChatSessionStatus, ChatSessionSummary,
-    ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree,
-    ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan,
-    ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan,
-    CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
-    DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry,
-    DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, FontPreference,
-    GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution,
-    InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction,
-    LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
-    MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase,
-    ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
-    ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail, RunControlHandle,
-    RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus, RunnerEvent, SkillDef,
-    StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
-    WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
-    WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
-    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
-    chat_worktree_branch, clone_repository, current_unix_seconds, detect_git_remote_info,
-    display_with_tilde, fetch_claude_details, fetch_codex_details,
-    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    parse_clone_source, probe_claude_cli, probe_codex_cli, project_dir_name, query_chat_context,
-    remove_chat_worktree, remove_github_issue_label, resolve_claude_binary, resolve_codex_binary,
-    run_claude_auth_login, run_codex_login, spawn_chat_turn, spawn_workflow_run,
+    AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
+    AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
+    CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSession, ChatSessionStatus,
+    ChatSessionSummary, ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace,
+    ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
+    ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions,
+    CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset,
+    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
+    FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError,
+    HomeResolution, InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind,
+    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform,
+    MachineRecord, MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project,
+    ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab,
+    ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail,
+    RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus,
+    RunnerEvent, SkillDef, StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode,
+    Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun,
+    WorkflowRun, WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind,
+    WorkflowTriggersDef, WorkflowsFilter, WorkflowsSort, add_github_issue_label,
+    apply_runner_event_to_view_data, chat_worktree_branch, clone_repository, current_unix_seconds,
+    detect_git_remote_info, display_with_tilde, fetch_antigravity_details, fetch_claude_details,
+    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
+    find_codex_setting_spec, parse_clone_source, probe_antigravity_cli, probe_claude_cli,
+    probe_codex_cli, project_dir_name, query_chat_context, remove_chat_worktree,
+    remove_github_issue_label, resolve_antigravity_binary, resolve_claude_binary,
+    resolve_codex_binary, run_antigravity_login, run_claude_auth_login, run_codex_login,
+    spawn_chat_turn, spawn_workflow_run,
 };
 
 const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
@@ -160,6 +162,8 @@ struct AppState {
     claude_details_loading: bool,
     codex_sign_in_in_progress: bool,
     codex_details_loading: bool,
+    antigravity_sign_in_in_progress: bool,
+    antigravity_details_loading: bool,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
     expanded_projects: BTreeSet<ProjectId>,
@@ -418,6 +422,13 @@ impl AppState {
                     probe_codex_cli(codex.custom_cli_path.as_deref(), path_env.as_deref());
                 clean.apply_codex_probe(&codex_probe, false);
             }
+            if let Some(antigravity) = &clean.antigravity {
+                let probe = probe_antigravity_cli(
+                    antigravity.custom_cli_path.as_deref(),
+                    path_env.as_deref(),
+                );
+                clean.apply_antigravity_probe(&probe, false);
+            }
             (clean, None)
         };
 
@@ -644,6 +655,8 @@ impl AppState {
             claude_details_loading: false,
             codex_sign_in_in_progress: false,
             codex_details_loading: false,
+            antigravity_sign_in_in_progress: false,
+            antigravity_details_loading: false,
             active_view,
             selected_project,
             expanded_projects,
@@ -1154,6 +1167,20 @@ impl AppState {
         self.preferences.apply_codex_probe(&probe, explicit_test);
         Some(probe)
     }
+
+    fn refresh_antigravity_status(&mut self, explicit_test: bool) -> Option<AntigravityCliProbe> {
+        let custom_path = self
+            .preferences
+            .antigravity
+            .as_ref()?
+            .custom_cli_path
+            .clone();
+        let path_env = self.claude_path_lookup.resolve_path_env();
+        let probe = probe_antigravity_cli(custom_path.as_deref(), path_env.as_deref());
+        self.preferences
+            .apply_antigravity_probe(&probe, explicit_test);
+        Some(probe)
+    }
 }
 
 fn draft_defaults_for_selection(
@@ -1221,6 +1248,7 @@ pub(crate) fn init_default() {
     apply_appearance_settings(&appearance);
     refresh_claude_details_async();
     refresh_codex_details_async();
+    refresh_antigravity_details_async();
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
@@ -1259,6 +1287,7 @@ fn install_state(loaded: AppState) {
     apply_appearance_settings(&appearance);
     refresh_claude_details_async();
     refresh_codex_details_async();
+    refresh_antigravity_details_async();
 }
 
 // --- Bruk folder ------------------------------------------------------------------------
@@ -1617,6 +1646,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
     if !enabled {
         refresh_claude_details_async();
         refresh_codex_details_async();
+        refresh_antigravity_details_async();
     }
 }
 
@@ -2095,6 +2125,18 @@ pub(crate) fn sidebar_provider_statuses() -> Vec<(String, &'static str, bool)> {
                 is_running,
             ));
         }
+        if s.preferences
+            .antigravity
+            .as_ref()
+            .is_some_and(|a| a.connected)
+        {
+            let is_running = running && active_provider == "Antigravity";
+            rows.push((
+                "Antigravity".to_owned(),
+                if is_running { "Running" } else { "Ready" },
+                is_running,
+            ));
+        }
         let openrouter_key = s
             .preferences
             .openrouter_key("openrouter-acme")
@@ -2343,6 +2385,7 @@ struct ProviderLaunch {
     claude_binary: Option<std::path::PathBuf>,
     codex_binary: Option<std::path::PathBuf>,
     source_codex_home: Option<std::path::PathBuf>,
+    antigravity_binary: Option<std::path::PathBuf>,
 }
 
 /// What a chat's header and composer show.
@@ -2403,10 +2446,14 @@ impl AppState {
                 .map(|cx| factory_core::expand_tilde(&cx.config_dir))
                 .unwrap_or_else(|| factory_core::expand_tilde("~/.codex")),
         );
+        let antigravity_binary = self.preferences.antigravity.as_ref().and_then(|ag| {
+            resolve_antigravity_binary(ag.custom_cli_path.as_deref(), path_env.as_deref()).ok()
+        });
         ProviderLaunch {
             claude_binary,
             codex_binary,
             source_codex_home,
+            antigravity_binary,
         }
     }
 
@@ -2421,6 +2468,7 @@ impl AppState {
         match provider {
             ProviderKind::Claude => true,
             ProviderKind::Codex => self.preferences.codex.is_some(),
+            ProviderKind::Antigravity => self.preferences.antigravity.is_some(),
             ProviderKind::OpenRouter => false,
         }
     }
@@ -2691,6 +2739,12 @@ impl AppState {
                 .map(|cx| cx.default_model.clone()),
             codex_settings: self.preferences.codex_spawn_settings.clone(),
             source_codex_home: launch.source_codex_home,
+            antigravity_binary: launch.antigravity_binary,
+            antigravity_default_model: self
+                .preferences
+                .antigravity
+                .as_ref()
+                .map(|ag| ag.default_model.clone()),
         })
     }
 }
@@ -2807,11 +2861,12 @@ pub(crate) fn active_chat_rows() -> Vec<ChatEntryRow> {
     })
 }
 
-/// Providers a chat can talk to: Claude, and Codex once it is added in Settings.
+/// Providers a chat can talk to: Claude, and Codex or Antigravity once added in Settings.
 pub(crate) fn chat_provider_options() -> Vec<ProviderKind> {
     state().with(|s| {
-        [ProviderKind::Claude, ProviderKind::Codex]
-            .into_iter()
+        ProviderKind::CLI_PROVIDERS
+            .iter()
+            .copied()
             .filter(|p| s.chat_provider_allowed(*p))
             .collect()
     })
@@ -4877,8 +4932,23 @@ pub(crate) fn clear_preferences_messages() {
 pub(crate) fn test_selected_provider() {
     let mut should_refresh_claude = false;
     let mut should_refresh_codex = false;
+    let mut should_refresh_antigravity = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
+        if !s.demo_mode
+            && s.preferences
+                .antigravity
+                .as_ref()
+                .is_some_and(|account| account.id == id)
+        {
+            if let Some(probe) = s.refresh_antigravity_status(true) {
+                antigravity_probe_feedback(s, &probe, "Verified");
+                should_refresh_antigravity =
+                    matches!(probe, AntigravityCliProbe::Authenticated { .. });
+            }
+            s.persist_preferences();
+            return;
+        }
         if !s.demo_mode && id == s.preferences.claude.id {
             match s.refresh_claude_status(true) {
                 ClaudeCliProbe::Authenticated {
@@ -4964,6 +5034,37 @@ pub(crate) fn test_selected_provider() {
     }
     if should_refresh_codex {
         refresh_codex_details_async();
+    }
+    if should_refresh_antigravity {
+        refresh_antigravity_details_async();
+    }
+}
+
+/// Reports an Antigravity probe in Preferences; `verb` starts the success message.
+fn antigravity_probe_feedback(s: &mut AppState, probe: &AntigravityCliProbe, verb: &str) {
+    match probe {
+        AntigravityCliProbe::Authenticated { binary_path, .. } => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!(
+                "{verb} Antigravity CLI at {}.",
+                binary_path.display()
+            ));
+        }
+        AntigravityCliProbe::NotAuthenticated { binary_path, .. } => {
+            s.preferences_error = None;
+            s.preferences_feedback = Some(format!(
+                "Found Antigravity CLI at {}, but it isn't signed in.",
+                binary_path.display()
+            ));
+        }
+        AntigravityCliProbe::BinaryNotFound { error } => {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(error.to_string());
+        }
+        AntigravityCliProbe::ProbeFailed { message, .. } => {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(message.clone());
+        }
     }
 }
 
@@ -5148,6 +5249,263 @@ pub(crate) fn remove_codex_account() {
             s.preferences_error = Some(err.to_string());
         }
     });
+}
+
+pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> bool {
+    let mut added = false;
+    let mut should_refresh_details = false;
+    state().update(|s| {
+        match s
+            .preferences
+            .add_antigravity_account(cli_binary, default_model)
+        {
+            Ok(id) => {
+                s.selected_provider_id = id;
+                if !s.demo_mode
+                    && let Some(AntigravityCliProbe::Authenticated { .. }) =
+                        s.refresh_antigravity_status(false)
+                {
+                    should_refresh_details = true;
+                }
+                s.preferences_error = None;
+                s.preferences_feedback = Some("Added Antigravity CLI account.".to_owned());
+                s.persist_preferences();
+                added = true;
+            }
+            Err(err) => {
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+    if should_refresh_details {
+        refresh_antigravity_details_async();
+    }
+    added
+}
+
+pub(crate) fn remove_antigravity_account() {
+    state().update(|s| match s.preferences.remove_antigravity_account() {
+        Ok(next_selected) => {
+            s.antigravity_details_loading = false;
+            s.antigravity_sign_in_in_progress = false;
+            s.selected_provider_id = next_selected;
+            s.preferences_error = None;
+            s.preferences_feedback = Some("Removed Antigravity CLI account.".to_owned());
+            s.persist_preferences();
+        }
+        Err(err) => {
+            s.preferences_error = Some(err.to_string());
+        }
+    });
+}
+
+pub(crate) fn antigravity_sign_in_in_progress() -> bool {
+    state().with(|s| s.antigravity_sign_in_in_progress)
+}
+
+pub(crate) fn antigravity_details_loading() -> bool {
+    state().with(|s| s.antigravity_details_loading)
+}
+
+/// Lists the signed-in Antigravity account's models on a background thread.
+pub(crate) fn refresh_antigravity_details_async() {
+    let mut binary_to_query = None;
+    state().update(|s| {
+        if s.demo_mode || s.antigravity_details_loading {
+            return;
+        }
+        let Some(account) = &mut s.preferences.antigravity else {
+            return;
+        };
+        if !account.connected {
+            return;
+        }
+        let binary = account.cli_binary.trim();
+        if binary.is_empty() {
+            return;
+        }
+        s.antigravity_details_loading = true;
+        account.usage_warning = None;
+        binary_to_query = Some(std::path::PathBuf::from(binary));
+    });
+
+    if let Some(binary_path) = binary_to_query {
+        let expected_binary = binary_path.display().to_string();
+        Owner::detached().run(|| {
+            spawn(async move {
+                let details =
+                    spawn_blocking_task(move || fetch_antigravity_details(&binary_path)).await;
+                state().update(|s| {
+                    s.antigravity_details_loading = false;
+                    let still_matching = !s.demo_mode
+                        && s.preferences
+                            .antigravity
+                            .as_ref()
+                            .is_some_and(|a| a.connected && a.cli_binary == expected_binary);
+                    if still_matching {
+                        s.preferences.apply_antigravity_details(details);
+                    }
+                });
+            });
+        });
+    }
+}
+
+/// Updates or clears the custom Antigravity CLI binary path and re-probes its login.
+///
+/// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
+/// entered path could not be resolved to an executable binary.
+pub(crate) fn update_antigravity_cli_path(raw_path: &str) -> bool {
+    let mut updated = false;
+    let mut should_refresh_details = false;
+    state().update(|s| {
+        if s.preferences.antigravity.is_none() {
+            return;
+        }
+        let trimmed = raw_path.trim();
+        if s.demo_mode {
+            s.preferences
+                .set_antigravity_custom_path(Some(trimmed).filter(|t| !t.is_empty()));
+            if let Some(account) = &mut s.preferences.antigravity {
+                account.cli_binary = if trimmed.is_empty() { "agy" } else { trimmed }.to_owned();
+            }
+            s.preferences_error = None;
+            s.preferences_feedback = Some(if trimmed.is_empty() {
+                "Using Antigravity CLI from default PATH.".to_owned()
+            } else {
+                format!("Antigravity CLI path set to {trimmed}.")
+            });
+            s.persist_preferences();
+            updated = true;
+            return;
+        }
+        if !trimmed.is_empty() {
+            let path_env = s.claude_path_lookup.resolve_path_env();
+            if let Err(err) = resolve_antigravity_binary(Some(trimmed), path_env.as_deref()) {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+                return;
+            }
+        }
+        s.preferences
+            .set_antigravity_custom_path(Some(trimmed).filter(|t| !t.is_empty()));
+        if let Some(probe) = s.refresh_antigravity_status(false) {
+            should_refresh_details = matches!(probe, AntigravityCliProbe::Authenticated { .. });
+            if trimmed.is_empty()
+                && let AntigravityCliProbe::BinaryNotFound { error } = &probe
+            {
+                s.preferences_error = None;
+                s.preferences_feedback = Some(format!("Cleared custom path. {error}"));
+            } else {
+                antigravity_probe_feedback(s, &probe, "Using");
+            }
+        }
+        s.persist_preferences();
+        updated = true;
+    });
+    if should_refresh_details {
+        refresh_antigravity_details_async();
+    }
+    updated
+}
+
+/// Clears any custom Antigravity CLI binary path and reverts to default `PATH` discovery.
+pub(crate) fn reset_antigravity_cli_path() {
+    let _ = update_antigravity_cli_path("");
+}
+
+/// Toggles visibility of an Antigravity model family (e.g. `"Flash"`) in the model picker.
+pub(crate) fn toggle_antigravity_model_family(family: &str) {
+    state().update(|s| {
+        let now_visible = s.preferences.toggle_antigravity_model_family(family);
+        s.preferences_error = None;
+        s.preferences_feedback = Some(if now_visible {
+            format!("Showing {family} models in selection.")
+        } else {
+            format!("Hiding {family} models from selection.")
+        });
+        s.persist_preferences();
+    });
+}
+
+/// Opens Antigravity's Google sign-in on a background thread and refreshes the login state
+/// when it finishes.
+pub(crate) fn sign_in_antigravity() {
+    let mut binary_to_run = None;
+    state().update(|s| {
+        if s.demo_mode {
+            let _ = s.preferences.set_cli_connected("antigravity", true);
+            s.preferences_error = None;
+            s.preferences_feedback = Some("Signed in to Antigravity CLI.".to_owned());
+            return;
+        }
+        if s.antigravity_sign_in_in_progress {
+            return;
+        }
+        let Some(account) = &s.preferences.antigravity else {
+            return;
+        };
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        match resolve_antigravity_binary(account.custom_cli_path.as_deref(), path_env.as_deref())
+        {
+            Ok(binary_path) => {
+                s.antigravity_sign_in_in_progress = true;
+                s.preferences_error = None;
+                s.preferences_feedback = Some(
+                    "Opening Antigravity sign-in in your browser... Bruk will update when login finishes."
+                        .to_owned(),
+                );
+                binary_to_run = Some(binary_path);
+            }
+            Err(err) => {
+                s.preferences_feedback = None;
+                s.preferences_error = Some(err.to_string());
+            }
+        }
+    });
+
+    if let Some(binary_path) = binary_to_run {
+        Owner::detached().run(|| {
+            spawn(async move {
+                let login_result =
+                    spawn_blocking_task(move || run_antigravity_login(&binary_path)).await;
+                let mut should_refresh_details = false;
+                state().update(|s| {
+                    s.antigravity_sign_in_in_progress = false;
+                    if s.demo_mode || s.preferences.antigravity.is_none() {
+                        return;
+                    }
+                    match login_result {
+                        Ok(()) => {
+                            if let Some(probe) = s.refresh_antigravity_status(false) {
+                                if matches!(probe, AntigravityCliProbe::NotAuthenticated { .. }) {
+                                    s.preferences_feedback = None;
+                                    s.preferences_error = Some(
+                                        "Antigravity sign-in finished, but no active login was detected."
+                                            .to_owned(),
+                                    );
+                                } else {
+                                    should_refresh_details = matches!(
+                                        probe,
+                                        AntigravityCliProbe::Authenticated { .. }
+                                    );
+                                    antigravity_probe_feedback(s, &probe, "Signed in to");
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            s.preferences_feedback = None;
+                            s.preferences_error = Some(err);
+                        }
+                    }
+                    s.persist_preferences();
+                });
+                if should_refresh_details {
+                    refresh_antigravity_details_async();
+                }
+            });
+        });
+    }
 }
 
 pub(crate) fn claude_sign_in_in_progress() -> bool {
@@ -6629,6 +6987,7 @@ pub(crate) fn reset_preferences_to_defaults() {
     apply_appearance_settings(&AppearanceSettings::default());
     refresh_claude_details_async();
     refresh_codex_details_async();
+    refresh_antigravity_details_async();
 }
 
 // --- Project Settings -------------------------------------------------------------------
@@ -8459,6 +8818,7 @@ fn spawn_real_workflow_run(
             claude_binary,
             codex_binary,
             source_codex_home,
+            antigravity_binary,
         } = s.provider_launch();
 
         let github_auth = s.resolve_github_auth_for_project(project_name).ok();
@@ -8523,6 +8883,12 @@ fn spawn_real_workflow_run(
                     .map(|cx| cx.default_model.clone()),
                 codex_settings: s.preferences.codex_spawn_settings.clone(),
                 source_codex_home,
+                antigravity_binary,
+                antigravity_default_model: s
+                    .preferences
+                    .antigravity
+                    .as_ref()
+                    .map(|ag| ag.default_model.clone()),
                 use_isolated_worktrees: settings.use_isolated_worktrees,
                 branch_prefix: settings.branch_prefix.clone(),
                 open_prs_as_draft: settings.open_prs_as_draft,
@@ -8551,6 +8917,7 @@ fn spawn_real_workflow_run(
     if !open_run_view
         && request.claude_binary.is_none()
         && request.codex_binary.is_none()
+        && request.antigravity_binary.is_none()
         && workflow_requires_agent(&request.workflow, &request.catalog)
     {
         return false;

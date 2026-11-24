@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    antigravity_cli::{ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV, ANTIGRAVITY_DISABLE_AUTO_UPDATE_VALUE},
     claude_settings::{
         CLAUDE_DISABLE_AUTOUPDATER_ENV, CLAUDE_DISABLE_AUTOUPDATER_VALUE, ClaudeSettingsError,
         ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, build_claude_spawn_plan,
@@ -616,6 +617,145 @@ pub fn build_isolated_codex_spawn_plan(
     }
 
     Ok(plan)
+}
+
+/// Antigravity permission rules a Read-only step or chat runs with. Rules name permissions,
+/// not tools: `write_file` covers every file edit, `command` every shell command, `mcp` every
+/// MCP tool. Reading and searching stay allowed.
+pub const ANTIGRAVITY_READ_ONLY_DENY_RULES: &[&str] = &["write_file(*)", "command(*)", "mcp(*)"];
+
+/// Antigravity permission rules a Workspace write step or chat runs with (inside `--sandbox`).
+pub const ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES: &[&str] = &["write_file(*)", "command(*)"];
+
+/// A resolved `agy` invocation: binary, working directory, arguments and environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AntigravitySpawnPlan {
+    pub binary_path: PathBuf,
+    pub working_dir: Option<PathBuf>,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    /// The step's agent and skills, which Antigravity can't take as a system prompt in print
+    /// mode; Bruk sends them ahead of the first message instead.
+    pub instructions: Option<String>,
+}
+
+impl AntigravitySpawnPlan {
+    /// Builds a [`std::process::Command`] configured with the binary, working dir, args, and env.
+    pub fn to_command(&self) -> std::process::Command {
+        let mut cmd = std::process::Command::new(&self.binary_path);
+        if let Some(dir) = &self.working_dir {
+            cmd.current_dir(dir);
+        }
+        cmd.args(&self.args);
+        cmd.envs(&self.env);
+        cmd
+    }
+
+    /// The first message of a conversation with the step's instructions ahead of `prompt`.
+    pub fn first_message(&self, prompt: &str) -> String {
+        match self.instructions.as_deref() {
+            Some(instructions) => {
+                format!("<instructions>\n{instructions}\n</instructions>\n\n{prompt}")
+            }
+            None => prompt.to_owned(),
+        }
+    }
+}
+
+/// Builds a user-context-isolated [`AntigravitySpawnPlan`] for one materialized workflow step
+/// or chat turn (`agy` in print mode, streaming JSON events).
+///
+/// Enforces:
+/// - `AGY_CLI_DISABLE_AUTO_UPDATE=true`
+/// - `--disable-slash-commands` so skill and command expansion stays off; only Bruk's step
+///   skills enter the conversation
+/// - the access the step allows, always in the terminal sandbox (`--sandbox`) short of Full
+///   access: Read-only denies file edits, commands and MCP tools ([`ANTIGRAVITY_READ_ONLY_DENY_RULES`]),
+///   Workspace write allows them ([`ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES`]), Full access approves every tool
+///   (`--dangerously-skip-permissions`)
+///
+/// Unlike Claude and Codex, `agy` can't be pointed at a separate config folder in print mode
+/// (its login lives in the Keychain next to `~/.gemini`), so the user's own Antigravity rules,
+/// skills, plugins and MCP servers in `~/.gemini/config` still load.
+/// - the step's agent and skills as [`AntigravitySpawnPlan::instructions`]
+///
+/// The prompt isn't added: callers pass it as `--print=<prompt>` or over stdin.
+pub fn build_isolated_antigravity_spawn_plan(
+    binary_path: impl AsRef<Path>,
+    default_model: Option<&str>,
+    working_dir: impl AsRef<Path>,
+    materialized: &MaterializedStepContext,
+    project_env: &BTreeMap<String, String>,
+) -> AntigravitySpawnPlan {
+    let bundle = &materialized.bundle;
+    let mut args = vec!["--output-format".to_owned(), "stream-json".to_owned()];
+    let model = bundle
+        .model
+        .as_deref()
+        .or(default_model)
+        .map(str::trim)
+        .filter(|m| !m.is_empty());
+    if let Some(model) = model {
+        args.push("--model".to_owned());
+        args.push(model.to_owned());
+    }
+    if let Some(effort) = bundle
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| ["low", "medium", "high", "xhigh", "max"].contains(e))
+    {
+        args.push("--effort".to_owned());
+        args.push(effort.to_owned());
+    }
+    args.push("--disable-slash-commands".to_owned());
+    // Print mode can't ask anyone, so it refuses any tool call that would need approval.
+    match bundle.sandbox {
+        ProjectSandboxMode::ReadOnly => {
+            // `--mode plan` isn't read-only (it writes a plan document), so deny the
+            // permissions that change files or run commands.
+            let settings = serde_json::json!({
+                "permissions": { "deny": ANTIGRAVITY_READ_ONLY_DENY_RULES },
+            });
+            args.push("--settings".to_owned());
+            args.push(settings.to_string());
+            args.push("--sandbox".to_owned());
+        }
+        ProjectSandboxMode::WorkspaceWrite => {
+            // `--mode auto` isn't offered to every account, so allow edits and commands
+            // outright and keep the terminal sandbox around them.
+            let settings = serde_json::json!({
+                "permissions": { "allow": ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES },
+            });
+            args.push("--settings".to_owned());
+            args.push(settings.to_string());
+            args.push("--sandbox".to_owned());
+        }
+        ProjectSandboxMode::FullAccess => {
+            args.push("--dangerously-skip-permissions".to_owned());
+        }
+    }
+
+    let mut env = BTreeMap::new();
+    for (k, v) in project_env {
+        if k != ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV {
+            env.insert(k.clone(), v.clone());
+        }
+    }
+    env.insert(
+        ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV.to_owned(),
+        ANTIGRAVITY_DISABLE_AUTO_UPDATE_VALUE.to_owned(),
+    );
+
+    AntigravitySpawnPlan {
+        binary_path: binary_path.as_ref().to_path_buf(),
+        working_dir: Some(working_dir.as_ref().to_path_buf()),
+        args,
+        env,
+        instructions: Some(bundle.system_instructions.trim())
+            .filter(|i| !i.is_empty())
+            .map(str::to_owned),
+    }
 }
 
 fn push_codex_config(plan: &mut CodexSpawnPlan, key: &str, toml_value: &str) {

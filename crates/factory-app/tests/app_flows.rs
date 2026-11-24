@@ -3874,3 +3874,69 @@ esac
         .unwrap();
     assert!(String::from_utf8_lossy(&branches.stdout).contains("agent/chat-add-release-notes"));
 }
+
+#[cfg(unix)]
+#[test]
+fn antigravity_cli_is_added_lists_models_and_usage_and_is_removed() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":false,"authMethod":"none","configDirectory":"/tmp/.claude"}'
+exit 1
+"#,
+    );
+    write_fake_claude(
+        &bin_dir,
+        "agy",
+        r#"#!/bin/sh
+[ "$AGY_CLI_DISABLE_AUTO_UPDATE" = true ] || exit 9
+case "$*" in
+  models)
+    printf 'gemini-4-neon-high\tGemini 4 Neon (High)\n'
+    printf 'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n'
+    ;;
+  *--print=/usage*)
+    echo '{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.62,"reset_time":"2099-11-24T17:15:19Z"}]}]}}}'
+    ;;
+esac
+"#,
+    );
+
+    let mut app = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+    app.press_key("mod+,").unwrap();
+    app.wait_for("No Antigravity account configured").unwrap();
+
+    app.press("role:button[Add Account]").unwrap();
+    app.wait_for("Add Antigravity CLI account...").unwrap();
+    app.press("role:button[Add Antigravity CLI account...]")
+        .unwrap();
+    app.wait_for("Add Antigravity CLI account").unwrap();
+    app.press("id:prefs-new-antigravity-submit").unwrap();
+
+    // The probe proves the login; the details refresh reads the quota.
+    app.wait_for("62% remaining").unwrap();
+    assert!(app.screen().shows("5-hour (Gemini Models)"));
+    assert!(
+        !app.screen()
+            .matches("id:prefs-antigravity-sign-in")
+            .unwrap()
+    );
+
+    app.press("id:prefs-cli-model-change").unwrap();
+    app.wait_for("Available from Antigravity CLI (2 models)")
+        .unwrap();
+    assert!(app.screen().shows("Gemini 3.8 Flash (Low)"));
+    app.press("id:prefs-antigravity-family-flash").unwrap();
+    app.wait_for("Showing 1 of 2 models from Antigravity CLI (Flash hidden)")
+        .unwrap();
+
+    app.press("id:prefs-antigravity-remove").unwrap();
+    app.wait_for("id:prefs-antigravity-confirm-remove").unwrap();
+    app.press("id:prefs-antigravity-confirm-remove").unwrap();
+    app.wait_for("No Antigravity account configured").unwrap();
+}

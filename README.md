@@ -47,7 +47,7 @@ Set `BRUK_HOME` to use a specific folder and skip setup (handy for development).
 
 Next to workflows, each project has **Chats**: open-ended conversations with one of its agents
 (sidebar › project › Chats, or File › New Chat, ⌘T). A new chat picks a provider (Claude, or
-Codex once added in Settings), an optional agent from the project's `.agents/bruk` catalog,
+Codex or Antigravity once added in Settings), an optional agent from the project's `.agents/bruk` catalog,
 what the agent may do (Read-only, Workspace write, Full access; changeable later), and where it
 works:
 
@@ -58,7 +58,7 @@ works:
   including uncommitted changes; the branch and its commits stay.
 
 Each message runs one non-interactive turn of the provider CLI and resumes the provider's own
-session (`claude --resume <id>`, `codex exec … resume <id>`), so the agent keeps the whole
+session (`claude --resume <id>`, `codex exec … resume <id>`, `agy --conversation <id>`), so the agent keeps the whole
 conversation. Turns get the same user-context isolation as workflow steps: only the chosen agent
 and the skills and subagents it declares, plus the repository's own instructions. Replies stream
 in as Markdown, with tool calls shown inline; transcripts are kept in `bruk.db`.
@@ -67,7 +67,26 @@ After each reply Bruk measures the agent's **context window**: the header shows 
 and the Context panel breaks it down. For Claude the breakdown covers system prompt, tools,
 memory files, skills, messages, the autocompact buffer and free space. Claude Code reports this
 for an unsaved fork of the session, so the chat itself is untouched and no model is called.
-Codex reports only the total, read from its own record of the thread.
+Codex reports only the total, read from its own record of the thread; Antigravity reports
+only the total too, read through `agy acp` without calling a model.
+
+### Antigravity
+
+Antigravity (`agy`) is added from Settings › Providers › Add Account, like Codex, and uses your
+existing Antigravity login. Bruk checks the login and lists models with `agy models`, and
+reads the 5-hour and weekly quota with `agy --print=/usage`; neither spends quota. Every `agy`
+Bruk starts runs with `AGY_CLI_DISABLE_AUTO_UPDATE=true`.
+
+Turns run in print mode with slash commands off. The agent's instructions are sent ahead of
+the first message, and access maps onto Antigravity's permission rules:
+
+- **Read-only**: file edits, commands and MCP tools are denied, inside the terminal sandbox.
+- **Workspace write**: file edits and commands are allowed, inside the terminal sandbox.
+- **Full access**: every tool is approved (`--dangerously-skip-permissions`).
+
+Antigravity can't be pointed at a separate config folder in print mode, so unlike Claude and
+Codex its turns still load your own rules, skills, plugins and MCP servers from
+`~/.gemini/config`.
 
 Every token and cent a chat uses is recorded per turn and counted on the **Dashboard** next to
 workflow runs, even after the chat is deleted.

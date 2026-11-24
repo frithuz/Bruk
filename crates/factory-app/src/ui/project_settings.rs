@@ -1661,6 +1661,15 @@ fn providers_tab() -> impl IntoElement {
                         || store::set_project_default_provider(ProviderKind::Codex),
                     ));
                 }
+                if prefs.antigravity.is_some()
+                    || settings.default_provider == ProviderKind::Antigravity
+                {
+                    provider_picker = provider_picker.child(segment_button(
+                        "Antigravity",
+                        settings.default_provider == ProviderKind::Antigravity,
+                        || store::set_project_default_provider(ProviderKind::Antigravity),
+                    ));
+                }
                 let provider_picker = provider_picker.child(segment_button(
                     "OpenRouter",
                     settings.default_provider == ProviderKind::OpenRouter,
@@ -1778,6 +1787,16 @@ fn providers_tab() -> impl IntoElement {
                                 format!(
                                     "{} · Inherited from Preferences",
                                     codex.list_subtitle()
+                                ),
+                                false,
+                            ));
+                        }
+                        if let Some(antigravity) = &prefs.antigravity {
+                            accounts_card = accounts_card.child(card_divider()).child(static_row(
+                                "Antigravity CLI",
+                                format!(
+                                    "{} · Inherited from Preferences",
+                                    antigravity.list_subtitle()
                                 ),
                                 false,
                             ));

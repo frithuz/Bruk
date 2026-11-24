@@ -41,8 +41,8 @@ use crate::{
     runner::terminate_pid,
     step_context::{
         ISOLATED_CODEX_HOME_DIR, StepContextError, TemplateContext,
-        build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
-        materialize_step_context,
+        build_isolated_antigravity_spawn_plan, build_isolated_claude_spawn_plan,
+        build_isolated_codex_spawn_plan, compile_step_context, materialize_step_context,
     },
 };
 
@@ -1021,6 +1021,195 @@ pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {
     }
 }
 
+/// Reads one line of `agy --output-format stream-json`. Each `step_update` is one step of the
+/// conversation (a reply, a tool call); text arrives as `text_delta`s, and the closing `result`
+/// carries the turn's whole reply and its tokens.
+pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
+    let Ok(val) = serde_json::from_str::<Value>(line.trim()) else {
+        return Vec::new();
+    };
+    match val.get("event").and_then(Value::as_str) {
+        Some("init") => string_field(&val, "conversation_id")
+            .filter(|id| !id.trim().is_empty())
+            .map(|id| vec![ChatStreamItem::SessionStarted(id)])
+            .unwrap_or_default(),
+        Some("step_update") => {
+            let Some(step) = val.get("step_update") else {
+                return Vec::new();
+            };
+            let state = step.get("state").and_then(Value::as_str).unwrap_or("");
+            match step.get("step_type").and_then(Value::as_str) {
+                Some("agent_response") => string_field(step, "text_delta")
+                    .filter(|t| !t.is_empty())
+                    .map(|t| vec![ChatStreamItem::TextDelta(t)])
+                    .unwrap_or_default(),
+                Some("tool") => {
+                    let Some(tool_use) = antigravity_tool_use(step) else {
+                        return Vec::new();
+                    };
+                    if state == "ACTIVE" {
+                        return vec![tool_use];
+                    }
+                    let info = step.get("tool_info");
+                    let error = info.and_then(|i| i.get("error")).filter(|e| has_content(e));
+                    let failed = !matches!(state, "DONE" | "") || error.is_some();
+                    let detail = error
+                        .or_else(|| info.and_then(|i| i.get("output")))
+                        .map(|v| tool_result_text(Some(v)))
+                        .unwrap_or_default();
+                    let id = tool_use_id(&tool_use);
+                    vec![
+                        tool_use,
+                        ChatStreamItem::ToolResult {
+                            id,
+                            is_error: failed,
+                            detail,
+                        },
+                    ]
+                }
+                _ => Vec::new(),
+            }
+        }
+        Some("result") => {
+            let Some(result) = val.get("result") else {
+                return Vec::new();
+            };
+            let status = result.get("status").and_then(Value::as_str).unwrap_or("");
+            let is_error = !status.eq_ignore_ascii_case("success");
+            let text = if is_error {
+                string_field(result, "error")
+                    .filter(|t| !t.trim().is_empty())
+                    .or_else(|| string_field(result, "response"))
+            } else {
+                string_field(result, "response")
+            }
+            .filter(|t| !t.trim().is_empty());
+            vec![ChatStreamItem::Result {
+                text,
+                is_error,
+                tokens: UsageCount::Turn(antigravity_usage_tokens(result.get("usage"))),
+                cost_micros: UsageCount::Turn(0),
+            }]
+        }
+        Some("error") => string_field(&val, "message")
+            .or_else(|| val.get("error").and_then(|e| string_field(e, "message")))
+            .map(|m| vec![ChatStreamItem::Error(m)])
+            .unwrap_or_default(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every token an Antigravity `usage` block counts: fresh input, cache reads, output and
+/// thinking.
+pub(crate) fn antigravity_usage_tokens(usage: Option<&Value>) -> u64 {
+    [
+        "input_tokens",
+        "cache_read_tokens",
+        "output_tokens",
+        "thinking_tokens",
+    ]
+    .into_iter()
+    .map(|key| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    })
+    .fold(0u64, u64::saturating_add)
+}
+
+fn has_content(val: &Value) -> bool {
+    match val {
+        Value::Null => false,
+        Value::String(text) => !text.trim().is_empty(),
+        _ => true,
+    }
+}
+
+fn tool_use_id(item: &ChatStreamItem) -> Option<String> {
+    match item {
+        ChatStreamItem::ToolUse { id, .. } => id.clone(),
+        _ => None,
+    }
+}
+
+/// An Antigravity tool step as a tool call: a friendlier verb for the common tools and the
+/// command, file, pattern or URL it works on.
+fn antigravity_tool_use(step: &Value) -> Option<ChatStreamItem> {
+    let info = step.get("tool_info");
+    let name = step
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .or_else(|| info.and_then(|i| i.get("name")).and_then(Value::as_str))?;
+    let (verb, target) = antigravity_tool_label(name, info.and_then(|i| i.get("parameters")));
+    let id = step
+        .get("step_index")
+        .and_then(Value::as_u64)
+        .map(|index| format!("agy-step-{index}"));
+    Some(ChatStreamItem::ToolUse {
+        id,
+        verb,
+        target: single_line(&target, TOOL_TARGET_MAX_CHARS),
+    })
+}
+
+/// The verb and target Bruk shows for an Antigravity tool call.
+pub(crate) fn antigravity_tool_label(name: &str, parameters: Option<&Value>) -> (String, String) {
+    let verb = match name {
+        "run_command" | "send_command_input" => "Shell",
+        "view_file" | "read_file" => "Read",
+        "write_to_file"
+        | "write_file"
+        | "edit_file"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "sed_file" => "Edit",
+        "grep_search" => "Search",
+        "find_by_name" => "Find",
+        "list_dir" => "List",
+        "search_web" => "Web search",
+        "read_url_content" => "Fetch",
+        "invoke_subagent" | "browser_subagent" => "Subagent",
+        other => other,
+    };
+    let mut target = String::new();
+    if let Some(Value::Object(params)) = parameters {
+        let preferred = [
+            "commandline",
+            "command",
+            "absolutepath",
+            "targetfile",
+            "path",
+            "file",
+            "directorypath",
+            "searchdirectory",
+            "query",
+            "pattern",
+            "url",
+            "task",
+            "description",
+        ];
+        target = preferred
+            .iter()
+            .find_map(|key| {
+                params
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    .and_then(|(_, v)| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| {
+                params
+                    .values()
+                    .filter_map(Value::as_str)
+                    .find(|v| !v.trim().is_empty())
+            })
+            .unwrap_or_default()
+            .to_owned();
+    }
+    (verb.to_owned(), target)
+}
+
 fn codex_tool_use(item: &Value) -> Option<ChatStreamItem> {
     let (verb, target) = match item.get("type").and_then(Value::as_str)? {
         "command_execution" => ("Shell", string_field(item, "command").unwrap_or_default()),
@@ -1147,6 +1336,8 @@ pub struct ChatTurnRequest {
     pub codex_default_model: Option<String>,
     pub codex_settings: CodexSpawnSettings,
     pub source_codex_home: Option<PathBuf>,
+    pub antigravity_binary: Option<PathBuf>,
+    pub antigravity_default_model: Option<String>,
 }
 
 /// What a turn needs to create the chat's worktree.
@@ -1212,13 +1403,15 @@ enum ChatCommandPurpose {
 /// Builds the provider command for one chat turn. The message itself is written to the
 /// command's stdin, so it is never read as a flag or a prompt template.
 pub fn build_chat_turn_command(request: &ChatTurnRequest) -> Result<Command, ChatTurnError> {
-    build_chat_command(request, ChatCommandPurpose::Turn)
+    build_chat_command(request, ChatCommandPurpose::Turn).map(|(cmd, _)| cmd)
 }
 
+/// The command for one chat turn and what to write to its stdin.
 fn build_chat_command(
     request: &ChatTurnRequest,
     purpose: ChatCommandPurpose,
-) -> Result<Command, ChatTurnError> {
+) -> Result<(Command, String), ChatTurnError> {
+    let prompt = request.prompt.trim().to_owned();
     let step = AgentTaskStepDef {
         id: "chat".to_owned(),
         name: "Chat".to_owned(),
@@ -1290,7 +1483,7 @@ fn build_chat_command(
                     plan.args.push("--no-session-persistence".to_owned());
                 }
             }
-            Ok(plan.to_command())
+            Ok((plan.to_command(), prompt))
         }
         ProviderKind::Codex => {
             let binary = request
@@ -1311,7 +1504,40 @@ fn build_chat_command(
             }
             // `-`: read the prompt from stdin.
             plan.args.push("-".to_owned());
-            Ok(plan.to_command())
+            Ok((plan.to_command(), prompt))
+        }
+        ProviderKind::Antigravity => {
+            let binary =
+                request
+                    .antigravity_binary
+                    .as_ref()
+                    .ok_or(ChatTurnError::ProviderMissing(
+                        ProviderKind::Antigravity.label(),
+                    ))?;
+            let mut plan = build_isolated_antigravity_spawn_plan(
+                binary,
+                request.antigravity_default_model.as_deref(),
+                &request.working_dir,
+                &materialized,
+                &request.project_env,
+            );
+            // The message goes in as one NDJSON line on stdin, so it's never read as a flag.
+            plan.args.push("--input-format".to_owned());
+            plan.args.push("stream-json".to_owned());
+            let content = match resume {
+                Some(id) => {
+                    plan.args.push("--conversation".to_owned());
+                    plan.args.push(id.to_owned());
+                    prompt
+                }
+                // A new conversation starts with the agent's instructions.
+                None => plan.first_message(&prompt),
+            };
+            let line = serde_json::json!({
+                "event": "user",
+                "message": { "role": "user", "content": content },
+            });
+            Ok((plan.to_command(), format!("{line}\n")))
         }
         ProviderKind::OpenRouter => Err(ChatTurnError::UnsupportedProvider(
             ProviderKind::OpenRouter.label(),
@@ -1376,7 +1602,7 @@ fn run_chat_turn(
         }
     }
 
-    let mut cmd = build_chat_turn_command(request)?;
+    let (mut cmd, stdin_text) = build_chat_command(request, ChatCommandPurpose::Turn)?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1394,7 +1620,7 @@ fn run_chat_turn(
 
     if let Some(mut stdin) = child.stdin.take() {
         std::thread::spawn(move || {
-            let _ = stdin.write_all(prompt.as_bytes());
+            let _ = stdin.write_all(stdin_text.as_bytes());
         });
     }
     let stderr_reader = child.stderr.take().map(|mut pipe| {
@@ -1415,6 +1641,7 @@ fn run_chat_turn(
             let items = match request.provider {
                 ProviderKind::Claude => parse_claude_chat_line(&line),
                 ProviderKind::Codex => parse_codex_chat_line(&line),
+                ProviderKind::Antigravity => parse_antigravity_chat_line(&line),
                 ProviderKind::OpenRouter => Vec::new(),
             };
             if items.is_empty() {
@@ -1532,6 +1759,7 @@ pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatCon
     match request.provider {
         ProviderKind::Claude => query_claude_context(request, now),
         ProviderKind::Codex => read_codex_context(&request.runtime_dir, session_id, now),
+        ProviderKind::Antigravity => read_antigravity_chat_context(request, session_id, now),
         ProviderKind::OpenRouter => {
             Err(ChatTurnError::UnsupportedProvider(ProviderKind::OpenRouter.label()).to_string())
         }
@@ -1539,7 +1767,7 @@ pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatCon
 }
 
 fn query_claude_context(request: &ChatTurnRequest, now: i64) -> Result<ChatContextUsage, String> {
-    let mut cmd = build_chat_command(request, ChatCommandPurpose::ContextQuery)
+    let (mut cmd, _) = build_chat_command(request, ChatCommandPurpose::ContextQuery)
         .map_err(|err| err.to_string())?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1770,6 +1998,53 @@ fn home_relative(path: &str) -> String {
         }
         _ => path.to_owned(),
     }
+}
+
+/// Antigravity reports a conversation's tokens and window size when ACP loads it.
+fn read_antigravity_chat_context(
+    request: &ChatTurnRequest,
+    conversation_id: &str,
+    now: i64,
+) -> Result<ChatContextUsage, String> {
+    let binary = request
+        .antigravity_binary
+        .as_ref()
+        .ok_or_else(|| ChatTurnError::ProviderMissing(ProviderKind::Antigravity.label()))
+        .map_err(|err| err.to_string())?;
+    let reading = crate::antigravity_cli::read_antigravity_context(
+        binary,
+        &request.working_dir,
+        conversation_id,
+        &[],
+        &request.project_env,
+    )?;
+    Ok(ChatContextUsage {
+        model: request
+            .model
+            .clone()
+            .or_else(|| request.antigravity_default_model.clone())
+            .filter(|m| !m.trim().is_empty()),
+        used_tokens: reading.used_tokens,
+        window_tokens: reading.window_tokens,
+        categories: vec![
+            ChatContextCategory {
+                id: "conversation".to_owned(),
+                name: "Instructions, tools and history".to_owned(),
+                tokens: reading.used_tokens,
+                kind: ChatContextKind::Used,
+            },
+            ChatContextCategory {
+                id: "free_space".to_owned(),
+                name: "Free space".to_owned(),
+                tokens: reading.window_tokens.saturating_sub(reading.used_tokens),
+                kind: ChatContextKind::Free,
+            },
+        ],
+        groups: Vec::new(),
+        autocompact_at: None,
+        has_breakdown: false,
+        captured_at: now,
+    })
 }
 
 fn read_codex_context(
@@ -2558,6 +2833,9 @@ mod tests {
             codex_default_model: None,
             codex_settings: CodexSpawnSettings::default(),
             source_codex_home: None,
+            antigravity_binary: (provider == ProviderKind::Antigravity)
+                .then(|| binary.to_path_buf()),
+            antigravity_default_model: None,
         }
     }
 
@@ -2684,6 +2962,111 @@ echo "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":$((40 * turns))
         );
         // Codex reports the thread's running total (42, then 84): each turn counts once.
         assert_eq!(chat.total_tokens, 84);
+    }
+
+    #[test]
+    fn antigravity_turns_send_ndjson_and_resume_the_conversation() {
+        let temp = TempDir::new().unwrap();
+        let log = temp.path().join("calls.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "ARGS: $* UPDATE=$AGY_CLI_DISABLE_AUTO_UPDATE STDIN=$(cat)" >> '{log}'
+echo '{{"event":"init","conversation_id":"agy-conv-3","init":{{"model":"gemini-3.8-flash-low"}}}}'
+echo '{{"event":"step_update","step_update":{{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"Do"}}}}'
+echo '{{"event":"step_update","step_update":{{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":"ne."}}}}'
+echo '{{"event":"result","result":{{"conversation_id":"agy-conv-3","status":"SUCCESS","response":"Done.","usage":{{"input_tokens":30,"output_tokens":2,"thinking_tokens":1,"cache_read_tokens":10}}}}}}'
+"#,
+            log = log.display()
+        );
+        let agy = write_script(temp.path(), "agy", &script);
+        let mut req = request(&temp, ProviderKind::Antigravity, &agy);
+        req.agent = None;
+        req.prompt = "-- hello agy".to_owned();
+        let mut chat = session();
+        chat.provider = ProviderKind::Antigravity;
+
+        assert_eq!(run_turn(&req, &mut chat), ChatSessionStatus::Idle);
+        assert_eq!(chat.provider_session_id.as_deref(), Some("agy-conv-3"));
+        req.resume_session_id = chat.provider_session_id.clone();
+        assert_eq!(run_turn(&req, &mut chat), ChatSessionStatus::Idle);
+
+        let calls = fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = calls.lines().collect();
+        assert_eq!(lines.len(), 2, "{calls}");
+        for line in &lines {
+            assert!(line.contains("--output-format stream-json"), "{line}");
+            assert!(line.contains("--input-format stream-json"), "{line}");
+            assert!(
+                line.contains(
+                    r#"--settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)"]}}"#
+                ),
+                "{line}"
+            );
+            assert!(line.contains("--sandbox"), "{line}");
+            assert!(line.contains("--disable-slash-commands"), "{line}");
+            assert!(line.contains("UPDATE=true"), "{line}");
+            assert!(
+                line.ends_with(
+                    r#"STDIN={"event":"user","message":{"content":"-- hello agy","role":"user"}}"#
+                ),
+                "{line}"
+            );
+        }
+        assert!(!lines[0].contains("--conversation"), "{}", lines[0]);
+        assert!(
+            lines[1].contains("--conversation agy-conv-3"),
+            "{}",
+            lines[1]
+        );
+        // Each result counts that turn alone: (30 + 10 + 2 + 1) twice.
+        assert_eq!(chat.total_tokens, 86);
+        assert!(chat.entries.iter().any(|e| matches!(
+            e,
+            ChatEntry::Assistant { text, .. } if text == "Done."
+        )));
+    }
+
+    #[test]
+    fn parses_antigravity_stream_json_for_chat_turns() {
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":5,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"cargo test","Cwd":"/repo"}}}}"#
+            ),
+            vec![ChatStreamItem::ToolUse {
+                id: Some("agy-step-5".to_owned()),
+                verb: "Shell".to_owned(),
+                target: "cargo test".to_owned(),
+            }]
+        );
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":6,"state":"DONE","step_type":"tool","tool_name":"read_file","tool_info":{"name":"read_file","parameters":{"Path":"/repo/f.txt"},"output":"1 lines, 6 bytes"}}}"#
+            ),
+            vec![
+                ChatStreamItem::ToolUse {
+                    id: Some("agy-step-6".to_owned()),
+                    verb: "Read".to_owned(),
+                    target: "/repo/f.txt".to_owned(),
+                },
+                ChatStreamItem::ToolResult {
+                    id: Some("agy-step-6".to_owned()),
+                    is_error: false,
+                    detail: "1 lines, 6 bytes".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"result","result":{"status":"ERROR","response":"","error":"quota exhausted","usage":{"input_tokens":0,"output_tokens":0}}}"#
+            ),
+            vec![ChatStreamItem::Result {
+                text: Some("quota exhausted".to_owned()),
+                is_error: true,
+                tokens: UsageCount::Turn(0),
+                cost_micros: UsageCount::Turn(0),
+            }]
+        );
+        assert!(parse_antigravity_chat_line("not json").is_empty());
     }
 
     fn git_repo(dir: &Path) {
