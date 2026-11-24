@@ -63,13 +63,17 @@ pub(crate) fn chat_view() -> impl IntoElement {
                     }
                 })
                 .child(dynamic(move || match active_id.get() {
-                    Some(_) => chat_conversation().into_element(),
-                    None => new_chat_intro().into_element(),
+                    Some(_) => chat_conversation(draft).into_element(),
+                    None => view()
+                        .flex_1()
+                        .min_h(px(0.0))
+                        .child(new_chat_intro())
+                        .child(when(
+                            || store::selected_project_id().is_some(),
+                            move || chat_composer(draft),
+                        ))
+                        .into_element(),
                 }))
-                .child(when(
-                    || store::selected_project_id().is_some(),
-                    move || chat_composer(draft),
-                ))
                 .child(when(move || dragging.get(), drop_overlay)),
         )
 }
@@ -506,7 +510,7 @@ fn sandbox_picker(
 
 // --- Conversation -----------------------------------------------------------------------
 
-fn chat_conversation() -> impl IntoElement {
+fn chat_conversation(draft: Signal<String>) -> impl IntoElement {
     let meta = computed(store::active_chat_meta);
     let rows = computed(store::active_chat_rows);
     let scroller = element_ref();
@@ -535,7 +539,19 @@ fn chat_conversation() -> impl IntoElement {
                 .flex_1()
                 .min_h(px(0.0))
                 .flex_row()
-                .child(transcript(meta, rows, scroller, following))
+                // The composer sits under the transcript, so it stays centered on it when the
+                // context panel is open.
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .min_h(px(0.0))
+                        .child(transcript(meta, rows, scroller, following))
+                        .child(when(
+                            || store::selected_project_id().is_some(),
+                            move || chat_composer(draft),
+                        )),
+                )
                 .child(when(store::chat_context_open, context_panel)),
         )
 }
@@ -754,9 +770,16 @@ fn worktree_button(branch: String, path: std::path::PathBuf) -> impl IntoElement
         .bg(palette::control_bg())
         .hover(|s| s.bg(palette::subtle_surface_bg()))
         .active(|s| s.opacity(0.85))
-        .child(icons::git_branch(palette::text_muted()))
+        .child(
+            view()
+                .flex_shrink_0()
+                .child(icons::git_branch(palette::text_muted())),
+        )
+        // Shrinks inside the button's width cap so a long branch name ends in an ellipsis.
         .child(
             text(branch)
+                .flex_1()
+                .min_w(px(0.0))
                 .truncate()
                 .app_class("font-mono")
                 .text_size(px(11.0))
@@ -1344,7 +1367,11 @@ fn user_message(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {
         .child(when(
             move || !text_of().is_empty(),
             move || {
+                // Capped at the row's width so a long message wraps instead of running off
+                // the leading edge.
                 view()
+                    .max_w(relative(1.0))
+                    .min_w(px(0.0))
                     .px(px(13.0))
                     .py(px(9.0))
                     .rounded(px(12.0))
