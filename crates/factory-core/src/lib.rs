@@ -46,12 +46,13 @@ pub use bruk_home::{
 pub use chat::{
     ChatContextCategory, ChatContextGroup, ChatContextItem, ChatContextKind, ChatContextUsage,
     ChatEntry, ChatEvent, ChatNoticeTone, ChatProviderTotals, ChatSession, ChatSessionStatus,
-    ChatSessionSummary, ChatStreamItem, ChatToolStatus, ChatTurnControl, ChatTurnError,
-    ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
-    UNTITLED_CHAT_TITLE, UsageCount, build_chat_turn_command, chat_title_from_message,
+    ChatSessionSummary, ChatStreamItem, ChatTokenBreakdown, ChatToolStatus, ChatTurnControl,
+    ChatTurnError, ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
+    TokenScope, UNTITLED_CHAT_TITLE, UsageCount, build_chat_turn_command, chat_title_from_message,
     chat_worktree_branch, execute_chat_turn_blocking, micros_to_cents, parse_antigravity_chat_line,
     parse_claude_chat_line, parse_claude_context_usage, parse_codex_chat_line,
-    parse_codex_rollout_context, query_chat_context, remove_chat_worktree, spawn_chat_turn,
+    parse_codex_rollout_context, parse_codex_rollout_token_totals, query_chat_context,
+    remove_chat_worktree, spawn_chat_turn,
 };
 pub use chat_attachment::{
     CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENTS_DIR, ChatAttachment, ChatAttachmentUpload,

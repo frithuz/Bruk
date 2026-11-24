@@ -3566,6 +3566,13 @@ case " $* " in
     echo "ARGS: $*" >> '{log}'
     echo "PROMPT: $prompt" >> '{log}'
     echo '{{"type":"system","subtype":"init","session_id":"sess-42"}}'
+    case "$prompt" in
+      *"Show me the tests"*)
+        # A later turn's requests report how full the window is while the reply runs.
+        echo '{{"type":"stream_event","event":{{"type":"message_start","message":{{"usage":{{"input_tokens":12,"cache_read_input_tokens":6488}}}}}}}}'
+        sleep 3
+        ;;
+    esac
     echo '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_1","name":"Read","input":{{"file_path":"src/auth.rs"}}}}]}}}}'
     echo '{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"fn login()"}}]}}}}'
     echo "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reply to: $prompt\"}}]}}}}"
@@ -3627,8 +3634,17 @@ esac
         app.wait_for("4.2K / 200K").unwrap();
         app.press("id:chat-context-btn").unwrap();
         app.wait_for("4.2K of 200K tokens").unwrap();
+        assert!(app.screen().matches("id:chat-context-table").unwrap());
+        assert!(
+            app.screen()
+                .matches("id:chat-context-table-row-messages")
+                .unwrap()
+        );
         for shown in [
             "Context window",
+            "Portion",
+            "Tokens",
+            "Share",
             "2% full · claude-test",
             "System prompt",
             "Messages",
@@ -3636,17 +3652,35 @@ esac
             "Free space",
             "Memory files · 1",
             "/repo/CLAUDE.md",
+            // What the chat used, by kind.
+            "Tokens used in this chat",
+            "Input",
+            "Output",
+            "Cache reads",
+            "Cache writes",
+            "1,200",
+            "1,234",
         ] {
             assert!(app.screen().shows(shown), "missing {shown}");
         }
-        app.press("id:chat-context-close").unwrap();
-        assert!(!app.screen().shows("4.2K of 200K tokens"));
+        assert!(app.screen().matches("id:chat-tokens-table").unwrap());
+        assert!(!app.screen().shows("Live"));
 
         // Return sends the next message, which resumes the same agent session.
         app.type_text("id:chat-composer-input", "Show me the tests")
             .unwrap();
         app.submit("id:chat-composer-input").unwrap();
+        // The window's count and the chat's tokens follow the running reply, then settle
+        // after it.
+        app.wait_for("6.5K / 200K").unwrap();
+        app.wait_for("7,734").unwrap();
+        assert!(app.screen().matches("id:chat-tokens-live").unwrap());
+        assert!(app.screen().shows("6,488"));
         app.wait_for("Reply to: Show me the tests").unwrap();
+        app.wait_for("4.2K / 200K").unwrap();
+        app.wait_for("2,468").unwrap();
+        app.press("id:chat-context-close").unwrap();
+        assert!(!app.screen().shows("4.2K of 200K tokens"));
         app.wait_for("Claude · 2 messages · 2K tokens · $0.04")
             .unwrap();
         assert!(app.screen().shows("Reply to: Where is auth handled"));

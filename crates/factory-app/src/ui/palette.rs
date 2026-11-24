@@ -63,6 +63,13 @@ pub(crate) fn text_muted() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0x6B7280), rgb(0x8B93A1))
 }
 
+/// Secondary text that must stay readable at small sizes: at least 6.3:1 on every surface
+/// the chat context panel uses (panel, card, table header, badge, hover), in both modes.
+/// `text_muted` sits right at 4.5:1 and drops below it on hover surfaces.
+pub(crate) fn text_subdued() -> AdaptiveColor {
+    AdaptiveColor::new(rgb(0x4B5563), rgb(0xA3ADBB))
+}
+
 pub(crate) fn nav_active_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0x0B66D6), rgb(0x1C75E8))
 }
@@ -108,7 +115,8 @@ pub(crate) fn provider_badge_selected_bg() -> AdaptiveColor {
 }
 
 pub(crate) fn destructive_text() -> AdaptiveColor {
-    AdaptiveColor::new(rgb(0xD93025), rgb(0xF87171))
+    // At least 5:1 on light surfaces (the lighter 0xD93025 fell below 4.5:1 on them).
+    AdaptiveColor::new(rgb(0xC5221F), rgb(0xF87171))
 }
 
 pub(crate) fn switch_off_bg() -> AdaptiveColor {
@@ -363,5 +371,26 @@ pub(crate) fn project_color(color: ProjectColor) -> AdaptiveColor {
         ProjectColor::Purple => AdaptiveColor::new(rgb(0x7C5CFC), rgb(0x9378FF)),
         ProjectColor::Teal => AdaptiveColor::new(rgb(0x0D9488), rgb(0x2DD4BF)),
         ProjectColor::Rose => AdaptiveColor::new(rgb(0xE11D48), rgb(0xFB7185)),
+    }
+}
+
+/// The color of a context-window slice's icon (see [`crate::ui::icons::ContextSlice`]).
+pub(crate) fn context_slice_color(slice: crate::ui::icons::ContextSlice) -> AdaptiveColor {
+    use crate::ui::icons::ContextSlice;
+    match slice {
+        ContextSlice::Prompt => project_color(ProjectColor::Purple),
+        ContextSlice::Tools => project_color(ProjectColor::Teal),
+        ContextSlice::McpTools => project_color(ProjectColor::Orange),
+        ContextSlice::Agents => project_color(ProjectColor::Rose),
+        ContextSlice::Memory => project_color(ProjectColor::Green),
+        ContextSlice::Skills => AdaptiveColor::new(rgb(0xB7791F), rgb(0xF2B84B)),
+        ContextSlice::Messages => project_color(ProjectColor::Blue),
+        ContextSlice::Reply => AdaptiveColor::new(rgb(0x0891B2), rgb(0x22D3EE)),
+        ContextSlice::Other => AdaptiveColor::new(rgb(0x64748B), rgb(0x94A3B8)),
+        ContextSlice::Reserve | ContextSlice::Free => text_subdued(),
+        ContextSlice::Input => project_color(ProjectColor::Blue),
+        ContextSlice::Output => project_color(ProjectColor::Green),
+        ContextSlice::CacheRead => project_color(ProjectColor::Purple),
+        ContextSlice::CacheWrite => project_color(ProjectColor::Orange),
     }
 }

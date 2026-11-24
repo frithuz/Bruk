@@ -9,8 +9,8 @@
 
 use factory_core::{
     ChatAttachment, ChatContextKind, ChatContextUsage, ChatEntry, ChatNoticeTone,
-    ChatSessionSummary, ChatToolStatus, ChatWorkspace, ProjectColor, ProjectSandboxMode,
-    ProviderKind, current_unix_seconds, format_bytes, format_currency, format_tokens,
+    ChatSessionSummary, ChatToolStatus, ChatWorkspace, ProjectSandboxMode, ProviderKind,
+    current_unix_seconds, format_bytes, format_currency, format_tokens,
 };
 use nsh_base::{
     SelectItem, SelectValue, TextViewPart, TextViewParts, button, input, select, text_view,
@@ -794,7 +794,24 @@ fn context_button(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
 
     button()
         .test_id("chat-context-btn")
-        .accessibility_label("Context window")
+        .accessibility_label(move || {
+            Some(
+                match context.get() {
+                    Some((used, window)) if window > 0 => format!(
+                        "Context window, {}, {}% full",
+                        context_total_label(used, window),
+                        (used as f64 / window as f64 * 100.0)
+                            .round()
+                            .clamp(0.0, 100.0)
+                    ),
+                    Some((used, _)) if used > 0 => {
+                        format!("Context window, {}", context_total_label(used, 0))
+                    }
+                    _ => "Context window".to_owned(),
+                }
+                .into(),
+            )
+        })
         .on_press(store::toggle_chat_context)
         .flex_row()
         .items_center()
@@ -849,6 +866,7 @@ fn context_button(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
                 Some((used, window)) if window > 0 => {
                     format!("{} / {}", compact_tokens(used), compact_tokens(window))
                 }
+                Some((used, _)) if used > 0 => compact_tokens(used),
                 _ => "Context".to_owned(),
             })
             .tabular_nums()
@@ -947,7 +965,7 @@ fn context_panel() -> impl IntoElement {
                         .justify_center()
                         .hover(|s| s.bg(palette::subtle_surface_bg()))
                         .disabled_style(|s| s.opacity(0.4))
-                        .child(icons::sync_arrows(palette::text_muted())),
+                        .child(icons::sync_arrows(palette::text_subdued())),
                 )
                 .child(
                     button()
@@ -960,7 +978,7 @@ fn context_panel() -> impl IntoElement {
                         .items_center()
                         .justify_center()
                         .hover(|s| s.bg(palette::subtle_surface_bg()))
-                        .child(icons::close_x(palette::text_muted())),
+                        .child(icons::close_x(palette::text_subdued())),
                 ),
         )
         .child(
@@ -971,6 +989,10 @@ fn context_panel() -> impl IntoElement {
                     .gap(px(14.0))
                     .child(dynamic(move || match context.get() {
                         Some(context) => context_body(context).into_element(),
+                        None => view().into_element(),
+                    }))
+                    .child(dynamic(move || match context.get() {
+                        Some(context) => token_use_section(&context),
                         None => view().into_element(),
                     })),
             ),
@@ -998,7 +1020,7 @@ fn context_body(context: ActiveChatContext) -> AnyElement {
                     .test_id("chat-context-status")
                     .selectable(true)
                     .text_size(px(12.0))
-                    .text_color(palette::text_muted()),
+                    .text_color(palette::text_subdued()),
             )
             .child(when(
                 move || retry,
@@ -1024,78 +1046,7 @@ fn context_body(context: ActiveChatContext) -> AnyElement {
             .into_element();
     };
 
-    let window = usage.window_tokens;
-    let used_slices: Vec<(usize, &factory_core::ChatContextCategory)> = usage
-        .categories
-        .iter()
-        .filter(|c| c.kind == ChatContextKind::Used)
-        .enumerate()
-        .collect();
-    let slice_color =
-        |index: usize| palette::project_color(SLICE_COLORS[index % SLICE_COLORS.len()]);
-
-    // The bar: what is in the window, then the compaction reserve; the rest is free.
-    let mut bar = view()
-        .test_id("chat-context-bar")
-        .h(px(10.0))
-        .w_full()
-        .flex_row()
-        .rounded_full()
-        .overflow_hidden()
-        .bg(palette::segmented_track_bg());
-    if window > 0 {
-        for (index, category) in &used_slices {
-            bar = bar.child(
-                view()
-                    .h_full()
-                    .w(relative(
-                        (category.tokens as f32 / window as f32).clamp(0.0, 1.0),
-                    ))
-                    .bg(slice_color(*index)),
-            );
-        }
-        for category in usage
-            .categories
-            .iter()
-            .filter(|c| c.kind == ChatContextKind::Buffer)
-        {
-            bar = bar.child(
-                view()
-                    .h_full()
-                    .w(relative(
-                        (category.tokens as f32 / window as f32).clamp(0.0, 1.0),
-                    ))
-                    .bg(palette::border_color()),
-            );
-        }
-    }
-
-    let mut legend = view().gap(px(6.0));
-    for (index, category) in &used_slices {
-        legend = legend.child(context_legend_row(
-            slice_color(*index),
-            &category.name,
-            category.tokens,
-            window,
-        ));
-    }
-    for category in usage
-        .categories
-        .iter()
-        .filter(|c| matches!(c.kind, ChatContextKind::Buffer | ChatContextKind::Free))
-    {
-        let swatch = if category.kind == ChatContextKind::Buffer {
-            palette::border_color()
-        } else {
-            palette::segmented_track_bg()
-        };
-        legend = legend.child(context_legend_row(
-            swatch,
-            &category.name,
-            category.tokens,
-            window,
-        ));
-    }
+    let table = context_table(&usage);
 
     let deferred: Vec<String> = usage
         .categories
@@ -1109,18 +1060,18 @@ fn context_body(context: ActiveChatContext) -> AnyElement {
         .child(context_summary(
             &usage,
             context.loading,
+            context.running,
             context.error.clone(),
         ))
-        .child(bar)
-        .child(legend);
+        .child(table);
     if !deferred.is_empty() {
         body = body.child(
             text(format!(
                 "Not in the window until the agent asks for them: {}.",
                 deferred.join(", ")
             ))
-            .text_size(px(11.0))
-            .text_color(palette::text_muted()),
+            .text_size(px(11.5))
+            .text_color(palette::text_subdued()),
         );
     }
     for group in &usage.groups {
@@ -1139,33 +1090,29 @@ fn context_body(context: ActiveChatContext) -> AnyElement {
             compact_tokens(at)
         ));
     }
-    notes.push(format!(
-        "Measured {} after the latest reply.",
-        match relative_time(usage.captured_at).as_str() {
-            "now" => "just now".to_owned(),
-            ago => format!("{ago} ago"),
-        }
-    ));
+    let ago = match relative_time(usage.captured_at).as_str() {
+        "now" => "just now".to_owned(),
+        ago => format!("{ago} ago"),
+    };
+    notes.push(if usage.live && context.running {
+        "Updates live as the agent works; measured in full when the reply ends.".to_owned()
+    } else if usage.live {
+        format!("Last updated {ago}, while a reply ran.")
+    } else {
+        format!("Measured {ago} after the latest reply.")
+    });
     body.child(
         text(notes.join(" "))
-            .text_size(px(11.0))
-            .text_color(palette::text_muted()),
+            .text_size(px(11.5))
+            .text_color(palette::text_subdued()),
     )
     .into_element()
 }
 
-const SLICE_COLORS: [ProjectColor; 6] = [
-    ProjectColor::Blue,
-    ProjectColor::Teal,
-    ProjectColor::Purple,
-    ProjectColor::Orange,
-    ProjectColor::Green,
-    ProjectColor::Rose,
-];
-
 fn context_summary(
     usage: &ChatContextUsage,
     updating: bool,
+    running: bool,
     error: Option<String>,
 ) -> impl IntoElement {
     let fraction = if usage.window_tokens == 0 {
@@ -1173,88 +1120,400 @@ fn context_summary(
     } else {
         (usage.used_tokens as f32 / usage.window_tokens as f32).clamp(0.0, 1.0)
     };
-    let mut detail = vec![format!("{}% full", usage.used_percent())];
+    let mut detail = Vec::new();
+    if usage.window_tokens > 0 {
+        detail.push(format!("{}% full", usage.used_percent()));
+    }
     if let Some(model) = usage.model.as_ref() {
         detail.push(model.clone());
     }
-    if updating {
+    if running && usage.live {
+        detail.push("live".to_owned());
+    } else if updating {
         detail.push("updating…".to_owned());
     }
     view()
         .gap(px(3.0))
         .child(
-            text(format!(
-                "{} of {} tokens",
-                compact_tokens(usage.used_tokens),
-                compact_tokens(usage.window_tokens)
-            ))
-            .test_id("chat-context-total")
-            .tabular_nums()
-            .text_size(px(17.0))
-            .font_weight(FontWeight::SEMIBOLD)
-            .text_color(palette::text_primary()),
+            text(context_total_label(usage.used_tokens, usage.window_tokens))
+                .test_id("chat-context-total")
+                .tabular_nums()
+                .text_size(px(17.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_primary()),
         )
-        .child(
-            text(detail.join(" · "))
-                .text_size(px(11.5))
-                .text_color(if fraction >= 0.7 {
-                    fullness_color(fraction)
-                } else {
-                    palette::text_muted()
-                }),
-        )
+        .child(when(
+            {
+                let shown = !detail.is_empty();
+                move || shown
+            },
+            {
+                let detail = detail.join(" · ");
+                move || {
+                    text(detail.clone())
+                        .text_size(px(11.5))
+                        .text_color(if fraction >= 0.7 {
+                            fullness_color(fraction)
+                        } else {
+                            palette::text_subdued()
+                        })
+                }
+            },
+        ))
         .child(match error {
             Some(message) => text(message)
-                .text_size(px(11.0))
+                .text_size(px(11.5))
                 .text_color(palette::destructive_text())
                 .into_element(),
             None => view().into_element(),
         })
 }
 
-fn context_legend_row(
-    swatch: AdaptiveColor,
-    name: &str,
-    tokens: u64,
-    window: u64,
+/// "4.2K of 200K tokens", or "4.2K tokens" before the window's size is known.
+fn context_total_label(used: u64, window: u64) -> String {
+    if window > 0 {
+        format!(
+            "{} of {} tokens",
+            compact_tokens(used),
+            compact_tokens(window)
+        )
+    } else {
+        format!("{} tokens", compact_tokens(used))
+    }
+}
+
+/// Which icon a slice of the window gets.
+fn context_slice_of(category: &factory_core::ChatContextCategory) -> icons::ContextSlice {
+    use icons::ContextSlice;
+    match category.kind {
+        ChatContextKind::Free => return ContextSlice::Free,
+        ChatContextKind::Buffer => return ContextSlice::Reserve,
+        ChatContextKind::Used | ChatContextKind::Deferred => {}
+    }
+    let id = category.id.to_ascii_lowercase();
+    let name = category.name.to_ascii_lowercase();
+    let either = |needle: &str| id.contains(needle) || name.contains(needle);
+    if either("mcp") {
+        ContextSlice::McpTools
+    } else if either("tool") {
+        ContextSlice::Tools
+    } else if either("prompt") || either("instruction") {
+        ContextSlice::Prompt
+    } else if either("agent") {
+        ContextSlice::Agents
+    } else if either("memory") {
+        ContextSlice::Memory
+    } else if either("skill") {
+        ContextSlice::Skills
+    } else if either("reply") {
+        ContextSlice::Reply
+    } else if either("message") || either("conversation") {
+        ContextSlice::Messages
+    } else {
+        ContextSlice::Other
+    }
+}
+
+/// One row of a [`usage_table`].
+struct UsageRow {
+    id: String,
+    icon: Option<(icons::ContextSlice, AdaptiveColor)>,
+    name: String,
+    tokens: String,
+    share: String,
+    /// A total row, set apart from the rows above it.
+    total: bool,
+}
+
+/// A table of token counts: a column of named, colored-icon rows, their tokens, and their
+/// share of a whole. Screen readers get a table with column headers; the icons are hidden
+/// from them since each row's name says what it is.
+fn usage_table(
+    test_id: &str,
+    label: &'static str,
+    first_column: &'static str,
+    tokens_width: f32,
+    rows: Vec<UsageRow>,
 ) -> impl IntoElement {
-    view()
+    const SHARE_COL: f32 = 44.0;
+    let header_cell = |label: &'static str| {
+        text(label)
+            .role(AccessibilityRole::ColumnHeader)
+            .text_size(px(11.0))
+            .font_weight(FontWeight::SEMIBOLD)
+            .text_color(palette::text_subdued())
+    };
+    let header = view()
+        .role(AccessibilityRole::Row)
         .flex_row()
         .items_center()
         .gap(px(8.0))
-        .child(
-            view()
-                .w(px(9.0))
-                .h(px(9.0))
-                .flex_shrink_0()
-                .rounded(px(2.5))
-                .border_1()
-                .border_color(palette::divider_color())
-                .bg(swatch),
-        )
-        .child(
-            text(name.to_owned())
+        .px(px(8.0))
+        .py(px(5.0))
+        .bg(palette::table_header_bg())
+        .border_b_1()
+        .border_color(palette::divider_color())
+        .child(header_cell(first_column).flex_1().min_w(px(0.0)))
+        .child(header_cell("Tokens").w(px(tokens_width)).text_right())
+        .child(header_cell("Share").w(px(SHARE_COL)).text_right());
+
+    let last = rows.len().saturating_sub(1);
+    let mut body = view().role(AccessibilityRole::RowGroup);
+    for (index, row) in rows.into_iter().enumerate() {
+        let weight = if row.total {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::MEDIUM
+        };
+        let mut name_cell = view()
+            .role(AccessibilityRole::Cell)
+            .flex_1()
+            .min_w(px(0.0))
+            .flex_row()
+            .items_center()
+            .gap(px(7.0));
+        if let Some((slice, color)) = row.icon {
+            name_cell = name_cell.child(
+                view()
+                    .accessibility_elements_hidden(true)
+                    .child(icons::context_slice(slice, color)),
+            );
+        }
+        name_cell = name_cell.child(
+            text(row.name)
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
                 .text_size(px(12.0))
-                .text_color(palette::text_secondary()),
-        )
+                .font_weight(if row.total {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::NORMAL
+                })
+                .text_color(if row.total {
+                    palette::text_primary()
+                } else {
+                    palette::text_secondary()
+                }),
+        );
+        let mut line = view()
+            .test_id(&format!("{test_id}-row-{}", row.id))
+            .role(AccessibilityRole::Row)
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .px(px(8.0))
+            .py(px(6.0))
+            .child(name_cell)
+            .child(
+                text(row.tokens)
+                    .role(AccessibilityRole::Cell)
+                    .w(px(tokens_width))
+                    .text_right()
+                    .tabular_nums()
+                    .text_size(px(12.0))
+                    .font_weight(weight)
+                    .text_color(palette::text_primary()),
+            )
+            .child(
+                text(row.share)
+                    .role(AccessibilityRole::Cell)
+                    .w(px(SHARE_COL))
+                    .text_right()
+                    .tabular_nums()
+                    .text_size(px(11.5))
+                    .text_color(palette::text_subdued()),
+            );
+        if row.total {
+            line = line.bg(palette::table_header_bg());
+        }
+        if index != last {
+            line = line.border_b_1().border_color(palette::divider_color());
+        }
+        body = body.child(line);
+    }
+
+    view()
+        .test_id(test_id)
+        .role(AccessibilityRole::Table)
+        .label(label)
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .overflow_hidden()
+        .bg(palette::card_bg())
+        .child(header)
+        .child(body)
+}
+
+/// The window's slices as a table: what is in it, the compaction reserve, then free space;
+/// each with a colored icon, its tokens, and its share of the window.
+fn context_table(usage: &ChatContextUsage) -> impl IntoElement {
+    let window = usage.window_tokens;
+    let rows = [
+        ChatContextKind::Used,
+        ChatContextKind::Buffer,
+        ChatContextKind::Free,
+    ]
+    .into_iter()
+    .flat_map(|kind| usage.categories.iter().filter(move |c| c.kind == kind))
+    .map(|category| {
+        let slice = context_slice_of(category);
+        UsageRow {
+            id: category.id.clone(),
+            icon: Some((slice, palette::context_slice_color(slice))),
+            name: category.name.clone(),
+            tokens: compact_tokens(category.tokens),
+            share: if window > 0 {
+                window_share(category.tokens, window)
+            } else {
+                "—".to_owned()
+            },
+            total: false,
+        }
+    })
+    .collect();
+    usage_table(
+        "chat-context-table",
+        "Context window breakdown",
+        "Portion",
+        52.0,
+        rows,
+    )
+}
+
+// --- Token use ---------------------------------------------------------------------------
+
+/// "17,631".
+fn grouped_tokens(tokens: u64) -> String {
+    let digits = tokens.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// The chat's tokens by kind (input, output, cache reads and writes), live while a reply runs.
+fn token_use_section(context: &ActiveChatContext) -> AnyElement {
+    let tokens = context.tokens;
+    let total = tokens.total();
+    if total == 0 && context.recorded_tokens == 0 {
+        return view().into_element();
+    }
+    use icons::ContextSlice;
+    let mut kinds = vec![
+        ("input", "Input", ContextSlice::Input, tokens.input),
+        ("output", "Output", ContextSlice::Output, tokens.output),
+        (
+            "cache_read",
+            "Cache reads",
+            ContextSlice::CacheRead,
+            tokens.cache_read,
+        ),
+    ];
+    // Only Claude reports writing to the prompt cache.
+    if context.provider == ProviderKind::Claude || tokens.cache_write > 0 {
+        kinds.push((
+            "cache_write",
+            "Cache writes",
+            ContextSlice::CacheWrite,
+            tokens.cache_write,
+        ));
+    }
+    let mut rows: Vec<UsageRow> = kinds
+        .into_iter()
+        .map(|(id, name, slice, count)| UsageRow {
+            id: id.to_owned(),
+            icon: Some((slice, palette::context_slice_color(slice))),
+            name: name.to_owned(),
+            tokens: grouped_tokens(count),
+            share: if total > 0 {
+                window_share(count, total)
+            } else {
+                "—".to_owned()
+            },
+            total: false,
+        })
+        .collect();
+    rows.push(UsageRow {
+        id: "total".to_owned(),
+        icon: None,
+        name: "Total".to_owned(),
+        tokens: grouped_tokens(total),
+        share: if total > 0 {
+            "100%".to_owned()
+        } else {
+            "—".to_owned()
+        },
+        total: true,
+    });
+
+    let mut notes = vec![
+        "Cache reads are prompt input served from the provider's cache, billed far below fresh input."
+            .to_owned(),
+    ];
+    if context.running {
+        notes.push(
+            "Counts update with each model request; the provider's totals settle them when the reply ends."
+                .to_owned(),
+        );
+    } else if context.recorded_tokens > total {
+        notes.push(format!(
+            "{} tokens from earlier replies weren't recorded by kind.",
+            grouped_tokens(context.recorded_tokens - total)
+        ));
+    }
+
+    view()
+        .gap(px(8.0))
         .child(
-            text(compact_tokens(tokens))
-                .tabular_nums()
-                .text_size(px(12.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(palette::text_primary()),
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    text("Tokens used in this chat")
+                        .role(AccessibilityRole::Header)
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_primary()),
+                )
+                .child(when(
+                    {
+                        let running = context.running;
+                        move || running
+                    },
+                    || {
+                        text("Live")
+                            .test_id("chat-tokens-live")
+                            .px(px(6.0))
+                            .py(px(1.5))
+                            .rounded_full()
+                            .bg(palette::status_running_bg())
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::link_blue())
+                    },
+                )),
         )
+        .child(usage_table(
+            "chat-tokens-table",
+            "Tokens used in this chat",
+            "Kind",
+            66.0,
+            rows,
+        ))
         .child(
-            text(window_share(tokens, window))
-                .w(px(42.0))
-                .text_right()
-                .tabular_nums()
-                .text_size(px(11.0))
-                .text_color(palette::text_muted()),
+            text(notes.join(" "))
+                .text_size(px(11.5))
+                .text_color(palette::text_subdued()),
         )
+        .into_element()
 }
 
 fn context_group(group: &factory_core::ChatContextGroup) -> impl IntoElement {
@@ -1277,7 +1536,7 @@ fn context_group(group: &factory_core::ChatContextGroup) -> impl IntoElement {
                     text(compact_tokens(item.tokens))
                         .tabular_nums()
                         .text_size(px(11.5))
-                        .text_color(palette::text_muted()),
+                        .text_color(palette::text_subdued()),
                 ),
         );
     }
@@ -1288,8 +1547,8 @@ fn context_group(group: &factory_core::ChatContextGroup) -> impl IntoElement {
     if hidden > 0 {
         list = list.child(
             text(format!("+{hidden} more"))
-                .text_size(px(11.0))
-                .text_color(palette::text_muted()),
+                .text_size(px(11.5))
+                .text_color(palette::text_subdued()),
         );
     }
     view()

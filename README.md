@@ -72,8 +72,13 @@ model directly: Claude gets them as image blocks of a stream-json message (up to
 larger ones are passed by path only), and Codex gets them with `--image`. Antigravity reads every
 attachment by path.
 
-After each reply Bruk measures the agent's **context window**: the header shows how full it is,
-and the Context panel breaks it down. For Claude the breakdown covers system prompt, tools,
+The agent's **context window** fills in live while a reply runs (Claude reports each model
+request's tokens as it streams; Codex's are read from its record of the thread as it goes), and
+Bruk measures it in full after each reply: the header shows how full it is, and the Context
+panel lists it as a table, each portion with a colored icon, its tokens and its share of the
+window. Below it, a second table shows what the chat has used so far by kind (input, output,
+cache reads and, for Claude, cache writes), live while a reply runs and settled from the
+provider's own totals when it ends. For Claude the context breakdown covers system prompt, tools,
 memory files, skills, messages, the autocompact buffer and free space. Claude Code reports this
 for an unsaved fork of the session, so the chat itself is untouched and no model is called.
 Codex reports only the total, read from its own record of the thread; Antigravity reports

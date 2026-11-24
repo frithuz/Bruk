@@ -547,3 +547,82 @@ pub(crate) fn file_doc(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElem
     )
     .text_color(color)
 }
+
+/// What a slice of a chat's context window holds, for its icon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ContextSlice {
+    Prompt,
+    Tools,
+    McpTools,
+    Agents,
+    Memory,
+    Skills,
+    Messages,
+    Reply,
+    Reserve,
+    Free,
+    Other,
+    /// Token kinds: fresh prompt input, output, and prompt-cache reads and writes.
+    Input,
+    Output,
+    CacheRead,
+    CacheWrite,
+}
+
+/// The icon of a context-window slice: a page for the system prompt, a wrench for tools, a
+/// plug for MCP tools, a person for agents, a book for memory files, a sparkle for skills,
+/// a speech bubble for messages, a reply arrow, a box for the compaction reserve, and a
+/// dashed ring for free space.
+pub(crate) fn context_slice(
+    slice: ContextSlice,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    let markup = match slice {
+        ContextSlice::Prompt => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.9H4.6a1.2 1.2 0 0 0-1.2 1.2v9.8a1.2 1.2 0 0 0 1.2 1.2h6.8a1.2 1.2 0 0 0 1.2-1.2V5.3Z"/><path d="M9.2 1.9v3.4h3.4"/><path d="M5.6 8.4h4.8"/><path d="M5.6 11h3.2"/></svg>"#
+        }
+        ContextSlice::Tools => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M10.4 2.2a3.3 3.3 0 0 0-3.8 4.3l-4.1 4.1a1.35 1.35 0 0 0 1.9 1.9l4.1-4.1a3.3 3.3 0 0 0 4.3-3.8l-2.1 2.1-1.9-.4-.4-1.9Z"/></svg>"#
+        }
+        ContextSlice::McpTools => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6 1.8v3.2"/><path d="M10 1.8v3.2"/><path d="M4.3 5h7.4v2.4a3.7 3.7 0 0 1-7.4 0Z"/><path d="M8 11.1v3.1"/></svg>"#
+        }
+        ContextSlice::Agents => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5.4" r="2.7"/><path d="M2.9 13.8a5.1 5.1 0 0 1 10.2 0"/></svg>"#
+        }
+        ContextSlice::Memory => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3.4 12.9V3.1a1.1 1.1 0 0 1 1.1-1.1h8.1v9.8H4.5a1.1 1.1 0 0 0-1.1 1.1Zm0 0a1.1 1.1 0 0 0 1.1 1.1h8.1"/><path d="M6.2 5h3.6"/></svg>"#
+        }
+        ContextSlice::Skills => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.9 9.4 6.6 14.1 8 9.4 9.4 8 14.1 6.6 9.4 1.9 8 6.6 6.6Z"/></svg>"#
+        }
+        ContextSlice::Messages => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 3.5h11a1 1 0 0 1 1 1v6.2a1 1 0 0 1-1 1H6.2l-3.2 2.3v-2.3h-.5a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/></svg>"#
+        }
+        ContextSlice::Reply => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 3.6 2.6 7.4l3.8 3.8"/><path d="M2.6 7.4h7a3.8 3.8 0 0 1 3.8 3.8v1.2"/></svg>"#
+        }
+        ContextSlice::Reserve => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="1.9" y="2.8" width="12.2" height="3.2" rx=".9"/><path d="M3 6v6.4a1.1 1.1 0 0 0 1.1 1.1h7.8a1.1 1.1 0 0 0 1.1-1.1V6"/><path d="M6.4 9h3.2"/></svg>"#
+        }
+        ContextSlice::Free => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><circle cx="8" cy="8" r="5.6" stroke-dasharray="2.3 2.1"/></svg>"#
+        }
+        ContextSlice::Other => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3.4" fill="currentColor"/></svg>"#
+        }
+        ContextSlice::Input => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v7.4"/><path d="M4.9 6.4 8 9.5l3.1-3.1"/><path d="M2.6 10.6v1.7a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-1.7"/></svg>"#
+        }
+        ContextSlice::Output => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 9.6V2.2"/><path d="M4.9 5.3 8 2.2l3.1 3.1"/><path d="M2.6 10.6v1.7a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-1.7"/></svg>"#
+        }
+        ContextSlice::CacheRead => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="7" cy="3.8" rx="4.6" ry="1.8"/><path d="M2.4 3.8v7.6c0 1 2 1.8 4.6 1.8"/><path d="M11.6 3.8v3"/><path d="M2.4 7.6c0 1 2 1.8 4.6 1.8"/><path d="M10 11.6h4.2"/><path d="M12.4 9.8l1.8 1.8-1.8 1.8"/></svg>"#
+        }
+        ContextSlice::CacheWrite => {
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="7" cy="3.8" rx="4.6" ry="1.8"/><path d="M2.4 3.8v7.6c0 1 2 1.8 4.6 1.8"/><path d="M11.6 3.8v3"/><path d="M2.4 7.6c0 1 2 1.8 4.6 1.8"/><path d="M12.2 9.4v4.4"/><path d="M10 11.6h4.4"/></svg>"#
+        }
+    };
+    icon_svg(markup, 14.0).text_color(color)
+}

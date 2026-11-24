@@ -15,31 +15,31 @@ use factory_core::{
     AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
     AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
     CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSession,
-    ChatSessionStatus, ChatSessionSummary, ChatTurnControl, ChatTurnRequest, ChatUsageDelta,
-    ChatWorkspace, ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue,
-    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue,
-    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy,
-    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
-    DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
-    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment,
-    HomeError, HomeResolution, InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode,
-    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
-    MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft, PersistedWorkflowRun,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
-    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
-    RunStatus, RunnerEvent, SkillDef, StepTypeKind, StorageError, ValidationReport,
-    WorkQueueViewMode, Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef,
-    WorkflowRecentRun, WorkflowRun, WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind,
-    WorkflowTriggersDef, WorkflowsFilter, WorkflowsSort, add_github_issue_label,
-    apply_runner_event_to_view_data, chat_worktree_branch, clone_repository, current_unix_seconds,
-    detect_git_remote_info, display_with_tilde, fetch_antigravity_details, fetch_claude_details,
-    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
-    find_codex_setting_spec, parse_clone_source, probe_antigravity_cli, probe_claude_cli,
-    probe_codex_cli, project_dir_name, query_chat_context, remove_chat_worktree,
-    remove_github_issue_label, resolve_antigravity_binary, resolve_claude_binary,
-    resolve_codex_binary, run_antigravity_login, run_claude_auth_login, run_codex_login,
-    spawn_chat_turn, spawn_workflow_run,
+    ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown, ChatTurnControl, ChatTurnRequest,
+    ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe,
+    ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe,
+    CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef,
+    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
+    DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection,
+    ExitField, ExitOperator, FactoryState, FontPreference, GateDecision, GitHubAuth,
+    GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter, InboxState,
+    IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
+    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
+    NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase, ProjectId,
+    ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
+    ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail, RunControlHandle,
+    RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus, RunnerEvent, SkillDef,
+    StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
+    WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
+    WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
+    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
+    chat_worktree_branch, clone_repository, current_unix_seconds, detect_git_remote_info,
+    display_with_tilde, fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
+    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
+    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
+    query_chat_context, remove_chat_worktree, remove_github_issue_label,
+    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary, run_antigravity_login,
+    run_claude_auth_login, run_codex_login, spawn_chat_turn, spawn_workflow_run,
 };
 
 const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
@@ -2420,6 +2420,10 @@ pub(crate) struct ActiveChatContext {
     /// The provider has a session to measure (a turn has run).
     pub(crate) has_session: bool,
     pub(crate) running: bool,
+    /// The chat's tokens by kind, the running reply's so far included.
+    pub(crate) tokens: ChatTokenBreakdown,
+    /// Every token the chat's finished replies used, as totaled for the dashboard.
+    pub(crate) recorded_tokens: u64,
 }
 
 /// One row of the open chat's transcript, keyed by chat and position.
@@ -3307,6 +3311,8 @@ pub(crate) fn active_chat_context() -> Option<ActiveChatContext> {
             error: s.chat_context_errors.get(&chat.id).cloned(),
             has_session: chat.provider_session_id.is_some(),
             running: chat.is_running(),
+            tokens: chat.token_use(),
+            recorded_tokens: chat.total_tokens,
         })
     })
 }

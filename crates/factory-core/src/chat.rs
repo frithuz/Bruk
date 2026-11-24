@@ -179,6 +179,63 @@ pub struct ChatProviderTotals {
     pub tokens: u64,
     #[serde(default)]
     pub cost_micros: u64,
+    /// The session's running token totals by kind, for providers that report them so.
+    #[serde(default)]
+    pub breakdown: ChatTokenBreakdown,
+}
+
+/// A chat's tokens by kind. `input` is fresh (uncached) prompt input; cache reads and writes
+/// are prompt input served from or added to the provider's prompt cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ChatTokenBreakdown {
+    #[serde(default)]
+    pub input: u64,
+    #[serde(default)]
+    pub output: u64,
+    #[serde(default)]
+    pub cache_read: u64,
+    #[serde(default)]
+    pub cache_write: u64,
+}
+
+impl ChatTokenBreakdown {
+    pub fn total(self) -> u64 {
+        self.input
+            .saturating_add(self.output)
+            .saturating_add(self.cache_read)
+            .saturating_add(self.cache_write)
+    }
+
+    pub fn is_zero(self) -> bool {
+        self.total() == 0
+    }
+
+    pub fn plus(self, other: Self) -> Self {
+        Self {
+            input: self.input.saturating_add(other.input),
+            output: self.output.saturating_add(other.output),
+            cache_read: self.cache_read.saturating_add(other.cache_read),
+            cache_write: self.cache_write.saturating_add(other.cache_write),
+        }
+    }
+
+    /// What `self` (a running total) added since `baseline`; all of it when any kind counts
+    /// less than before (the provider started counting afresh).
+    fn since(self, baseline: Self) -> Self {
+        let fresh = self.input < baseline.input
+            || self.output < baseline.output
+            || self.cache_read < baseline.cache_read
+            || self.cache_write < baseline.cache_write;
+        if fresh {
+            return self;
+        }
+        Self {
+            input: self.input - baseline.input,
+            output: self.output - baseline.output,
+            cache_read: self.cache_read - baseline.cache_read,
+            cache_write: self.cache_write - baseline.cache_write,
+        }
+    }
 }
 
 /// A token or cost figure as a provider reports it.
@@ -288,10 +345,89 @@ pub struct ChatContextUsage {
     /// False when the provider reports totals only (Codex).
     #[serde(default)]
     pub has_breakdown: bool,
+    /// Updated from a running turn's token counts rather than measured: totals are current,
+    /// the breakdown is the last measurement with the conversation grown or shrunk to match.
+    #[serde(default)]
+    pub live: bool,
     pub captured_at: i64,
 }
 
 impl ChatContextUsage {
+    /// A reading from a running turn's token count alone, before any measurement (the first
+    /// turn of a chat): the window's size isn't known yet.
+    pub fn from_live_total(used_tokens: u64, now: i64) -> Self {
+        Self {
+            model: None,
+            used_tokens,
+            window_tokens: 0,
+            categories: vec![ChatContextCategory {
+                id: "messages".to_owned(),
+                name: "Messages".to_owned(),
+                tokens: used_tokens,
+                kind: ChatContextKind::Used,
+            }],
+            groups: Vec::new(),
+            autocompact_at: None,
+            has_breakdown: false,
+            live: true,
+            captured_at: now,
+        }
+    }
+
+    /// Takes a running turn's count of what is in the window. The conversation slice (what
+    /// a turn adds to) absorbs the change and free space shrinks or grows to match; the other
+    /// slices keep their last measurement until the turn ends and the window is read again.
+    pub fn apply_live_total(&mut self, used_tokens: u64, now: i64) {
+        let conversation = self
+            .categories
+            .iter()
+            .position(|c| matches!(c.id.as_str(), "messages" | "conversation"))
+            .or_else(|| {
+                self.categories
+                    .iter()
+                    .rposition(|c| c.kind == ChatContextKind::Used)
+            });
+        let others: u64 = self
+            .categories
+            .iter()
+            .enumerate()
+            .filter(|(i, c)| c.kind == ChatContextKind::Used && Some(*i) != conversation)
+            .map(|(_, c)| c.tokens)
+            .sum();
+        let conversation_tokens = used_tokens.saturating_sub(others);
+        match conversation {
+            Some(i) => self.categories[i].tokens = conversation_tokens,
+            None => self.categories.insert(
+                0,
+                ChatContextCategory {
+                    id: "messages".to_owned(),
+                    name: "Messages".to_owned(),
+                    tokens: conversation_tokens,
+                    kind: ChatContextKind::Used,
+                },
+            ),
+        }
+        let reserved: u64 = self
+            .categories
+            .iter()
+            .filter(|c| c.kind == ChatContextKind::Buffer)
+            .map(|c| c.tokens)
+            .sum();
+        let free = self
+            .window_tokens
+            .saturating_sub(used_tokens.saturating_add(reserved));
+        if let Some(category) = self
+            .categories
+            .iter_mut()
+            .find(|c| c.kind == ChatContextKind::Free)
+        {
+            category.tokens = free;
+        }
+        self.used_tokens = used_tokens;
+        self.live = true;
+        self.captured_at = now;
+    }
+
     /// How full the window is, 0–100.
     pub fn used_percent(&self) -> u8 {
         if self.window_tokens == 0 {
@@ -350,6 +486,16 @@ pub struct ChatSession {
     /// The context window after the latest turn, when known.
     #[serde(default)]
     pub context: Option<ChatContextUsage>,
+    /// Tokens of the chat's finished turns, by kind (turns from before Bruk recorded kinds
+    /// are left out).
+    #[serde(default)]
+    pub token_breakdown: ChatTokenBreakdown,
+    /// The running turn's tokens so far, by kind.
+    #[serde(skip)]
+    pub turn_tokens: ChatTokenBreakdown,
+    /// The provider session's running total behind `turn_tokens`, when it reports one.
+    #[serde(skip)]
+    turn_session_total: Option<ChatTokenBreakdown>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -399,9 +545,26 @@ impl ChatSession {
             workspace: ChatWorkspace::Checkout,
             worktree: None,
             context: None,
+            token_breakdown: ChatTokenBreakdown::default(),
+            turn_tokens: ChatTokenBreakdown::default(),
+            turn_session_total: None,
             created_at: now,
             updated_at: now,
         }
+    }
+
+    /// Every token the chat used by kind, the running turn's so far included.
+    pub fn token_use(&self) -> ChatTokenBreakdown {
+        self.token_breakdown.plus(self.turn_tokens)
+    }
+
+    /// Adds the running turn's tokens to the chat's.
+    fn settle_turn_tokens(&mut self) {
+        self.token_breakdown = self.token_breakdown.plus(self.turn_tokens);
+        if let Some(total) = self.turn_session_total.take() {
+            self.provider_totals.breakdown = total;
+        }
+        self.turn_tokens = ChatTokenBreakdown::default();
     }
 
     /// What the chat's turns cost, in cents.
@@ -529,6 +692,28 @@ impl ChatSession {
                 self.context = Some(usage.clone());
                 return delta;
             }
+            ChatEvent::TokenUse { tokens, scope } => {
+                match scope {
+                    TokenScope::Turn => self.turn_tokens = *tokens,
+                    TokenScope::SessionTotal => {
+                        self.turn_tokens = tokens.since(self.provider_totals.breakdown);
+                        self.turn_session_total = Some(*tokens);
+                    }
+                }
+                return delta;
+            }
+            ChatEvent::ContextTokens { used_tokens } => {
+                if *used_tokens > 0 {
+                    match self.context.as_mut() {
+                        Some(context) => context.apply_live_total(*used_tokens, now),
+                        None => {
+                            self.context =
+                                Some(ChatContextUsage::from_live_total(*used_tokens, now));
+                        }
+                    }
+                }
+                return delta;
+            }
             ChatEvent::AssistantDelta { text } => {
                 if let Some(ChatEntry::Assistant {
                     text: body,
@@ -623,6 +808,7 @@ impl ChatSession {
             }
             ChatEvent::TurnFinished { status, error } => {
                 self.finish_streaming();
+                self.settle_turn_tokens();
                 let settled = if *status == ChatSessionStatus::Idle {
                     ChatToolStatus::Succeeded
                 } else {
@@ -749,11 +935,29 @@ pub enum ChatEvent {
     },
     /// A fresh reading of the context window.
     ContextUsage(ChatContextUsage),
+    /// How many tokens the window holds as of the running turn's latest model request.
+    ContextTokens {
+        used_tokens: u64,
+    },
+    /// The tokens the running turn has used so far by kind (each reading replaces the last).
+    TokenUse {
+        tokens: ChatTokenBreakdown,
+        scope: TokenScope,
+    },
     /// The turn ended: `Idle` when it succeeded.
     TurnFinished {
         status: ChatSessionStatus,
         error: Option<String>,
     },
+}
+
+/// What a [`ChatEvent::TokenUse`] reading covers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TokenScope {
+    /// The running turn alone.
+    Turn,
+    /// The provider session so far, earlier turns included.
+    SessionTotal,
 }
 
 /// One thing a provider CLI's JSON stream said, as chat turns read it.
@@ -771,6 +975,18 @@ pub enum ChatStreamItem {
         id: Option<String>,
         is_error: bool,
         detail: String,
+    },
+    /// The window holds this many tokens as of the latest model request (prompt, cache and
+    /// what the reply has written so far).
+    ContextTokens(u64),
+    /// A model request of the turn started, with its prompt's tokens (Claude).
+    RequestStarted(ChatTokenBreakdown),
+    /// The latest model request has written this many tokens (Claude).
+    RequestOutput(u64),
+    /// Tokens by kind as the provider totals them.
+    TokenUse {
+        tokens: ChatTokenBreakdown,
+        scope: TokenScope,
     },
     /// The end of the turn as the provider reports it.
     Result {
@@ -811,6 +1027,29 @@ pub fn parse_claude_chat_line(line: &str) -> Vec<ChatStreamItem> {
             let Some(event) = val.get("event") else {
                 return Vec::new();
             };
+            match event.get("type").and_then(Value::as_str) {
+                Some("message_start") => {
+                    let usage = event.get("message").and_then(|m| m.get("usage"));
+                    let mut items = Vec::new();
+                    if let Some(tokens) = claude_window_tokens(usage) {
+                        items.push(ChatStreamItem::ContextTokens(tokens));
+                        items.push(ChatStreamItem::RequestStarted(claude_token_breakdown(
+                            usage,
+                            CLAUDE_API_USAGE_KEYS,
+                        )));
+                    }
+                    return items;
+                }
+                Some("message_delta") => {
+                    return event
+                        .get("usage")
+                        .and_then(|u| u.get("output_tokens"))
+                        .and_then(Value::as_u64)
+                        .map(|output| vec![ChatStreamItem::RequestOutput(output)])
+                        .unwrap_or_default();
+                }
+                _ => {}
+            }
             let is_delta = event.get("type").and_then(Value::as_str) == Some("content_block_delta");
             let delta = event.get("delta");
             let is_text =
@@ -826,7 +1065,11 @@ pub fn parse_claude_chat_line(line: &str) -> Vec<ChatStreamItem> {
             let Some(blocks) = message_content(&val) else {
                 return Vec::new();
             };
-            let mut items = Vec::new();
+            let mut items: Vec<ChatStreamItem> =
+                claude_window_tokens(val.get("message").and_then(|m| m.get("usage")))
+                    .map(ChatStreamItem::ContextTokens)
+                    .into_iter()
+                    .collect();
             for block in blocks {
                 match block.get("type").and_then(Value::as_str) {
                     Some("text") => {
@@ -894,14 +1137,84 @@ pub fn parse_claude_chat_line(line: &str) -> Vec<ChatStreamItem> {
                     .or_else(|| (!subtype.is_empty()).then(|| subtype.replace('_', " ")));
             }
             let (tokens, cost_micros) = claude_turn_usage(&val);
-            vec![ChatStreamItem::Result {
+            let mut items = Vec::new();
+            let breakdown = claude_turn_breakdown(&val);
+            if !breakdown.is_zero() {
+                items.push(ChatStreamItem::TokenUse {
+                    tokens: breakdown,
+                    scope: TokenScope::Turn,
+                });
+            }
+            items.push(ChatStreamItem::Result {
                 text,
                 is_error,
                 tokens,
                 cost_micros,
-            }]
+            });
+            items
         }
         _ => Vec::new(),
+    }
+}
+
+/// What a Claude model request put in the window: its prompt (fresh, cached and newly cached
+/// input) and the reply's output so far. `None` without a usage block or when it counts nothing.
+fn claude_window_tokens(usage: Option<&Value>) -> Option<u64> {
+    let usage = usage?;
+    let total = [
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ]
+    .into_iter()
+    .map(|key| usage.get(key).and_then(Value::as_u64).unwrap_or(0))
+    .fold(0u64, u64::saturating_add);
+    (total > 0).then_some(total)
+}
+
+/// Keys of a Claude usage block, in [`ChatTokenBreakdown`] order (input, output, cache reads,
+/// cache writes): the API's in stream events and `usage`, Claude Code's in `modelUsage`.
+const CLAUDE_API_USAGE_KEYS: [&str; 4] = [
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+];
+const CLAUDE_MODEL_USAGE_KEYS: [&str; 4] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+];
+
+fn claude_token_breakdown(usage: Option<&Value>, keys: [&str; 4]) -> ChatTokenBreakdown {
+    let count = |key: &str| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    ChatTokenBreakdown {
+        input: count(keys[0]),
+        output: count(keys[1]),
+        cache_read: count(keys[2]),
+        cache_write: count(keys[3]),
+    }
+}
+
+/// A Claude `result` event's tokens by kind for the turn (every model it used, subagents
+/// included, when `model_usage_since_last_result` is there).
+fn claude_turn_breakdown(val: &Value) -> ChatTokenBreakdown {
+    match val
+        .get("model_usage_since_last_result")
+        .and_then(Value::as_object)
+    {
+        Some(models) => models
+            .values()
+            .map(|usage| claude_token_breakdown(Some(usage), CLAUDE_MODEL_USAGE_KEYS))
+            .fold(ChatTokenBreakdown::default(), ChatTokenBreakdown::plus),
+        None => claude_token_breakdown(val.get("usage"), CLAUDE_API_USAGE_KEYS),
     }
 }
 
@@ -1026,12 +1339,21 @@ pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {
             };
             // The thread's total so far (Codex restores it on `resume`); input includes the
             // cached part.
-            vec![ChatStreamItem::Result {
+            let mut items = Vec::new();
+            let breakdown = codex_token_breakdown(usage);
+            if !breakdown.is_zero() {
+                items.push(ChatStreamItem::TokenUse {
+                    tokens: breakdown,
+                    scope: TokenScope::SessionTotal,
+                });
+            }
+            items.push(ChatStreamItem::Result {
                 text: None,
                 is_error: false,
                 tokens: UsageCount::SessionTotal(count("input_tokens") + count("output_tokens")),
                 cost_micros: UsageCount::Turn(0),
-            }]
+            });
+            items
         }
         Some("turn.failed") => {
             let message = val
@@ -1044,6 +1366,23 @@ pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {
             .map(|m| vec![ChatStreamItem::Error(m)])
             .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+/// A Codex usage block by kind: its `input_tokens` include the cached part.
+fn codex_token_breakdown(usage: Option<&Value>) -> ChatTokenBreakdown {
+    let count = |key: &str| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    let cached = count("cached_input_tokens");
+    ChatTokenBreakdown {
+        input: count("input_tokens").saturating_sub(cached),
+        output: count("output_tokens"),
+        cache_read: cached,
+        cache_write: 0,
     }
 }
 
@@ -1110,12 +1449,33 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
                 string_field(result, "response")
             }
             .filter(|t| !t.trim().is_empty());
-            vec![ChatStreamItem::Result {
+            let usage = result.get("usage");
+            let count = |key: &str| {
+                usage
+                    .and_then(|u| u.get(key))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0)
+            };
+            let breakdown = ChatTokenBreakdown {
+                input: count("input_tokens"),
+                output: count("output_tokens").saturating_add(count("thinking_tokens")),
+                cache_read: count("cache_read_tokens"),
+                cache_write: 0,
+            };
+            let mut items = Vec::new();
+            if !breakdown.is_zero() {
+                items.push(ChatStreamItem::TokenUse {
+                    tokens: breakdown,
+                    scope: TokenScope::Turn,
+                });
+            }
+            items.push(ChatStreamItem::Result {
                 text,
                 is_error,
-                tokens: UsageCount::Turn(antigravity_usage_tokens(result.get("usage"))),
+                tokens: UsageCount::Turn(antigravity_usage_tokens(usage)),
                 cost_micros: UsageCount::Turn(0),
-            }]
+            });
+            items
         }
         Some("error") => string_field(&val, "message")
             .or_else(|| val.get("error").and_then(|e| string_field(e, "message")))
@@ -1706,6 +2066,15 @@ fn run_chat_turn(
     let mut result_error: Option<String> = None;
     let mut last_error: Option<String> = None;
     let mut stray_output: Vec<String> = Vec::new();
+    // Codex streams no token counts; its rollout file records one after each model request.
+    // Claude's requests of this turn: the finished ones' tokens and the latest one's.
+    let mut finished_requests = ChatTokenBreakdown::default();
+    let mut latest_request: Option<ChatTokenBreakdown> = None;
+    let mut codex_live = (request.provider == ProviderKind::Codex).then(|| CodexLiveContext {
+        thread_id: request.resume_session_id.clone(),
+        rollout: None,
+        last_read: None,
+    });
 
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
@@ -1722,10 +2091,52 @@ fn run_chat_turn(
                 }
                 continue;
             }
+            if let Some(live) = codex_live.as_mut() {
+                if let Some(ChatStreamItem::SessionStarted(id)) = items
+                    .iter()
+                    .find(|item| matches!(item, ChatStreamItem::SessionStarted(_)))
+                {
+                    live.thread_id = Some(id.clone());
+                }
+                if let Some((usage, totals)) = live.read(&request.runtime_dir) {
+                    let _ = tx.send(ChatEvent::ContextUsage(usage));
+                    if let Some(tokens) = totals {
+                        let _ = tx.send(ChatEvent::TokenUse {
+                            tokens,
+                            scope: TokenScope::SessionTotal,
+                        });
+                    }
+                }
+            }
             for item in items {
                 let event = match item {
                     ChatStreamItem::SessionStarted(session_id) => {
                         ChatEvent::ProviderSessionStarted { session_id }
+                    }
+                    ChatStreamItem::ContextTokens(used_tokens) => {
+                        ChatEvent::ContextTokens { used_tokens }
+                    }
+                    ChatStreamItem::RequestStarted(prompt) => {
+                        if let Some(previous) = latest_request.replace(prompt) {
+                            finished_requests = finished_requests.plus(previous);
+                        }
+                        ChatEvent::TokenUse {
+                            tokens: finished_requests.plus(prompt),
+                            scope: TokenScope::Turn,
+                        }
+                    }
+                    ChatStreamItem::RequestOutput(output) => {
+                        let Some(latest) = latest_request.as_mut() else {
+                            continue;
+                        };
+                        latest.output = output;
+                        ChatEvent::TokenUse {
+                            tokens: finished_requests.plus(*latest),
+                            scope: TokenScope::Turn,
+                        }
+                    }
+                    ChatStreamItem::TokenUse { tokens, scope } => {
+                        ChatEvent::TokenUse { tokens, scope }
                     }
                     ChatStreamItem::TextDelta(text) => {
                         saw_text = true;
@@ -1812,6 +2223,42 @@ fn run_chat_turn(
         ChatSessionStatus::Failed,
         Some(truncate_chars(&message, ERROR_MAX_CHARS)),
     ))
+}
+
+/// How often a running Codex turn's rollout is read for its latest token count.
+const CODEX_LIVE_CONTEXT_INTERVAL: Duration = Duration::from_millis(1500);
+
+/// Follows a running Codex turn's context window through its rollout file.
+struct CodexLiveContext {
+    thread_id: Option<String>,
+    rollout: Option<PathBuf>,
+    last_read: Option<Instant>,
+}
+
+impl CodexLiveContext {
+    /// The window as the rollout last recorded it, at most every
+    /// [`CODEX_LIVE_CONTEXT_INTERVAL`].
+    fn read(
+        &mut self,
+        runtime_dir: &Path,
+    ) -> Option<(ChatContextUsage, Option<ChatTokenBreakdown>)> {
+        if self
+            .last_read
+            .is_some_and(|at| at.elapsed() < CODEX_LIVE_CONTEXT_INTERVAL)
+        {
+            return None;
+        }
+        let thread_id = self.thread_id.as_deref()?;
+        self.last_read = Some(Instant::now());
+        if self.rollout.is_none() {
+            let sessions = runtime_dir.join(ISOLATED_CODEX_HOME_DIR).join("sessions");
+            self.rollout = find_codex_rollout(&sessions, thread_id);
+        }
+        let contents = std::fs::read_to_string(self.rollout.as_ref()?).ok()?;
+        let mut usage = parse_codex_rollout_context(&contents, crate::current_unix_seconds())?;
+        usage.live = true;
+        Some((usage, parse_codex_rollout_token_totals(&contents)))
+    }
 }
 
 /// Reads how the chat's context window is filled now. Claude Code answers a
@@ -2026,6 +2473,7 @@ pub fn parse_claude_context_usage(report: &Value, now: i64) -> Option<ChatContex
         groups,
         autocompact_at,
         has_breakdown: true,
+        live: false,
         captured_at: now,
     })
 }
@@ -2114,6 +2562,7 @@ fn read_antigravity_chat_context(
         groups: Vec::new(),
         autocompact_at: None,
         has_breakdown: false,
+        live: false,
         captured_at: now,
     })
 }
@@ -2161,6 +2610,22 @@ fn find_codex_rollout(sessions_dir: &Path, thread_id: &str) -> Option<PathBuf> {
         }
     }
     newest.map(|(_, path)| path)
+}
+
+/// The thread's running token totals by kind, from the latest token count in a Codex rollout
+/// file.
+pub fn parse_codex_rollout_token_totals(contents: &str) -> Option<ChatTokenBreakdown> {
+    contents.lines().rev().find_map(|line| {
+        let val = serde_json::from_str::<Value>(line.trim()).ok()?;
+        let payload = val.get("payload")?;
+        if val.get("type").and_then(Value::as_str) != Some("event_msg")
+            || payload.get("type").and_then(Value::as_str) != Some("token_count")
+        {
+            return None;
+        }
+        let totals = payload.get("info")?.get("total_token_usage")?;
+        Some(codex_token_breakdown(Some(totals))).filter(|b| !b.is_zero())
+    })
 }
 
 /// Reads the latest token count in a Codex rollout file. Codex reports how much of the window
@@ -2232,6 +2697,7 @@ pub fn parse_codex_rollout_context(contents: &str, now: i64) -> Option<ChatConte
         groups: Vec::new(),
         autocompact_at: None,
         has_breakdown: false,
+        live: false,
         captured_at: now,
     })
 }
@@ -2423,24 +2889,45 @@ mod tests {
             parse_claude_chat_line(
                 r#"{"type":"result","subtype":"success","is_error":false,"result":"Done","total_cost_usd":0.042,"usage":{"input_tokens":300,"output_tokens":50}}"#
             ),
-            vec![ChatStreamItem::Result {
-                text: Some("Done".to_owned()),
-                is_error: false,
-                tokens: UsageCount::Turn(350),
-                cost_micros: UsageCount::SessionTotal(42_000),
-            }]
+            vec![
+                ChatStreamItem::TokenUse {
+                    tokens: ChatTokenBreakdown {
+                        input: 300,
+                        output: 50,
+                        ..ChatTokenBreakdown::default()
+                    },
+                    scope: TokenScope::Turn,
+                },
+                ChatStreamItem::Result {
+                    text: Some("Done".to_owned()),
+                    is_error: false,
+                    tokens: UsageCount::Turn(350),
+                    cost_micros: UsageCount::SessionTotal(42_000),
+                }
+            ]
         );
         // Per-turn figures, when Claude Code gives them, beat its session-wide cost.
         assert_eq!(
             parse_claude_chat_line(
                 r#"{"type":"result","subtype":"success","is_error":false,"result":"two","total_cost_usd":0.0724,"usage":{"input_tokens":4,"cache_creation_input_tokens":14,"cache_read_input_tokens":17631,"output_tokens":3},"model_usage_since_last_result":{"claude-sonnet-5-5":{"inputTokens":4,"outputTokens":3,"cacheReadInputTokens":17631,"cacheCreationInputTokens":14,"costUSD":0.0018571},"claude-haiku-5-5":{"inputTokens":100,"outputTokens":20,"costUSD":0.0001}}}"#
             ),
-            vec![ChatStreamItem::Result {
-                text: Some("two".to_owned()),
-                is_error: false,
-                tokens: UsageCount::Turn(17_772),
-                cost_micros: UsageCount::Turn(1_957),
-            }]
+            vec![
+                ChatStreamItem::TokenUse {
+                    tokens: ChatTokenBreakdown {
+                        input: 104,
+                        output: 23,
+                        cache_read: 17_631,
+                        cache_write: 14,
+                    },
+                    scope: TokenScope::Turn,
+                },
+                ChatStreamItem::Result {
+                    text: Some("two".to_owned()),
+                    is_error: false,
+                    tokens: UsageCount::Turn(17_772),
+                    cost_micros: UsageCount::Turn(1_957),
+                }
+            ]
         );
         assert_eq!(
             parse_claude_chat_line(
@@ -2503,12 +2990,23 @@ mod tests {
             parse_codex_chat_line(
                 r#"{"type":"turn.completed","usage":{"input_tokens":1000,"cached_input_tokens":600,"output_tokens":20}}"#
             ),
-            vec![ChatStreamItem::Result {
-                text: None,
-                is_error: false,
-                tokens: UsageCount::SessionTotal(1020),
-                cost_micros: UsageCount::Turn(0),
-            }]
+            vec![
+                ChatStreamItem::TokenUse {
+                    tokens: ChatTokenBreakdown {
+                        input: 400,
+                        output: 20,
+                        cache_read: 600,
+                        cache_write: 0,
+                    },
+                    scope: TokenScope::SessionTotal,
+                },
+                ChatStreamItem::Result {
+                    text: None,
+                    is_error: false,
+                    tokens: UsageCount::SessionTotal(1020),
+                    cost_micros: UsageCount::Turn(0),
+                }
+            ]
         );
         assert_eq!(
             parse_codex_chat_line(r#"{"type":"turn.failed","error":{"message":"quota"}}"#),
@@ -2749,6 +3247,7 @@ mod tests {
                 groups: Vec::new(),
                 autocompact_at: None,
                 has_breakdown: true,
+                live: false,
                 captured_at: 99,
             }),
             99,
@@ -2758,6 +3257,174 @@ mod tests {
             chat.context.as_ref().map(ChatContextUsage::used_percent),
             Some(10)
         );
+    }
+
+    #[test]
+    fn claude_streams_how_full_the_window_is() {
+        assert_eq!(
+            parse_claude_chat_line(
+                r#"{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":5,"cache_creation_input_tokens":100,"cache_read_input_tokens":4000,"output_tokens":1}}}}"#
+            ),
+            vec![
+                ChatStreamItem::ContextTokens(4_106),
+                ChatStreamItem::RequestStarted(ChatTokenBreakdown {
+                    input: 5,
+                    output: 1,
+                    cache_read: 4_000,
+                    cache_write: 100,
+                })
+            ]
+        );
+        assert_eq!(
+            parse_claude_chat_line(
+                r#"{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}}"#
+            ),
+            vec![ChatStreamItem::RequestOutput(42)]
+        );
+        assert_eq!(
+            parse_claude_chat_line(
+                r#"{"type":"assistant","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":4100,"output_tokens":60},"content":[{"type":"text","text":"Hi"}]}}"#
+            ),
+            vec![
+                ChatStreamItem::ContextTokens(4_165),
+                ChatStreamItem::Text("Hi".to_owned())
+            ]
+        );
+        // A subagent's requests fill its own window, not the chat's.
+        assert!(
+            parse_claude_chat_line(
+                r#"{"type":"stream_event","parent_tool_use_id":"toolu_1","event":{"type":"message_start","message":{"usage":{"input_tokens":900}}}}"#
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn token_use_follows_the_running_turn_and_settles_when_it_ends() {
+        let mut chat = ChatSession::new(
+            "c1",
+            1,
+            "repo",
+            ProviderKind::Codex,
+            None,
+            None,
+            ProjectSandboxMode::default(),
+            10,
+        );
+        let tokens = |input, output, cache_read| ChatTokenBreakdown {
+            input,
+            output,
+            cache_read,
+            cache_write: 0,
+        };
+        let finish = ChatEvent::TurnFinished {
+            status: ChatSessionStatus::Idle,
+            error: None,
+        };
+        chat.apply_event(&ChatEvent::TurnStarted, 11);
+        chat.apply_event(
+            &ChatEvent::TokenUse {
+                tokens: tokens(100, 10, 0),
+                scope: TokenScope::SessionTotal,
+            },
+            11,
+        );
+        assert_eq!(chat.token_use(), tokens(100, 10, 0));
+        chat.apply_event(&finish, 12);
+        assert_eq!(chat.token_breakdown, tokens(100, 10, 0));
+        assert!(chat.turn_tokens.is_zero());
+
+        // A session's running totals count only what the new turn added, as it goes.
+        chat.apply_event(&ChatEvent::TurnStarted, 13);
+        for (seen, total) in [(tokens(150, 20, 80), 250), (tokens(200, 30, 300), 530)] {
+            chat.apply_event(
+                &ChatEvent::TokenUse {
+                    tokens: seen,
+                    scope: TokenScope::SessionTotal,
+                },
+                13,
+            );
+            assert_eq!(chat.token_use().total(), total);
+        }
+        chat.apply_event(&finish, 14);
+        assert_eq!(chat.token_breakdown, tokens(200, 30, 300));
+    }
+
+    #[test]
+    fn live_token_counts_grow_the_conversation_and_shrink_free_space() {
+        let mut chat = ChatSession::new(
+            "c1".to_owned(),
+            1,
+            "repo".to_owned(),
+            ProviderKind::Claude,
+            None,
+            None,
+            ProjectSandboxMode::default(),
+            10,
+        );
+        // Before any measurement the total is all there is.
+        chat.apply_event(&ChatEvent::ContextTokens { used_tokens: 900 }, 11);
+        let first = chat.context.clone().unwrap();
+        assert_eq!((first.used_tokens, first.window_tokens), (900, 0));
+        assert!(first.live);
+
+        chat.apply_event(
+            &ChatEvent::ContextUsage(ChatContextUsage {
+                model: None,
+                used_tokens: 4_000,
+                window_tokens: 200_000,
+                categories: vec![
+                    ChatContextCategory {
+                        id: "system_prompt".to_owned(),
+                        name: "System prompt".to_owned(),
+                        tokens: 3_000,
+                        kind: ChatContextKind::Used,
+                    },
+                    ChatContextCategory {
+                        id: "messages".to_owned(),
+                        name: "Messages".to_owned(),
+                        tokens: 1_000,
+                        kind: ChatContextKind::Used,
+                    },
+                    ChatContextCategory {
+                        id: "autocompact_buffer".to_owned(),
+                        name: "Autocompact buffer".to_owned(),
+                        tokens: 33_000,
+                        kind: ChatContextKind::Buffer,
+                    },
+                    ChatContextCategory {
+                        id: "free_space".to_owned(),
+                        name: "Free space".to_owned(),
+                        tokens: 163_000,
+                        kind: ChatContextKind::Free,
+                    },
+                ],
+                groups: Vec::new(),
+                autocompact_at: None,
+                has_breakdown: true,
+                live: false,
+                captured_at: 12,
+            }),
+            12,
+        );
+        chat.apply_event(&ChatEvent::ContextTokens { used_tokens: 6_500 }, 13);
+        let live = chat.context.clone().unwrap();
+        let tokens: Vec<(&str, u64)> = live
+            .categories
+            .iter()
+            .map(|c| (c.id.as_str(), c.tokens))
+            .collect();
+        assert_eq!(
+            tokens,
+            vec![
+                ("system_prompt", 3_000),
+                ("messages", 3_500),
+                ("autocompact_buffer", 33_000),
+                ("free_space", 160_500),
+            ]
+        );
+        assert_eq!((live.used_tokens, live.captured_at), (6_500, 13));
+        assert!(live.live && live.has_breakdown);
     }
 
     #[test]
