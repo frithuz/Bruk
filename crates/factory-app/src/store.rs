@@ -14,23 +14,23 @@ use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
     AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
     AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
-    CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSession, ChatSessionStatus,
-    ChatSessionSummary, ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace,
-    ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
-    ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions,
-    CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset,
-    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
-    DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState,
-    FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError,
-    HomeResolution, InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind,
-    LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform,
-    MachineRecord, MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project,
-    ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab,
-    ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail,
-    RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus,
-    RunnerEvent, SkillDef, StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode,
-    Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun,
-    WorkflowRun, WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind,
+    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSession,
+    ChatSessionStatus, ChatSessionSummary, ChatTurnControl, ChatTurnRequest, ChatUsageDelta,
+    ChatWorkspace, ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue,
+    ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue,
+    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef, CoreUpdatePolicy,
+    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView,
+    DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection, ExitField, ExitOperator,
+    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment,
+    HomeError, HomeResolution, InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode,
+    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
+    MachinePlatform, MachineRecord, MachinesFleet, NewMachineDraft, PersistedWorkflowRun,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
+    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
+    RunStatus, RunnerEvent, SkillDef, StepTypeKind, StorageError, ValidationReport,
+    WorkQueueViewMode, Workflow, WorkflowDef, WorkflowEditorDocument, WorkflowId, WorkflowNodeDef,
+    WorkflowRecentRun, WorkflowRun, WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind,
     WorkflowTriggersDef, WorkflowsFilter, WorkflowsSort, add_github_issue_label,
     apply_runner_event_to_view_data, chat_worktree_branch, clone_repository, current_unix_seconds,
     detect_git_remote_info, display_with_tilde, fetch_antigravity_details, fetch_claude_details,
@@ -248,6 +248,8 @@ struct AppState {
     chat_new_agent: Option<String>,
     chat_new_sandbox: Option<ProjectSandboxMode>,
     chat_new_workspace: Option<ChatWorkspace>,
+    /// Files waiting in the composer to go with the next message.
+    chat_pending_attachments: Vec<PendingChatAttachment>,
     /// Whether chats show their context-window panel.
     chat_context_open: bool,
     /// Chats whose context window is being read.
@@ -739,6 +741,7 @@ impl AppState {
             chat_new_agent: None,
             chat_new_sandbox: None,
             chat_new_workspace: None,
+            chat_pending_attachments: Vec::new(),
             chat_context_open: false,
             chat_context_loading: BTreeSet::new(),
             chat_context_errors: BTreeMap::new(),
@@ -2587,6 +2590,7 @@ impl AppState {
     fn begin_chat_turn(
         &mut self,
         text: &str,
+        attachment_sources: &[std::path::PathBuf],
         now: i64,
     ) -> Result<(String, ChatTurnRequest), String> {
         let pid = self
@@ -2636,7 +2640,8 @@ impl AppState {
             }
         };
 
-        let worktree_dir = self.chat_runtime_dir(&chat_id).join("worktree");
+        let chat_dir = self.chat_runtime_dir(&chat_id);
+        let worktree_dir = chat_dir.join("worktree");
         let branch_prefix = self
             .project_settings
             .get(&project.name)
@@ -2651,7 +2656,9 @@ impl AppState {
                 "Wait for the reply, or stop it, before sending another message".to_owned(),
             );
         }
-        session.push_user_message(text, now);
+        let uploads = factory_core::plan_chat_attachments(&chat_dir, attachment_sources)?;
+        let attachments = uploads.iter().map(|u| u.attachment.clone()).collect();
+        session.push_user_message_with_attachments(text, attachments, now);
         if session.workspace == ChatWorkspace::Worktree && session.worktree.is_none() {
             // Named after the first message; the first turn creates it.
             session.worktree = Some(ChatWorktree {
@@ -2663,7 +2670,10 @@ impl AppState {
         self.persist_chat(&chat_id);
 
         match self.chat_turn_request(&chat_id, text) {
-            Ok(request) => Ok((chat_id, request)),
+            Ok(mut request) => {
+                request.attachments = uploads;
+                Ok((chat_id, request))
+            }
             Err(message) => {
                 if let Some(session) = self.chat_sessions.get_mut(&chat_id) {
                     session.apply_event(
@@ -2728,6 +2738,7 @@ impl AppState {
             sandbox: session.sandbox,
             resume_session_id: session.provider_session_id.clone(),
             prompt: prompt.to_owned(),
+            attachments: Vec::new(),
             working_dir,
             worktree,
             runtime_dir: self.chat_runtime_dir(chat_id),
@@ -2950,17 +2961,23 @@ pub(crate) fn set_active_chat_sandbox(mode: ProjectSandboxMode) {
 /// was sent.
 pub(crate) fn send_chat_message(text: &str) -> bool {
     let text = text.trim().to_owned();
-    if text.is_empty() {
-        return false;
-    }
     let now = current_unix_seconds();
     let mut prepared = None;
     state().update(|s| {
-        prepared = Some(s.begin_chat_turn(&text, now));
+        if text.is_empty() && s.chat_pending_attachments.is_empty() {
+            return;
+        }
+        let sources: Vec<std::path::PathBuf> = s
+            .chat_pending_attachments
+            .iter()
+            .map(|a| a.path.clone())
+            .collect();
+        prepared = Some(s.begin_chat_turn(&text, &sources, now));
         if let Some(Err(message)) = &prepared {
             s.status_message = Some(message.clone());
         } else {
             s.status_message = None;
+            s.chat_pending_attachments.clear();
         }
     });
     match prepared {
@@ -2969,6 +2986,145 @@ pub(crate) fn send_chat_message(text: &str) -> bool {
             true
         }
         _ => false,
+    }
+}
+
+/// A file waiting in the composer to go with the next message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingChatAttachment {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) name: String,
+    pub(crate) mime_type: String,
+    pub(crate) size_bytes: u64,
+}
+
+impl PendingChatAttachment {
+    pub(crate) fn is_image(&self) -> bool {
+        factory_core::is_model_image_type(&self.mime_type)
+    }
+}
+
+/// Files waiting in the composer, in the order they were added.
+pub(crate) fn chat_pending_attachments() -> Vec<PendingChatAttachment> {
+    state().with(|s| s.chat_pending_attachments.clone())
+}
+
+/// Adds files to the next message; reports the ones that can't be attached (folders, missing
+/// or too large files). A file already waiting is not added again.
+pub(crate) fn add_chat_attachments(paths: Vec<std::path::PathBuf>) {
+    let mut added = Vec::new();
+    let mut problems = Vec::new();
+    for path in paths {
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_dir() => problems.push(format!("{name} is a folder")),
+            Ok(meta) if meta.len() > CHAT_ATTACHMENT_MAX_BYTES => problems.push(format!(
+                "{name} is larger than {}",
+                factory_core::format_bytes(CHAT_ATTACHMENT_MAX_BYTES)
+            )),
+            Ok(meta) => added.push(PendingChatAttachment {
+                mime_type: factory_core::attachment_mime_type(&path).to_owned(),
+                size_bytes: meta.len(),
+                name,
+                path,
+            }),
+            Err(err) => problems.push(format!("Couldn't read {name}: {err}")),
+        }
+    }
+    state().update(|s| {
+        for attachment in added {
+            if !s
+                .chat_pending_attachments
+                .iter()
+                .any(|a| a.path == attachment.path)
+            {
+                s.chat_pending_attachments.push(attachment);
+            }
+        }
+        s.status_message =
+            (!problems.is_empty()).then(|| format!("Couldn't attach: {}.", problems.join("; ")));
+    });
+}
+
+/// Adds files given as `file:` URLs (a drop, a paste from Finder).
+pub(crate) fn add_chat_attachment_uris(uris: &[String]) {
+    let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| file_uri_to_path(u)).collect();
+    if !paths.is_empty() {
+        add_chat_attachments(paths);
+    }
+}
+
+/// Attaches pasted bytes (a screenshot) by saving them to a file of their own first.
+pub(crate) fn add_pasted_chat_attachment(name: &str, data: &[u8]) {
+    let dir = std::env::temp_dir().join("bruk-pasted");
+    let seq = chat_registry()
+        .lock()
+        .map(|mut reg| {
+            reg.seq += 1;
+            reg.seq
+        })
+        .unwrap_or(0);
+    let name = std::path::Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| "pasted".to_owned());
+    // Its own folder keeps the file's name, which the chat shows.
+    let path = dir
+        .join(format!("{}-{seq}", current_unix_seconds()))
+        .join(&name);
+    let written = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(&path, data));
+    match written {
+        Ok(()) => add_chat_attachments(vec![path]),
+        Err(err) => set_status_message(format!("Couldn't attach the pasted {name}: {err}")),
+    }
+}
+
+pub(crate) fn remove_chat_attachment(path: &std::path::Path) {
+    state().update(|s| s.chat_pending_attachments.retain(|a| a.path != path));
+}
+
+/// The local path of a `file:` URL (percent-decoded); `None` for other URLs.
+pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+    let rest = uri.strip_prefix("file://")?;
+    // `file://localhost/path` and `file:///path` both name `/path`.
+    let rest = rest.strip_prefix("localhost").unwrap_or(rest);
+    if !rest.starts_with('/') {
+        return None;
+    }
+    let bytes = rest.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let (Some(hi), Some(lo)) = (hex_digit(bytes[i + 1]), hex_digit(bytes[i + 2]))
+        {
+            decoded.push(hi * 16 + lo);
+            i += 3;
+            continue;
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(decoded)
+        .ok()
+        .map(std::path::PathBuf::from)
+}
+
+fn hex_digit(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
     }
 }
 

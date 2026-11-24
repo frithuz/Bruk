@@ -21,7 +21,7 @@ Everything Bruk stores lives in one folder, `~/Bruk` by default:
 ├── bruk.db           SQLite: projects, preferences, project settings, secrets, run history, chats and their token use
 ├── projects/<name>/  Repositories Bruk cloned for you
 ├── runs/<run-id>/    Per-run step bundles and isolated git worktrees
-├── chats/<chat-id>/  Per-chat agent instructions, Codex's isolated home, and the chat's worktree
+├── chats/<chat-id>/  Per-chat agent instructions, Codex's isolated home, attachments, and the chat's worktree
 └── cache/modules/    Git modules fetched for .agents/bruk/bruk.yaml
 ```
 
@@ -62,6 +62,15 @@ session (`claude --resume <id>`, `codex exec … resume <id>`, `agy --conversati
 conversation. Turns get the same user-context isolation as workflow steps: only the chosen agent
 and the skills and subagents it declares, plus the repository's own instructions. Replies stream
 in as Markdown, with tool calls shown inline; transcripts are kept in `bruk.db`.
+
+**Attachments**: drop files on the chat, paste them into the composer (a screenshot, or files
+copied in Finder), or pick them with the paper clip. Any file up to 100 MB can go with a message.
+When it's sent, each file is copied into `chats/<chat-id>/attachments/`, so the chat keeps its
+own copy, deleted along with the chat. The message lists every attachment's path, and the folder
+is added to what the agent may read (`--add-dir`). PNG, JPEG, GIF and WebP images also go to the
+model directly: Claude gets them as image blocks of a stream-json message (up to 3.75 MB each;
+larger ones are passed by path only), and Codex gets them with `--image`. Antigravity reads every
+attachment by path.
 
 After each reply Bruk measures the agent's **context window**: the header shows how full it is,
 and the Context panel breaks it down. For Claude the breakdown covers system prompt, tools,

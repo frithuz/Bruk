@@ -32,6 +32,10 @@ use serde_json::Value;
 use thiserror::Error;
 
 use crate::{
+    chat_attachment::{
+        ChatAttachment, ChatAttachmentUpload, claude_inline_images, claude_user_message_line,
+        prompt_with_attachments, stage_chat_attachments,
+    },
     claude_settings::ClaudeSpawnSettings,
     codex_settings::CodexSpawnSettings,
     definitions::{AgentTaskStepDef, BrukCatalog},
@@ -109,6 +113,9 @@ pub enum ChatEntry {
         text: String,
         #[serde(default)]
         sent_at: i64,
+        /// Files sent with the message (the chat's own copies).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        attachments: Vec<ChatAttachment>,
     },
     /// A reply of the agent (Markdown). `streaming` while its text is still arriving.
     Assistant {
@@ -442,6 +449,10 @@ impl ChatSession {
                 {
                     Some(single_line(text, PREVIEW_MAX_CHARS))
                 }
+                ChatEntry::User { attachments, .. } if !attachments.is_empty() => {
+                    let names: Vec<&str> = attachments.iter().map(|a| a.name.as_str()).collect();
+                    Some(single_line(&names.join(", "), PREVIEW_MAX_CHARS))
+                }
                 _ => None,
             })
             .unwrap_or_default()
@@ -462,16 +473,31 @@ impl ChatSession {
 
     /// Records a message the user sent; the first one names the chat.
     pub fn push_user_message(&mut self, text: &str, now: i64) {
+        self.push_user_message_with_attachments(text, Vec::new(), now);
+    }
+
+    /// Records a message the user sent with files attached (either may be empty, not both);
+    /// the first message names the chat, after its first attachment when it has no text.
+    pub fn push_user_message_with_attachments(
+        &mut self,
+        text: &str,
+        attachments: Vec<ChatAttachment>,
+        now: i64,
+    ) {
         let text = text.trim();
-        if text.is_empty() {
+        if text.is_empty() && attachments.is_empty() {
             return;
         }
         if self.title.trim().is_empty() {
-            self.title = chat_title_from_message(text);
+            self.title = match attachments.first() {
+                Some(first) if text.is_empty() => chat_title_from_message(&first.name),
+                _ => chat_title_from_message(text),
+            };
         }
         self.entries.push(ChatEntry::User {
             text: text.to_owned(),
             sent_at: now,
+            attachments,
         });
         self.updated_at = now;
     }
@@ -1305,6 +1331,8 @@ pub enum ChatTurnError {
     UnsupportedProvider(&'static str),
     #[error("{0}")]
     StepContext(#[from] StepContextError),
+    #[error("{0}")]
+    Attachment(String),
 }
 
 /// Everything one chat turn needs, resolved by the caller from the session, the project,
@@ -1319,6 +1347,8 @@ pub struct ChatTurnRequest {
     /// The provider session to resume; `None` starts the conversation.
     pub resume_session_id: Option<String>,
     pub prompt: String,
+    /// Files sent with `prompt`, copied into the chat's folder before the provider starts.
+    pub attachments: Vec<ChatAttachmentUpload>,
     /// Where the agent works: the project's root, or the chat's worktree.
     pub working_dir: PathBuf,
     /// The chat's worktree (at `working_dir`), created by the turn when missing.
@@ -1411,7 +1441,20 @@ fn build_chat_command(
     request: &ChatTurnRequest,
     purpose: ChatCommandPurpose,
 ) -> Result<(Command, String), ChatTurnError> {
-    let prompt = request.prompt.trim().to_owned();
+    let attachments: Vec<ChatAttachment> = match purpose {
+        ChatCommandPurpose::Turn => request
+            .attachments
+            .iter()
+            .map(|upload| upload.attachment.clone())
+            .collect(),
+        ChatCommandPurpose::ContextQuery => Vec::new(),
+    };
+    let prompt = prompt_with_attachments(request.prompt.trim(), &attachments);
+    // The agent reads attachments from the chat's folder, outside its working directory.
+    let attachments_dir = attachments
+        .first()
+        .and_then(|a| a.path.parent())
+        .map(|dir| dir.to_string_lossy().into_owned());
     let step = AgentTaskStepDef {
         id: "chat".to_owned(),
         name: "Chat".to_owned(),
@@ -1460,10 +1503,23 @@ fn build_chat_command(
                 None,
                 &request.project_env,
             )?;
+            let mut stdin_text = prompt;
             match purpose {
                 ChatCommandPurpose::Turn => {
                     if !plan.args.iter().any(|a| a == "--include-partial-messages") {
                         plan.args.push("--include-partial-messages".to_owned());
+                    }
+                    if let Some(dir) = attachments_dir.as_deref() {
+                        plan.args.push(format!("--add-dir={dir}"));
+                    }
+                    // Images go in as image blocks of a stream-json message; plain text
+                    // messages stay plain text.
+                    let images = claude_inline_images(&attachments);
+                    if !images.is_empty() {
+                        stdin_text = claude_user_message_line(&stdin_text, &images)
+                            .map_err(ChatTurnError::Attachment)?;
+                        plan.args.push("--input-format".to_owned());
+                        plan.args.push("stream-json".to_owned());
                     }
                     if let Some(id) = resume {
                         plan.args.push("--resume".to_owned());
@@ -1483,7 +1539,7 @@ fn build_chat_command(
                     plan.args.push("--no-session-persistence".to_owned());
                 }
             }
-            Ok((plan.to_command(), prompt))
+            Ok((plan.to_command(), stdin_text))
         }
         ProviderKind::Codex => {
             let binary = request
@@ -1501,6 +1557,16 @@ fn build_chat_command(
             if let Some(id) = resume {
                 plan.args.push("resume".to_owned());
                 plan.args.push(id.to_owned());
+            }
+            let images: Vec<&ChatAttachment> =
+                attachments.iter().filter(|a| a.is_image()).collect();
+            for image in &images {
+                plan.args.push("--image".to_owned());
+                plan.args.push(image.path.to_string_lossy().into_owned());
+            }
+            if !images.is_empty() {
+                // `--image` takes several values: without `--` it would take `-` too.
+                plan.args.push("--".to_owned());
             }
             // `-`: read the prompt from stdin.
             plan.args.push("-".to_owned());
@@ -1521,6 +1587,9 @@ fn build_chat_command(
                 &materialized,
                 &request.project_env,
             );
+            if let Some(dir) = attachments_dir.as_deref() {
+                plan.args.push(format!("--add-dir={dir}"));
+            }
             // The message goes in as one NDJSON line on stdin, so it's never read as a flag.
             plan.args.push("--input-format".to_owned());
             plan.args.push("stream-json".to_owned());
@@ -1577,12 +1646,14 @@ fn run_chat_turn(
     control: &ChatTurnControl,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> Result<(ChatSessionStatus, Option<String>), ChatTurnError> {
-    let prompt = request.prompt.trim().to_owned();
-    if prompt.is_empty() {
+    if request.prompt.trim().is_empty() && request.attachments.is_empty() {
         return Err(ChatTurnError::EmptyMessage);
     }
     if control.is_stopped() {
         return Ok((ChatSessionStatus::Stopped, None));
+    }
+    if let Err(err) = stage_chat_attachments(&request.attachments) {
+        return Ok((ChatSessionStatus::Failed, Some(err)));
     }
     if let Some(setup) = request.worktree.as_ref() {
         match ensure_chat_worktree(setup) {
@@ -2541,6 +2612,7 @@ mod tests {
                 ChatEntry::User {
                     text: "Fix the flaky   retry test\nin billing".to_owned(),
                     sent_at: 101,
+                    attachments: Vec::new(),
                 },
                 ChatEntry::Assistant {
                     text: "Let me look.".to_owned(),
@@ -2820,6 +2892,7 @@ mod tests {
             sandbox: ProjectSandboxMode::ReadOnly,
             resume_session_id: None,
             prompt: "Explain {{ inputs.x }} -- please".to_owned(),
+            attachments: Vec::new(),
             working_dir: repo.clone(),
             worktree: None,
             runtime_dir: temp.path().join("chats").join("chat-1"),
@@ -2962,6 +3035,124 @@ echo "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":$((40 * turns))
         );
         // Codex reports the thread's running total (42, then 84): each turn counts once.
         assert_eq!(chat.total_tokens, 84);
+    }
+
+    fn attach(temp: &TempDir, req: &mut ChatTurnRequest, files: &[(&str, &[u8])]) {
+        let sources: Vec<PathBuf> = files
+            .iter()
+            .map(|(name, bytes)| {
+                let path = temp.path().join("drops").join(name);
+                fs::create_dir_all(path.parent().unwrap()).unwrap();
+                fs::write(&path, bytes).unwrap();
+                path
+            })
+            .collect();
+        req.attachments =
+            crate::chat_attachment::plan_chat_attachments(&req.runtime_dir, &sources).unwrap();
+    }
+
+    #[test]
+    fn claude_turns_send_attached_images_as_blocks_and_list_every_file() {
+        let temp = TempDir::new().unwrap();
+        let log = temp.path().join("calls.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "ARGS: $*" >> '{log}'
+printf 'STDIN: %s\n' "$(cat)" >> '{log}'
+echo '{{"type":"result","subtype":"success","is_error":false,"result":"A cat."}}'
+"#,
+            log = log.display()
+        );
+        let claude = write_script(temp.path(), "claude", &script);
+        let mut req = request(&temp, ProviderKind::Claude, &claude);
+        req.prompt = "What is this?".to_owned();
+        attach(
+            &temp,
+            &mut req,
+            &[("cat.png", &[1, 2, 3]), ("notes.pdf", b"%PDF")],
+        );
+        let mut chat = session();
+
+        assert_eq!(run_turn(&req, &mut chat), ChatSessionStatus::Idle);
+        let dir = temp.path().join("chats/chat-1/attachments");
+        assert_eq!(fs::read(dir.join("cat.png")).unwrap(), [1, 2, 3]);
+        assert!(dir.join("notes.pdf").is_file());
+
+        let calls = fs::read_to_string(&log).unwrap();
+        let args = calls.lines().next().unwrap();
+        assert!(args.contains("--input-format stream-json"), "{args}");
+        assert!(
+            args.contains(&format!("--add-dir={}", dir.display())),
+            "{args}"
+        );
+        let stdin = calls
+            .lines()
+            .nth(1)
+            .unwrap()
+            .strip_prefix("STDIN: ")
+            .unwrap();
+        let message: Value = serde_json::from_str(stdin).unwrap();
+        let content = &message["message"]["content"];
+        let text = content[0]["text"].as_str().unwrap();
+        assert!(
+            text.starts_with("What is this?\n\nI attached files."),
+            "{text}"
+        );
+        assert!(text.contains(&dir.join("notes.pdf").display().to_string()));
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["data"], "AQID");
+        assert_eq!(
+            content.as_array().unwrap().len(),
+            2,
+            "PDFs are read by path"
+        );
+    }
+
+    #[test]
+    fn codex_turns_pass_attached_images_with_image_flags() {
+        let temp = TempDir::new().unwrap();
+        let log = temp.path().join("calls.log");
+        let script = format!(
+            r#"#!/bin/sh
+echo "ARGS: $* STDIN=$(cat | tr '\n' ' ')" >> '{log}'
+echo '{{"type":"thread.started","thread_id":"t-1"}}'
+echo '{{"type":"item.completed","item":{{"id":"i","type":"agent_message","text":"Ok."}}}}'
+"#,
+            log = log.display()
+        );
+        let codex = write_script(temp.path(), "codex", &script);
+        let mut req = request(&temp, ProviderKind::Codex, &codex);
+        req.agent = None;
+        req.prompt = String::new();
+        req.resume_session_id = Some("t-0".to_owned());
+        attach(
+            &temp,
+            &mut req,
+            &[("ui.jpg", b"jpg"), ("build.log", b"oops")],
+        );
+        let mut chat = session();
+        chat.provider = ProviderKind::Codex;
+
+        assert_eq!(run_turn(&req, &mut chat), ChatSessionStatus::Idle);
+        let dir = temp.path().join("chats/chat-1/attachments");
+        let line = fs::read_to_string(&log).unwrap();
+        let image = dir.join("ui.jpg");
+        assert!(
+            line.contains(&format!(
+                " resume t-0 --image {} -- - STDIN=",
+                image.display()
+            )),
+            "{line}"
+        );
+        assert_eq!(
+            line.matches("--image").count(),
+            1,
+            "only images get --image: {line}"
+        );
+        assert!(
+            line.contains(&dir.join("build.log").display().to_string()),
+            "{line}"
+        );
     }
 
     #[test]

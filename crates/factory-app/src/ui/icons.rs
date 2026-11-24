@@ -529,3 +529,21 @@ pub(crate) fn arrow_up(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElem
     )
     .text_color(color)
 }
+
+/// Paper clip icon for attaching files to a chat message.
+pub(crate) fn paperclip(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M13.2 7.6 8.1 12.7a3.2 3.2 0 0 1-4.5-4.5l5.4-5.4a2.1 2.1 0 0 1 3 3L6.6 11.2a1.05 1.05 0 0 1-1.5-1.5l4.8-4.8"/></svg>"#,
+        15.0,
+    )
+    .text_color(color)
+}
+
+/// Document icon for an attached file that isn't an image.
+pub(crate) fn file_doc(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 1.9H4.6a1.2 1.2 0 0 0-1.2 1.2v9.8a1.2 1.2 0 0 0 1.2 1.2h6.8a1.2 1.2 0 0 0 1.2-1.2V5.3Z"/><path d="M9.2 1.9v3.4h3.4"/></svg>"#,
+        15.0,
+    )
+    .text_color(color)
+}

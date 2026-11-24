@@ -17,6 +17,7 @@ objc2-app-kit.workspace = true
 objc2-foundation.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 nsh-engine.workspace = true
 nsh-testing.workspace = true
 tempfile.workspace = true

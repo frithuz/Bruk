@@ -13,6 +13,7 @@ publish = false
 
 [workspace.dependencies]
 factory-core = { path = "crates/factory-core" }
+base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 dirs = "7"
 env_logger = "0.11"

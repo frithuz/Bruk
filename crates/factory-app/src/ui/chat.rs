@@ -4,12 +4,13 @@
 //! tool calls, notices) sits over a composer on the right, with an optional panel showing how
 //! the agent's context window is filled. A new chat picks its provider, agent, access, and
 //! where it works (the checkout or a worktree of its own) before the first message. Return
-//! sends; Shift+Return adds a line.
+//! sends; Shift+Return adds a line. Files (screenshots, logs, any binary) attach by dropping
+//! them on the chat, pasting them into the composer, or the paper clip button.
 
 use factory_core::{
-    ChatContextKind, ChatContextUsage, ChatEntry, ChatNoticeTone, ChatSessionSummary,
-    ChatToolStatus, ChatWorkspace, ProjectColor, ProjectSandboxMode, ProviderKind,
-    current_unix_seconds, format_currency, format_tokens,
+    ChatAttachment, ChatContextKind, ChatContextUsage, ChatEntry, ChatNoticeTone,
+    ChatSessionSummary, ChatToolStatus, ChatWorkspace, ProjectColor, ProjectSandboxMode,
+    ProviderKind, current_unix_seconds, format_bytes, format_currency, format_tokens,
 };
 use nsh_base::{
     SelectItem, SelectValue, TextViewPart, TextViewParts, button, input, select, text_view,
@@ -18,7 +19,7 @@ use nsh_base::{
 use nsh_core::prelude::*;
 
 use crate::{
-    store::{self, ActiveChatContext, ActiveChatMeta, ChatEntryRow},
+    store::{self, ActiveChatContext, ActiveChatMeta, ChatEntryRow, PendingChatAttachment},
     ui::{icons, palette},
 };
 
@@ -35,6 +36,8 @@ const CONTEXT_GROUP_SHOWN: usize = 8;
 pub(crate) fn chat_view() -> impl IntoElement {
     let draft = signal(String::new());
     let active_id = computed(store::active_chat_id);
+    // A file drag is over the conversation.
+    let dragging = signal(false);
 
     view()
         .flex_1()
@@ -45,9 +48,20 @@ pub(crate) fn chat_view() -> impl IntoElement {
         .child(chat_list_panel(active_id))
         .child(
             view()
+                .test_id("chat-drop-zone")
                 .flex_1()
                 .min_w(px(0.0))
                 .min_h(px(0.0))
+                .on_file_drag_enter(move || {
+                    dragging.set(store::selected_project_id().is_some());
+                })
+                .on_file_drag_leave(move || dragging.set(false))
+                .on_file_drop(move |event: &FileDropEvent| {
+                    dragging.set(false);
+                    if store::selected_project_id().is_some() {
+                        store::add_chat_attachment_uris(&event.uris);
+                    }
+                })
                 .child(dynamic(move || match active_id.get() {
                     Some(_) => chat_conversation().into_element(),
                     None => new_chat_intro().into_element(),
@@ -55,7 +69,45 @@ pub(crate) fn chat_view() -> impl IntoElement {
                 .child(when(
                     || store::selected_project_id().is_some(),
                     move || chat_composer(draft),
-                )),
+                ))
+                .child(when(move || dragging.get(), drop_overlay)),
+        )
+}
+
+/// Covers the conversation while files are dragged over it.
+fn drop_overlay() -> impl IntoElement {
+    view()
+        .absolute()
+        .top(px(0.0))
+        .right(px(0.0))
+        .bottom(px(0.0))
+        .left(px(0.0))
+        .pointer_events(PointerEvents::None)
+        .p(px(14.0))
+        .child(
+            view()
+                .flex_1()
+                .items_center()
+                .justify_center()
+                .gap(px(8.0))
+                .rounded(px(14.0))
+                .border_2()
+                .border_dashed()
+                .border_color(palette::link_blue())
+                .bg(palette::card_selected_bg())
+                .opacity(0.94)
+                .child(icons::paperclip(palette::link_blue()))
+                .child(
+                    text("Drop files to attach them")
+                        .text_size(px(15.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_primary()),
+                )
+                .child(
+                    text("Images go to the agent to look at; other files are passed by path.")
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                ),
         )
 }
 
@@ -1265,24 +1317,152 @@ fn chat_entry_view(row: ReadSignal<ChatEntryRow>) -> AnyElement {
 }
 
 fn user_message(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {
-    view().flex_row().justify_end().pl(px(64.0)).child(
-        view()
-            .px(px(13.0))
-            .py(px(9.0))
-            .rounded(px(12.0))
-            .bg(palette::subtle_surface_bg())
+    let text_of = move || match row.get().entry {
+        ChatEntry::User { text, .. } => text,
+        _ => String::new(),
+    };
+    let attachments = move || match row.get().entry {
+        ChatEntry::User { attachments, .. } => attachments,
+        _ => Vec::new(),
+    };
+
+    view()
+        .items_end()
+        .gap(px(6.0))
+        .pl(px(64.0))
+        .child(dynamic(move || {
+            let attachments = attachments();
+            if attachments.is_empty() {
+                return view().into_element();
+            }
+            let mut list = view().flex_row().flex_wrap().justify_end().gap(px(6.0));
+            for attachment in attachments {
+                list = list.child(sent_attachment(attachment));
+            }
+            list.into_element()
+        }))
+        .child(when(
+            move || !text_of().is_empty(),
+            move || {
+                view()
+                    .px(px(13.0))
+                    .py(px(9.0))
+                    .rounded(px(12.0))
+                    .bg(palette::subtle_surface_bg())
+                    .border_1()
+                    .border_color(palette::divider_color())
+                    .child(
+                        text(text_of)
+                            .selectable(true)
+                            .text_size(px(13.0))
+                            .text_color(palette::text_primary()),
+                    )
+            },
+        ))
+}
+
+/// A file sent with a message: a thumbnail for images, a chip for other files. Pressing it
+/// opens the chat's copy in its default app.
+fn sent_attachment(attachment: ChatAttachment) -> impl IntoElement {
+    let path = attachment.path.clone();
+    let open = move || {
+        let opened = path.clone();
+        let answer = nsh_core::element::open_path(opened.clone());
+        spawn(async move {
+            if answer.await.is_err() {
+                store::set_status_message(format!("Couldn't open '{}'.", opened.display()));
+            }
+        });
+    };
+    let label = format!("Open {}", attachment.name);
+    if attachment.is_image() {
+        return button()
+            .test_id("chat-sent-attachment")
+            .accessibility_label(label)
+            .on_press(open)
+            .rounded(px(10.0))
+            .overflow_hidden()
             .border_1()
             .border_color(palette::divider_color())
+            .active(|s| s.opacity(0.85))
             .child(
-                text(move || match row.get().entry {
-                    ChatEntry::User { text, .. } => text,
-                    _ => String::new(),
-                })
-                .selectable(true)
-                .text_size(px(13.0))
-                .text_color(palette::text_primary()),
-            ),
-    )
+                image(attachment.path.to_string_lossy().into_owned())
+                    .w(px(180.0))
+                    .h(px(120.0))
+                    .bg(palette::subtle_surface_bg()),
+            )
+            .into_element();
+    }
+    button()
+        .test_id("chat-sent-attachment")
+        .accessibility_label(label)
+        .on_press(open)
+        .child(file_chip(
+            attachment.name,
+            attachment.mime_type,
+            attachment.size_bytes,
+        ))
+        .active(|s| s.opacity(0.85))
+        .into_element()
+}
+
+/// A file's icon, name and size.
+fn file_chip(name: String, mime_type: String, size_bytes: u64) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .max_w(px(260.0))
+        .px(px(10.0))
+        .py(px(7.0))
+        .rounded(px(10.0))
+        .border_1()
+        .border_color(palette::divider_color())
+        .bg(palette::card_bg())
+        .child(icons::file_doc(palette::text_muted()))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(1.0))
+                .child(
+                    text(name)
+                        .truncate()
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                )
+                .child(
+                    text(format!(
+                        "{} · {}",
+                        file_kind(&mime_type),
+                        format_bytes(size_bytes)
+                    ))
+                    .truncate()
+                    .text_size(px(10.5))
+                    .text_color(palette::text_muted()),
+                ),
+        )
+}
+
+/// "PDF", "PNG", "Text", "File".
+fn file_kind(mime_type: &str) -> String {
+    match mime_type {
+        "application/pdf" => "PDF".to_owned(),
+        "application/octet-stream" | "" => "File".to_owned(),
+        "text/plain" => "Text".to_owned(),
+        other => other
+            .rsplit('/')
+            .next()
+            .map(|sub| {
+                sub.trim_start_matches("x-")
+                    .split('+')
+                    .next()
+                    .unwrap_or(sub)
+            })
+            .map(str::to_uppercase)
+            .unwrap_or_else(|| "File".to_owned()),
+    }
 }
 
 fn assistant_message(row: ReadSignal<ChatEntryRow>, provider: ProviderKind) -> impl IntoElement {
@@ -1471,6 +1651,8 @@ fn working_indicator(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
 fn chat_composer(draft: Signal<String>) -> impl IntoElement {
     let meta = computed(store::active_chat_meta);
     let running = computed(move || meta.get().is_some_and(|m| m.status.is_running()));
+    let pending = computed(store::chat_pending_attachments);
+    let has_pending = move || pending.with(|p| !p.is_empty());
     let submit = move || {
         if running.get_untracked() {
             return;
@@ -1492,16 +1674,20 @@ fn chat_composer(draft: Signal<String>) -> impl IntoElement {
                 .gap(px(5.0))
                 .child(
                     view()
-                        .flex_row()
-                        .items_end()
-                        .gap(px(10.0))
-                        .pl(px(14.0))
-                        .pr(px(7.0))
-                        .py(px(7.0))
                         .rounded(px(12.0))
                         .border_1()
                         .border_color(palette::border_color())
                         .bg(palette::card_bg())
+                        .child(when(has_pending, move || pending_attachments(pending)))
+                        .child(
+                    view()
+                        .flex_row()
+                        .items_end()
+                        .gap(px(8.0))
+                        .pl(px(7.0))
+                        .pr(px(7.0))
+                        .py(px(7.0))
+                        .child(attach_button())
                         .child(
                             input()
                                 .test_id("chat-composer-input")
@@ -1511,6 +1697,16 @@ fn chat_composer(draft: Signal<String>) -> impl IntoElement {
                                 .value(move || draft.get())
                                 .on_change(move |value: &str| draft.set(value.to_owned()))
                                 .on_submit(move |_: &str| submit())
+                                // Pasted screenshots and files copied in Finder attach; text
+                                // still goes in as typed.
+                                .on_paste(|paste: &PasteEvent| {
+                                    for file in &paste.files {
+                                        store::add_pasted_chat_attachment(&file.name, &file.data);
+                                    }
+                                    if !paste.uris.is_empty() {
+                                        store::add_chat_attachment_uris(&paste.uris);
+                                    }
+                                })
                                 .placeholder(move || match meta.get() {
                                     Some(meta) => format!("Message {}…", meta.agent_label),
                                     None => {
@@ -1556,7 +1752,9 @@ fn chat_composer(draft: Signal<String>) -> impl IntoElement {
                                 button()
                                     .test_id("chat-send-btn")
                                     .accessibility_label("Send")
-                                    .disabled(move || draft.with(|text| text.trim().is_empty()))
+                                    .disabled(move || {
+                                        draft.with(|text| text.trim().is_empty()) && !has_pending()
+                                    })
                                     .on_press(submit)
                                     .flex_row()
                                     .items_center()
@@ -1577,6 +1775,7 @@ fn chat_composer(draft: Signal<String>) -> impl IntoElement {
                                     .into_element()
                             }
                         })),
+                        ),
                 )
                 .child(
                     text(move || {
@@ -1595,11 +1794,109 @@ fn chat_composer(draft: Signal<String>) -> impl IntoElement {
                             }
                             None => "Works in the project checkout".to_owned(),
                         };
-                        format!("Return to send · Shift+Return for a new line · {place}")
+                        format!(
+                            "Return to send · Shift+Return for a new line · Drop or paste files to attach · {place}"
+                        )
                     })
                     .test_id("chat-composer-hint")
                     .text_size(px(10.5))
                     .text_color(palette::text_muted()),
                 ),
+        )
+}
+
+/// The paper clip: picks files to attach.
+fn attach_button() -> impl IntoElement {
+    button()
+        .test_id("chat-attach-btn")
+        .accessibility_label("Attach files")
+        .on_press(|| {
+            let answer = pick_paths(
+                nsh_core::file_dialog::OpenDialog::files()
+                    .multiple(true)
+                    .title("Attach Files")
+                    .button_label("Attach"),
+            );
+            spawn(async move {
+                match answer.await {
+                    Ok(Some(paths)) if !paths.is_empty() => store::add_chat_attachments(paths),
+                    Ok(_) => {}
+                    Err(err) => store::set_status_message(format!("Couldn't choose files: {err}")),
+                }
+            });
+        })
+        .w(px(30.0))
+        .h(px(30.0))
+        .rounded(px(8.0))
+        .items_center()
+        .justify_center()
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.8))
+        .child(icons::paperclip(palette::text_secondary()))
+}
+
+/// The files waiting to go with the next message, each removable.
+fn pending_attachments(pending: Memo<Vec<PendingChatAttachment>>) -> impl IntoElement {
+    view()
+        .test_id("chat-pending-attachments")
+        .flex_row()
+        .flex_wrap()
+        .gap(px(8.0))
+        .px(px(10.0))
+        .pt(px(10.0))
+        .child(each(
+            move || pending.get(),
+            |attachment: &PendingChatAttachment| attachment.path.clone(),
+            |attachment, _| pending_attachment(attachment.get_untracked()),
+        ))
+}
+
+fn pending_attachment(attachment: PendingChatAttachment) -> impl IntoElement {
+    let path = attachment.path.clone();
+    let body = if attachment.is_image() {
+        view()
+            .rounded(px(9.0))
+            .overflow_hidden()
+            .border_1()
+            .border_color(palette::divider_color())
+            .child(
+                image(attachment.path.to_string_lossy().into_owned())
+                    .w(px(64.0))
+                    .h(px(64.0))
+                    .bg(palette::subtle_surface_bg()),
+            )
+            .into_element()
+    } else {
+        file_chip(
+            attachment.name.clone(),
+            attachment.mime_type.clone(),
+            attachment.size_bytes,
+        )
+        .into_element()
+    };
+
+    view()
+        .test_id("chat-pending-attachment")
+        .pt(px(5.0))
+        .pr(px(5.0))
+        .child(body)
+        .child(
+            button()
+                .test_id("chat-attachment-remove")
+                .accessibility_label(format!("Remove {}", attachment.name))
+                .on_press(move || store::remove_chat_attachment(&path))
+                .absolute()
+                .top(px(0.0))
+                .right(px(0.0))
+                .w(px(18.0))
+                .h(px(18.0))
+                .rounded_full()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(icons::close_x(palette::text_secondary())),
         )
 }

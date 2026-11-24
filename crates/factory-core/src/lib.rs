@@ -7,6 +7,7 @@
 pub mod antigravity_cli;
 pub mod bruk_home;
 pub mod chat;
+pub mod chat_attachment;
 pub mod claude_cli;
 pub mod claude_settings;
 pub mod codex_cli;
@@ -51,6 +52,10 @@ pub use chat::{
     chat_worktree_branch, execute_chat_turn_blocking, micros_to_cents, parse_antigravity_chat_line,
     parse_claude_chat_line, parse_claude_context_usage, parse_codex_chat_line,
     parse_codex_rollout_context, query_chat_context, remove_chat_worktree, spawn_chat_turn,
+};
+pub use chat_attachment::{
+    CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENTS_DIR, ChatAttachment, ChatAttachmentUpload,
+    attachment_mime_type, format_bytes, is_model_image_type, plan_chat_attachments,
 };
 pub use claude_cli::{
     CLAUDE_BINARY_NAME, ClaudeBinaryError, ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption,

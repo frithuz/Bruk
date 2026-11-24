@@ -3619,7 +3619,7 @@ esac
         app.wait_for("id:chat-send-btn").unwrap();
         assert!(
             app.screen().shows(
-                "Return to send · Shift+Return for a new line · Works in the project checkout"
+                "Return to send · Shift+Return for a new line · Drop or paste files to attach · Works in the project checkout"
             )
         );
 
@@ -3742,6 +3742,122 @@ esac
 
 #[cfg(unix)]
 #[test]
+fn chat_attachments_drop_paste_and_send_images_to_the_agent() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("attach-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let log = temp.path().join("claude-calls.log");
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+  *" --fork-session "*) cat > /dev/null ;;
+  *" --include-partial-messages "*)
+    echo "ARGS: $*" >> '{log}'
+    printf 'STDIN: %s\n' "$(cat)" >> '{log}'
+    echo '{{"type":"system","subtype":"init","session_id":"sess-img"}}'
+    echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"I see a red square."}}]}}}}'
+    echo '{{"type":"result","subtype":"success","is_error":false,"result":"done"}}'
+    ;;
+  *) echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"chat@example.com"}}' ;;
+esac
+"#,
+            log = log.display()
+        ),
+    );
+    let drops = temp.path().join("drops");
+    std::fs::create_dir_all(&drops).unwrap();
+    let screenshot = drops.join("red square.png");
+    std::fs::write(&screenshot, [0x89, b'P', b'N', b'G']).unwrap();
+    let notes = drops.join("notes.txt");
+    std::fs::write(&notes, "hello").unwrap();
+
+    let mut app = start_with_db_and_claude_path(db_path.clone(), bin_dir.into_os_string());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "attach-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'attach-repo'").unwrap();
+    app.press("id:sidebar-chats-1").unwrap();
+    app.wait_for("Chat with an agent in attach-repo").unwrap();
+
+    // Files dropped on the chat wait in the composer; Send works with no text.
+    app.drop_files(
+        "id:chat-drop-zone",
+        vec![
+            "file://".to_owned() + &screenshot.display().to_string().replace(' ', "%20"),
+            format!("file://{}", notes.display()),
+            format!("file://{}", drops.display()),
+        ],
+    )
+    .unwrap();
+    app.wait_for("id:chat-pending-attachments").unwrap();
+    assert_eq!(app.screen().count("id:chat-pending-attachment").unwrap(), 2);
+    assert!(app.screen().shows("notes.txt"));
+    assert!(app.screen().shows("Text · 5 B"));
+    assert!(app.screen().shows("Couldn't attach: drops is a folder."));
+    assert!(app.screen().enabled("id:chat-send-btn").unwrap());
+
+    // A pasted screenshot attaches too; a file can be taken off again.
+    let mut paste = nsh_core::PasteEvent::new("");
+    paste
+        .files
+        .push(nsh_core::PastedFile::image(vec![0x89, b'P', b'N', b'G']));
+    app.paste("id:chat-composer-input", &paste).unwrap();
+    app.wait_until(
+        "the pasted image",
+        std::time::Duration::from_secs(5),
+        |screen| screen.count("id:chat-pending-attachment").unwrap() == 3,
+    )
+    .unwrap();
+    app.press("role:button[Remove notes.txt]").unwrap();
+    assert_eq!(app.screen().count("id:chat-pending-attachment").unwrap(), 2);
+
+    app.type_text("id:chat-composer-input", "What is in these?")
+        .unwrap();
+    app.press("id:chat-send-btn").unwrap();
+    app.wait_for("I see a red square.").unwrap();
+    assert!(!app.screen().matches("id:chat-pending-attachments").unwrap());
+    assert_eq!(app.screen().count("id:chat-sent-attachment").unwrap(), 2);
+
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let mut lines = calls.lines();
+    let args = lines.next().unwrap();
+    assert!(args.contains("--input-format stream-json"), "{args}");
+    assert!(args.contains("--add-dir="), "{args}");
+    let message: serde_json::Value =
+        serde_json::from_str(lines.next().unwrap().strip_prefix("STDIN: ").unwrap()).unwrap();
+    let content = message["message"]["content"].as_array().unwrap();
+    assert_eq!(content.len(), 3, "the text, then both images: {message}");
+    let text = content[0]["text"].as_str().unwrap();
+    assert!(text.starts_with("What is in these?"), "{text}");
+    assert!(text.contains("red square.png"), "{text}");
+    assert!(!text.contains("notes.txt"), "{text}");
+
+    // The transcript keeps the chat's own copies, which outlive the originals.
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let chats = db.list_chat_sessions().unwrap();
+    let Some(factory_core::ChatEntry::User { attachments, .. }) = chats[0].entries.first() else {
+        panic!("no user message: {:?}", chats[0].entries);
+    };
+    assert_eq!(attachments.len(), 2);
+    assert_eq!(attachments[0].name, "red square.png");
+    assert_eq!(attachments[1].name, "image.png");
+    std::fs::remove_file(&screenshot).unwrap();
+    assert!(attachments.iter().all(|a| a.path.is_file()));
+    assert!(attachments[0].path.ends_with("attachments/red square.png"));
+}
+
+#[cfg(unix)]
+#[test]
 fn worktree_chats_work_on_their_own_branch_and_leave_the_checkout_alone() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
@@ -3813,7 +3929,7 @@ esac
         .unwrap();
     assert!(
         app.screen()
-            .shows("Return to send · Shift+Return for a new line · Works in a new worktree")
+            .shows("Return to send · Shift+Return for a new line · Drop or paste files to attach · Works in a new worktree")
     );
 
     app.type_text("id:chat-composer-input", "Add release notes")
@@ -3821,7 +3937,7 @@ esac
     app.press("id:chat-send-btn").unwrap();
     app.wait_for("Wrote agent-notes.txt").unwrap();
     app.wait_for(
-        "Return to send · Shift+Return for a new line · Works in worktree agent/chat-add-release-notes",
+        "Return to send · Shift+Return for a new line · Drop or paste files to attach · Works in worktree agent/chat-add-release-notes",
     )
         .unwrap();
     assert!(
