@@ -792,6 +792,7 @@ fn projects_worked_on_card(snap: &DashboardSnapshot) -> impl IntoElement {
                 )
                 .child(table_col_header("PRs merged").w(px(84.0)).text_right())
                 .child(table_col_header("Runs").w(px(56.0)).text_right())
+                .child(table_col_header("Chats").w(px(56.0)).text_right())
                 .child(table_col_header("Succeeded").w(px(92.0)).text_right())
                 .child(table_col_header("Est. cost").w(px(76.0)).text_right()),
         )
@@ -876,6 +877,14 @@ fn project_activity_row(row: &ProjectActivityRow, is_last: bool) -> impl IntoEle
                 .text_color(palette::text_primary()),
         )
         .child(
+            text(row.chats.to_string())
+                .w(px(56.0))
+                .text_right()
+                .tabular_nums()
+                .text_size(px(12.5))
+                .text_color(palette::text_primary()),
+        )
+        .child(
             text(succeeded_text)
                 .w(px(92.0))
                 .text_right()
@@ -901,13 +910,13 @@ fn project_activity_row(row: &ProjectActivityRow, is_last: bool) -> impl IntoEle
     container
 }
 
-// --- Row 3 Right: Highest token runs ----------------------------------------------------
+// --- Row 3 Right: Highest token runs & chats --------------------------------------------
 
 fn highest_token_runs_card(snap: &DashboardSnapshot) -> impl IntoElement {
     let mut list = view().gap(px(9.0));
     if snap.highest_token_runs.is_empty() {
         list = list.child(
-            text("No high-token runs recorded for this selection.")
+            text("No runs or chats have used tokens in this selection.")
                 .text_size(px(12.0))
                 .text_color(palette::text_muted()),
         );
@@ -923,7 +932,7 @@ fn highest_token_runs_card(snap: &DashboardSnapshot) -> impl IntoElement {
         .p(px(16.0))
         .gap(px(12.0))
         .child(
-            text("Highest token runs")
+            text("Highest token runs & chats")
                 .text_size(px(14.0))
                 .font_weight(FontWeight::SEMIBOLD)
                 .text_color(palette::text_primary()),
@@ -989,12 +998,20 @@ fn high_token_run_item(run: &HighTokenRun) -> impl IntoElement {
                         .text_color(palette::text_muted()),
                 )
                 .child(
-                    text(format!(
-                        "{} · {} min · {}",
-                        format_currency(run.est_cost_cents),
-                        run.duration_minutes,
-                        run.outcome_note
-                    ))
+                    text(if run.is_chat {
+                        format!(
+                            "{} · {}",
+                            format_currency(run.est_cost_cents),
+                            run.outcome_note
+                        )
+                    } else {
+                        format!(
+                            "{} · {} min · {}",
+                            format_currency(run.est_cost_cents),
+                            run.duration_minutes,
+                            run.outcome_note
+                        )
+                    })
                     .text_size(px(11.5))
                     .text_color(palette::text_muted()),
                 ),

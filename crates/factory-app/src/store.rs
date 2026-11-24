@@ -14,13 +14,15 @@ use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
     AnsweredInboxItem, AppPreferences, AppearanceMode, AppearanceSettings, AttentionRequest,
     AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome, CatalogLoadOptions,
-    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
-    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
-    CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery,
-    DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor,
-    EditorSelection, ExitField, ExitOperator, FactoryState, FontPreference, GateDecision,
-    GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter,
-    InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction,
+    ChatContextUsage, ChatEvent, ChatSession, ChatSessionStatus, ChatSessionSummary,
+    ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree,
+    ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan,
+    ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan,
+    CodexSpawnSettings, CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
+    DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry,
+    DryRunExecutor, EditorSelection, ExitField, ExitOperator, FactoryState, FontPreference,
+    GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution,
+    InboxFilter, InboxState, IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction,
     LoopRepeatMode, LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord,
     MachinesFleet, NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase,
     ProjectId, ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
@@ -30,11 +32,12 @@ use factory_core::{
     WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
     WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
-    clone_repository, current_unix_seconds, detect_git_remote_info, display_with_tilde,
-    fetch_claude_details, fetch_codex_details, fetch_github_open_issues_with_filter,
-    find_claude_setting_spec, find_codex_setting_spec, parse_clone_source, probe_claude_cli,
-    probe_codex_cli, project_dir_name, remove_github_issue_label, resolve_claude_binary,
-    resolve_codex_binary, run_claude_auth_login, run_codex_login, spawn_workflow_run,
+    chat_worktree_branch, clone_repository, current_unix_seconds, detect_git_remote_info,
+    display_with_tilde, fetch_claude_details, fetch_codex_details,
+    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
+    parse_clone_source, probe_claude_cli, probe_codex_cli, project_dir_name, query_chat_context,
+    remove_chat_worktree, remove_github_issue_label, resolve_claude_binary, resolve_codex_binary,
+    run_claude_auth_login, run_codex_login, spawn_chat_turn, spawn_workflow_run,
 };
 
 const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
@@ -70,6 +73,7 @@ pub(crate) enum ActiveView {
     ProjectSettings,
     Workspace,
     RegisterProject,
+    Chat,
 }
 
 /// Controls how `claude` is searched on `PATH` when no custom binary path is configured.
@@ -232,6 +236,20 @@ struct AppState {
     project_settings_tab: ProjectSettingsTab,
     project_settings_feedback: Option<String>,
     project_settings_error: Option<String>,
+    chat_sessions: BTreeMap<String, ChatSession>,
+    /// The open chat of each project; none means its composer starts a new chat.
+    chat_selected: BTreeMap<ProjectId, String>,
+    /// What the next new chat uses; `None` follows the agent, then the project's settings.
+    chat_new_provider: Option<ProviderKind>,
+    chat_new_agent: Option<String>,
+    chat_new_sandbox: Option<ProjectSandboxMode>,
+    chat_new_workspace: Option<ChatWorkspace>,
+    /// Whether chats show their context-window panel.
+    chat_context_open: bool,
+    /// Chats whose context window is being read.
+    chat_context_loading: BTreeSet<String>,
+    /// Why reading a chat's context window failed.
+    chat_context_errors: BTreeMap<String, String>,
     sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
@@ -535,7 +553,12 @@ impl AppState {
                 .and_then(|arc| arc.lock().ok())
                 .and_then(|guard| guard.list_all_workflow_runs().ok())
                 .unwrap_or_default();
-            let dashboard = DashboardDataset::from_persisted_runs(&persisted_runs);
+            let chat_usage = db
+                .as_ref()
+                .and_then(|arc| arc.lock().ok())
+                .and_then(|guard| guard.list_chat_usage().ok())
+                .unwrap_or_default();
+            let dashboard = DashboardDataset::from_usage(&persisted_runs, &chat_usage);
             let mut runs_detail = BTreeMap::new();
             let mut active_key = (String::new(), String::new());
             for run in &persisted_runs {
@@ -591,6 +614,12 @@ impl AppState {
                 (String::new(), String::new()),
                 Vec::new(),
             )
+        };
+
+        let chat_sessions = if using_sample_projects {
+            BTreeMap::new()
+        } else {
+            load_chat_sessions(db.as_ref())
         };
 
         let inbox_selected_id = inbox.default_selected_id();
@@ -691,6 +720,15 @@ impl AppState {
             project_settings_tab: ProjectSettingsTab::IssuesAndIntake,
             project_settings_feedback: None,
             project_settings_error: None,
+            chat_sessions,
+            chat_selected: BTreeMap::new(),
+            chat_new_provider: None,
+            chat_new_agent: None,
+            chat_new_sandbox: None,
+            chat_new_workspace: None,
+            chat_context_open: false,
+            chat_context_loading: BTreeSet::new(),
+            chat_context_errors: BTreeMap::new(),
             sidebar_visible: true,
             status_message,
             registration_error,
@@ -2231,6 +2269,21 @@ pub(crate) fn remove_project(id: ProjectId) {
         }
 
         s.factory.remove_project(id);
+        let removed_chats: Vec<String> = s
+            .chat_sessions
+            .values()
+            .filter(|chat| chat.project_id == id)
+            .map(|chat| chat.id.clone())
+            .collect();
+        if let Ok(reg) = chat_registry().lock() {
+            for chat_id in &removed_chats {
+                if let Some(control) = reg.active.get(chat_id) {
+                    control.stop();
+                }
+            }
+        }
+        s.chat_sessions.retain(|_, chat| chat.project_id != id);
+        s.chat_selected.remove(&id);
         if s.selected_project == Some(id) {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
             s.selected_run = s
@@ -2246,6 +2299,880 @@ pub(crate) fn remove_project(id: ProjectId) {
                 None => format!("Removed project '{name}'"),
             });
         }
+    });
+}
+
+// --- Chats ------------------------------------------------------------------------------
+
+/// Running chat turns by chat id, so they can be stopped.
+#[derive(Default)]
+struct ChatRegistry {
+    active: BTreeMap<String, ChatTurnControl>,
+    seq: u64,
+}
+
+fn chat_registry() -> &'static Mutex<ChatRegistry> {
+    static REGISTRY: std::sync::OnceLock<Mutex<ChatRegistry>> = std::sync::OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(ChatRegistry::default()))
+}
+
+fn chat_turn_is_active(chat_id: &str) -> bool {
+    chat_registry()
+        .lock()
+        .is_ok_and(|reg| reg.active.contains_key(chat_id))
+}
+
+/// Loads persisted chats, settling turns the app quit in the middle of.
+fn load_chat_sessions(db: Option<&Arc<Mutex<ProjectDatabase>>>) -> BTreeMap<String, ChatSession> {
+    let Some(guard) = db.and_then(|arc| arc.lock().ok()) else {
+        return BTreeMap::new();
+    };
+    let now = current_unix_seconds();
+    let mut sessions = BTreeMap::new();
+    for mut session in guard.list_chat_sessions().unwrap_or_default() {
+        if !chat_turn_is_active(&session.id) && session.mark_interrupted(now) {
+            let _ = guard.save_chat_session(&session);
+        }
+        sessions.insert(session.id.clone(), session);
+    }
+    sessions
+}
+
+/// Provider binaries and the Codex home that agent turns (workflow steps, chats) spawn with.
+struct ProviderLaunch {
+    claude_binary: Option<std::path::PathBuf>,
+    codex_binary: Option<std::path::PathBuf>,
+    source_codex_home: Option<std::path::PathBuf>,
+}
+
+/// What a chat's header and composer show.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveChatMeta {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) agent_label: String,
+    pub(crate) provider: ProviderKind,
+    pub(crate) sandbox: ProjectSandboxMode,
+    pub(crate) status: ChatSessionStatus,
+    pub(crate) message_count: usize,
+    pub(crate) total_tokens: u64,
+    pub(crate) total_cost_cents: u64,
+    pub(crate) workspace: ChatWorkspace,
+    pub(crate) worktree: Option<ChatWorktree>,
+    /// Tokens in the context window and its size, after the latest turn.
+    pub(crate) context: Option<(u64, u64)>,
+}
+
+/// What the open chat's context panel shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveChatContext {
+    pub(crate) chat_id: String,
+    pub(crate) provider: ProviderKind,
+    pub(crate) usage: Option<ChatContextUsage>,
+    pub(crate) loading: bool,
+    pub(crate) error: Option<String>,
+    /// The provider has a session to measure (a turn has run).
+    pub(crate) has_session: bool,
+    pub(crate) running: bool,
+}
+
+/// One row of the open chat's transcript, keyed by chat and position.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChatEntryRow {
+    pub(crate) chat_id: String,
+    pub(crate) index: usize,
+    pub(crate) provider: ProviderKind,
+    pub(crate) entry: factory_core::ChatEntry,
+}
+
+impl AppState {
+    fn provider_launch(&self) -> ProviderLaunch {
+        let path_env = self.claude_path_lookup.resolve_path_env();
+        let claude_binary = resolve_claude_binary(
+            self.preferences.claude.custom_cli_path.as_deref(),
+            path_env.as_deref(),
+        )
+        .ok();
+        let codex_binary = self.preferences.codex.as_ref().and_then(|cx| {
+            resolve_codex_binary(cx.custom_cli_path.as_deref(), path_env.as_deref()).ok()
+        });
+        let source_codex_home = Some(
+            self.preferences
+                .codex
+                .as_ref()
+                .map(|cx| factory_core::expand_tilde(&cx.config_dir))
+                .unwrap_or_else(|| factory_core::expand_tilde("~/.codex")),
+        );
+        ProviderLaunch {
+            claude_binary,
+            codex_binary,
+            source_codex_home,
+        }
+    }
+
+    fn selected_project_settings(&self) -> Option<&ProjectSettings> {
+        let project = self
+            .selected_project
+            .and_then(|pid| self.factory.project(pid))?;
+        self.project_settings.get(&project.name)
+    }
+
+    fn chat_provider_allowed(&self, provider: ProviderKind) -> bool {
+        match provider {
+            ProviderKind::Claude => true,
+            ProviderKind::Codex => self.preferences.codex.is_some(),
+            ProviderKind::OpenRouter => false,
+        }
+    }
+
+    fn resolved_chat_new_provider(&self) -> ProviderKind {
+        self.chat_new_provider
+            .filter(|p| self.chat_provider_allowed(*p))
+            .or_else(|| {
+                self.selected_project_settings()
+                    .map(|settings| settings.default_provider)
+                    .filter(|p| self.chat_provider_allowed(*p))
+            })
+            .unwrap_or(ProviderKind::Claude)
+    }
+
+    fn resolved_chat_new_sandbox(&self) -> ProjectSandboxMode {
+        self.chat_new_sandbox
+            .or_else(|| {
+                self.selected_project_settings()
+                    .map(|settings| settings.sandbox_mode)
+            })
+            .unwrap_or_default()
+    }
+
+    fn reset_chat_composer(&mut self) {
+        self.chat_new_provider = None;
+        self.chat_new_agent = None;
+        self.chat_new_sandbox = None;
+        self.chat_new_workspace = None;
+    }
+
+    /// Whether the selected project can give a chat its own worktree (it is a git checkout).
+    fn chat_worktree_available(&self) -> bool {
+        self.selected_project
+            .and_then(|pid| self.factory.project(pid))
+            .is_some_and(|project| project.root_path.join(".git").exists())
+    }
+
+    fn resolved_chat_new_workspace(&self) -> ChatWorkspace {
+        match self.chat_new_workspace {
+            Some(ChatWorkspace::Worktree) if self.chat_worktree_available() => {
+                ChatWorkspace::Worktree
+            }
+            _ => ChatWorkspace::Checkout,
+        }
+    }
+
+    /// Records what one turn of a chat used, for the Dashboard.
+    fn record_chat_usage(&self, chat_id: &str, usage: ChatUsageDelta, now: i64) {
+        if self.using_sample_projects || usage.is_zero() {
+            return;
+        }
+        if let Some(session) = self.chat_sessions.get(chat_id)
+            && let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.record_chat_usage(session, usage, now);
+        }
+    }
+
+    /// Rebuilds the Dashboard from every recorded workflow run and chat turn.
+    fn refresh_dashboard_dataset(&mut self) {
+        if self.using_sample_projects {
+            return;
+        }
+        let dataset = {
+            let Some(db) = self.db.as_ref().and_then(|arc| arc.lock().ok()) else {
+                return;
+            };
+            DashboardDataset::from_usage(
+                &db.list_all_workflow_runs().unwrap_or_default(),
+                &db.list_chat_usage().unwrap_or_default(),
+            )
+        };
+        self.dashboard_dataset = dataset;
+    }
+
+    fn active_chat_id(&self) -> Option<&String> {
+        let pid = self.selected_project?;
+        self.chat_selected
+            .get(&pid)
+            .filter(|id| self.chat_sessions.contains_key(*id))
+    }
+
+    fn persist_chat(&self, chat_id: &str) {
+        if self.using_sample_projects {
+            return;
+        }
+        if let Some(session) = self.chat_sessions.get(chat_id)
+            && let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.save_chat_session(session);
+        }
+    }
+
+    /// Records the user's message in the open chat (starting one with the composer's choices
+    /// when none is open) and resolves the turn to run.
+    fn begin_chat_turn(
+        &mut self,
+        text: &str,
+        now: i64,
+    ) -> Result<(String, ChatTurnRequest), String> {
+        let pid = self
+            .selected_project
+            .ok_or_else(|| "Select a project to chat in".to_owned())?;
+        let project = self
+            .factory
+            .project(pid)
+            .cloned()
+            .ok_or_else(|| "Select a project to chat in".to_owned())?;
+
+        let chat_id = match self.active_chat_id().cloned() {
+            Some(id) => id,
+            None => {
+                let seq = chat_registry()
+                    .lock()
+                    .map(|mut reg| {
+                        reg.seq += 1;
+                        reg.seq
+                    })
+                    .unwrap_or(1);
+                let id = format!("chat-{now}-{seq}");
+                let agent = self.chat_new_agent.clone();
+                let agent_name = agent.as_deref().and_then(|reference| {
+                    let catalog = self
+                        .catalogs
+                        .get(&project.name)
+                        .cloned()
+                        .unwrap_or_else(|| load_catalog(self.home.as_ref(), &project.root_path));
+                    catalog.resolve_agent(reference).ok().map(|a| a.name)
+                });
+                let mut session = ChatSession::new(
+                    id.clone(),
+                    pid,
+                    project.name.clone(),
+                    self.resolved_chat_new_provider(),
+                    agent,
+                    agent_name,
+                    self.resolved_chat_new_sandbox(),
+                    now,
+                );
+                session.workspace = self.resolved_chat_new_workspace();
+                self.chat_sessions.insert(id.clone(), session);
+                self.chat_selected.insert(pid, id.clone());
+                self.reset_chat_composer();
+                id
+            }
+        };
+
+        let worktree_dir = self.chat_runtime_dir(&chat_id).join("worktree");
+        let branch_prefix = self
+            .project_settings
+            .get(&project.name)
+            .map(|settings| settings.branch_prefix.clone())
+            .unwrap_or_default();
+        let session = self
+            .chat_sessions
+            .get_mut(&chat_id)
+            .ok_or_else(|| "That chat no longer exists".to_owned())?;
+        if session.is_running() {
+            return Err(
+                "Wait for the reply, or stop it, before sending another message".to_owned(),
+            );
+        }
+        session.push_user_message(text, now);
+        if session.workspace == ChatWorkspace::Worktree && session.worktree.is_none() {
+            // Named after the first message; the first turn creates it.
+            session.worktree = Some(ChatWorktree {
+                path: worktree_dir,
+                branch: chat_worktree_branch(&branch_prefix, &session.title, &chat_id),
+            });
+        }
+        session.apply_event(&ChatEvent::TurnStarted, now);
+        self.persist_chat(&chat_id);
+
+        match self.chat_turn_request(&chat_id, text) {
+            Ok(request) => Ok((chat_id, request)),
+            Err(message) => {
+                if let Some(session) = self.chat_sessions.get_mut(&chat_id) {
+                    session.apply_event(
+                        &ChatEvent::TurnFinished {
+                            status: ChatSessionStatus::Failed,
+                            error: Some(message.clone()),
+                        },
+                        now,
+                    );
+                }
+                self.persist_chat(&chat_id);
+                Err(message)
+            }
+        }
+    }
+
+    fn chat_runtime_dir(&self, chat_id: &str) -> std::path::PathBuf {
+        self.home
+            .as_ref()
+            .map(|home| home.chat_dir(chat_id))
+            .unwrap_or_else(|| std::env::temp_dir().join("bruk-chats").join(chat_id))
+    }
+
+    /// What a chat's next turn (or a reading of its context window) runs with, resolved from
+    /// the chat, its project and preferences.
+    fn chat_turn_request(&self, chat_id: &str, prompt: &str) -> Result<ChatTurnRequest, String> {
+        let session = self
+            .chat_sessions
+            .get(chat_id)
+            .ok_or_else(|| "That chat no longer exists".to_owned())?;
+        let project = self
+            .factory
+            .project(session.project_id)
+            .cloned()
+            .ok_or_else(|| "That chat's project isn't in Bruk any more".to_owned())?;
+        let catalog = self
+            .catalogs
+            .get(&project.name)
+            .cloned()
+            .unwrap_or_else(|| load_catalog(self.home.as_ref(), &project.root_path));
+        let settings = self.project_settings.get(&project.name);
+        let launch = self.provider_launch();
+        let project_env = settings
+            .map(|settings| {
+                settings
+                    .env_vars
+                    .iter()
+                    .filter(|var| !var.key.trim().is_empty())
+                    .map(|var| (var.key.clone(), var.value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let worktree = match (session.workspace, session.worktree.as_ref()) {
+            (ChatWorkspace::Worktree, Some(worktree)) => Some(ChatWorktreeSetup {
+                project_root: project.root_path.clone(),
+                path: worktree.path.clone(),
+                branch: worktree.branch.clone(),
+            }),
+            _ => None,
+        };
+        let working_dir = worktree
+            .as_ref()
+            .map(|setup| setup.path.clone())
+            .unwrap_or_else(|| project.root_path.clone());
+
+        Ok(ChatTurnRequest {
+            session_id: chat_id.to_owned(),
+            provider: session.provider,
+            agent: session.agent.clone(),
+            model: session.model.clone(),
+            sandbox: session.sandbox,
+            resume_session_id: session.provider_session_id.clone(),
+            prompt: prompt.to_owned(),
+            working_dir,
+            worktree,
+            runtime_dir: self.chat_runtime_dir(chat_id),
+            catalog,
+            project_model_override: settings
+                .map(|s| s.model_override.trim().to_owned())
+                .filter(|m| !m.is_empty()),
+            project_env,
+            claude_binary: launch.claude_binary,
+            claude_default_model: Some(self.preferences.claude.default_model.clone()),
+            claude_settings: self.preferences.claude_spawn_settings.clone(),
+            codex_binary: launch.codex_binary,
+            codex_default_model: self
+                .preferences
+                .codex
+                .as_ref()
+                .map(|cx| cx.default_model.clone()),
+            codex_settings: self.preferences.codex_spawn_settings.clone(),
+            source_codex_home: launch.source_codex_home,
+        })
+    }
+}
+
+/// Opens a project's chats, showing the one last open there.
+pub(crate) fn open_chats_for_project(id: ProjectId) {
+    state().update(|s| {
+        s.selected_project = Some(id);
+        s.expanded_projects.insert(id);
+        s.active_view = ActiveView::Chat;
+        s.status_message = None;
+    });
+}
+
+/// Opens a fresh composer in the selected (or first) project's chats.
+pub(crate) fn start_new_chat() {
+    state().update(|s| {
+        if s.selected_project.is_none() {
+            s.selected_project = s.factory.projects().first().map(|p| p.id);
+        }
+        let Some(pid) = s.selected_project else {
+            return;
+        };
+        s.expanded_projects.insert(pid);
+        s.chat_selected.remove(&pid);
+        s.reset_chat_composer();
+        s.active_view = ActiveView::Chat;
+        s.status_message = None;
+    });
+}
+
+pub(crate) fn select_chat(id: &str) {
+    state().update(|s| {
+        if let Some(pid) = s.chat_sessions.get(id).map(|chat| chat.project_id) {
+            s.selected_project = Some(pid);
+            s.chat_selected.insert(pid, id.to_owned());
+            s.active_view = ActiveView::Chat;
+        }
+    });
+}
+
+/// The project's chats, most recently active first.
+pub(crate) fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
+    state().with(|s| {
+        let mut chats: Vec<ChatSessionSummary> = s
+            .chat_sessions
+            .values()
+            .filter(|chat| chat.project_id == id)
+            .map(ChatSession::summary)
+            .collect();
+        chats.sort_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        chats
+    })
+}
+
+/// How many chats a project has, and how many are working on a reply.
+pub(crate) fn chat_counts_for_project(id: ProjectId) -> (usize, usize) {
+    state().with(|s| {
+        s.chat_sessions
+            .values()
+            .filter(|chat| chat.project_id == id)
+            .fold((0, 0), |(total, running), chat| {
+                (total + 1, running + usize::from(chat.is_running()))
+            })
+    })
+}
+
+pub(crate) fn active_chat_id() -> Option<String> {
+    state().with(|s| s.active_chat_id().cloned())
+}
+
+pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
+    state().with(|s| {
+        let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
+        Some(ActiveChatMeta {
+            id: chat.id.clone(),
+            title: chat.display_title(),
+            agent_label: chat.agent_label(),
+            provider: chat.provider,
+            sandbox: chat.sandbox,
+            status: chat.status,
+            message_count: chat.message_count(),
+            total_tokens: chat.total_tokens,
+            total_cost_cents: chat.total_cost_cents(),
+            workspace: chat.workspace,
+            worktree: chat.worktree.clone(),
+            context: chat
+                .context
+                .as_ref()
+                .map(|usage| (usage.used_tokens, usage.window_tokens)),
+        })
+    })
+}
+
+pub(crate) fn active_chat_rows() -> Vec<ChatEntryRow> {
+    state().with(|s| {
+        let Some(chat) = s.active_chat_id().and_then(|id| s.chat_sessions.get(id)) else {
+            return Vec::new();
+        };
+        chat.entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| ChatEntryRow {
+                chat_id: chat.id.clone(),
+                index,
+                provider: chat.provider,
+                entry: entry.clone(),
+            })
+            .collect()
+    })
+}
+
+/// Providers a chat can talk to: Claude, and Codex once it is added in Settings.
+pub(crate) fn chat_provider_options() -> Vec<ProviderKind> {
+    state().with(|s| {
+        [ProviderKind::Claude, ProviderKind::Codex]
+            .into_iter()
+            .filter(|p| s.chat_provider_allowed(*p))
+            .collect()
+    })
+}
+
+/// The selected project's agents as `(reference, name)`.
+pub(crate) fn chat_agent_options() -> Vec<(String, String)> {
+    let agents = |catalog: &BrukCatalog| -> Vec<(String, String)> {
+        catalog
+            .effective_agents()
+            .into_iter()
+            .map(|agent| (agent.id.clone(), agent.name.clone()))
+            .collect()
+    };
+    state().with(|s| match s.catalogs.get(&s.selected_project_name()) {
+        Some(catalog) => agents(catalog),
+        None => agents(&BrukCatalog::builtin_only()),
+    })
+}
+
+pub(crate) fn chat_new_provider() -> ProviderKind {
+    state().with(AppState::resolved_chat_new_provider)
+}
+
+pub(crate) fn set_chat_new_provider(provider: ProviderKind) {
+    state().update(|s| s.chat_new_provider = Some(provider));
+}
+
+pub(crate) fn chat_new_agent() -> Option<String> {
+    state().with(|s| s.chat_new_agent.clone())
+}
+
+/// Picks the agent for the next new chat, adopting the provider and access it declares.
+pub(crate) fn set_chat_new_agent(agent: Option<String>) {
+    state().update(|s| {
+        let resolved = agent
+            .as_deref()
+            .and_then(|reference| s.active_catalog_clone().resolve_agent(reference).ok());
+        if let Some(resolved) = resolved {
+            if let Some(provider) = resolved.provider.filter(|p| s.chat_provider_allowed(*p)) {
+                s.chat_new_provider = Some(provider);
+            }
+            if let Some(sandbox) = resolved.sandbox {
+                s.chat_new_sandbox = Some(sandbox);
+            }
+        }
+        s.chat_new_agent = agent;
+    });
+}
+
+pub(crate) fn chat_new_sandbox() -> ProjectSandboxMode {
+    state().with(AppState::resolved_chat_new_sandbox)
+}
+
+pub(crate) fn set_chat_new_sandbox(mode: ProjectSandboxMode) {
+    state().update(|s| s.chat_new_sandbox = Some(mode));
+}
+
+/// Changes what the open chat's agent may do, from its next message on.
+pub(crate) fn set_active_chat_sandbox(mode: ProjectSandboxMode) {
+    state().update(|s| {
+        let Some(id) = s.active_chat_id().cloned() else {
+            return;
+        };
+        if let Some(chat) = s.chat_sessions.get_mut(&id) {
+            chat.sandbox = mode;
+        }
+        s.persist_chat(&id);
+    });
+}
+
+/// Sends `text` in the open chat (starting a new one if none is open). False if nothing
+/// was sent.
+pub(crate) fn send_chat_message(text: &str) -> bool {
+    let text = text.trim().to_owned();
+    if text.is_empty() {
+        return false;
+    }
+    let now = current_unix_seconds();
+    let mut prepared = None;
+    state().update(|s| {
+        prepared = Some(s.begin_chat_turn(&text, now));
+        if let Some(Err(message)) = &prepared {
+            s.status_message = Some(message.clone());
+        } else {
+            s.status_message = None;
+        }
+    });
+    match prepared {
+        Some(Ok((chat_id, request))) => {
+            start_chat_turn(chat_id, request);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn start_chat_turn(chat_id: String, request: ChatTurnRequest) {
+    let (control, rx) = spawn_chat_turn(request);
+    if let Ok(mut reg) = chat_registry().lock() {
+        reg.active.insert(chat_id.clone(), control);
+    }
+
+    // Pump turn events onto the store without blocking rendering; a burst of streamed text
+    // lands as one update.
+    let rx_shared = Arc::new(Mutex::new(rx));
+    Owner::detached().run(|| {
+        spawn(async move {
+            loop {
+                let rx_clone = rx_shared.clone();
+                let batch = spawn_blocking_task(move || {
+                    let guard = rx_clone.lock().ok()?;
+                    let first = guard.recv().ok()?;
+                    std::thread::sleep(std::time::Duration::from_millis(30));
+                    let mut batch = vec![first];
+                    batch.extend(guard.try_iter());
+                    Some(batch)
+                })
+                .await;
+                let Some(batch) = batch else {
+                    break;
+                };
+                let finished = batch
+                    .iter()
+                    .any(|event| matches!(event, ChatEvent::TurnFinished { .. }));
+                let persist = finished
+                    || batch
+                        .iter()
+                        .any(|event| matches!(event, ChatEvent::ProviderSessionStarted { .. }));
+                let now = current_unix_seconds();
+                state().update(|s| {
+                    let Some(chat) = s.chat_sessions.get_mut(&chat_id) else {
+                        return;
+                    };
+                    let mut used = ChatUsageDelta::default();
+                    for event in &batch {
+                        let delta = chat.apply_event(event, now);
+                        used.tokens += delta.tokens;
+                        used.cost_micros += delta.cost_micros;
+                    }
+                    if persist || !used.is_zero() {
+                        s.persist_chat(&chat_id);
+                    }
+                    if !used.is_zero() {
+                        s.record_chat_usage(&chat_id, used, now);
+                        s.refresh_dashboard_dataset();
+                    }
+                });
+                if finished {
+                    // See how the turn left the context window.
+                    refresh_chat_context(chat_id.clone());
+                    break;
+                }
+            }
+            if let Ok(mut reg) = chat_registry().lock() {
+                reg.active.remove(&chat_id);
+            }
+            // A turn whose thread ended without reporting back must not look busy forever.
+            state().update(|s| {
+                if let Some(chat) = s.chat_sessions.get_mut(&chat_id)
+                    && chat.is_running()
+                {
+                    chat.apply_event(
+                        &ChatEvent::TurnFinished {
+                            status: ChatSessionStatus::Failed,
+                            error: Some("The reply ended unexpectedly.".to_owned()),
+                        },
+                        current_unix_seconds(),
+                    );
+                    s.persist_chat(&chat_id);
+                }
+            });
+        });
+    });
+}
+
+/// Reads a chat's context window in the background (Claude Code reports it for a fork of the
+/// session; Codex records it). Does nothing before the chat has a provider session.
+fn refresh_chat_context(chat_id: String) {
+    let mut request = None;
+    state().update(|s| {
+        if s.using_sample_projects || s.chat_context_loading.contains(&chat_id) {
+            return;
+        }
+        if let Ok(prepared) = s.chat_turn_request(&chat_id, "")
+            && prepared.resume_session_id.is_some()
+        {
+            s.chat_context_loading.insert(chat_id.clone());
+            s.chat_context_errors.remove(&chat_id);
+            request = Some(prepared);
+        }
+    });
+    let Some(request) = request else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result =
+                spawn_blocking_task(move || query_chat_context(&request, current_unix_seconds()))
+                    .await;
+            state().update(|s| {
+                s.chat_context_loading.remove(&chat_id);
+                match result {
+                    Ok(usage) => {
+                        if let Some(chat) = s.chat_sessions.get_mut(&chat_id) {
+                            chat.apply_event(
+                                &ChatEvent::ContextUsage(usage),
+                                current_unix_seconds(),
+                            );
+                            s.persist_chat(&chat_id);
+                        }
+                    }
+                    Err(message) => {
+                        s.chat_context_errors.insert(chat_id.clone(), message);
+                    }
+                }
+            });
+        });
+    });
+}
+
+pub(crate) fn chat_new_workspace() -> ChatWorkspace {
+    state().with(AppState::resolved_chat_new_workspace)
+}
+
+pub(crate) fn set_chat_new_workspace(workspace: ChatWorkspace) {
+    state().update(|s| s.chat_new_workspace = Some(workspace));
+}
+
+/// Whether the selected project can give a new chat its own worktree.
+pub(crate) fn chat_worktree_available() -> bool {
+    state().with(AppState::chat_worktree_available)
+}
+
+pub(crate) fn chat_context_open() -> bool {
+    state().with(|s| s.chat_context_open)
+}
+
+/// Shows or hides the context-window panel, reading the open chat's window when it has none.
+pub(crate) fn toggle_chat_context() {
+    let mut opened = false;
+    state().update(|s| {
+        s.chat_context_open = !s.chat_context_open;
+        opened = s.chat_context_open;
+    });
+    if opened {
+        let missing = state().with(|s| {
+            s.active_chat_id()
+                .and_then(|id| s.chat_sessions.get(id))
+                .filter(|chat| chat.context.is_none() && !chat.is_running())
+                .map(|chat| chat.id.clone())
+        });
+        if let Some(id) = missing {
+            refresh_chat_context(id);
+        }
+    }
+}
+
+/// Reads the open chat's context window again.
+pub(crate) fn refresh_active_chat_context() {
+    if let Some(id) = active_chat_id() {
+        refresh_chat_context(id);
+    }
+}
+
+pub(crate) fn active_chat_context() -> Option<ActiveChatContext> {
+    state().with(|s| {
+        let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
+        Some(ActiveChatContext {
+            chat_id: chat.id.clone(),
+            provider: chat.provider,
+            usage: chat.context.clone(),
+            loading: s.chat_context_loading.contains(&chat.id),
+            error: s.chat_context_errors.get(&chat.id).cloned(),
+            has_session: chat.provider_session_id.is_some(),
+            running: chat.is_running(),
+        })
+    })
+}
+
+/// Stops the open chat's running reply.
+pub(crate) fn stop_active_chat() {
+    let Some(id) = active_chat_id() else {
+        return;
+    };
+    let control = chat_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.active.get(&id).cloned());
+    match control {
+        Some(control) => control.stop(),
+        // Nothing is running it any more: settle it here.
+        None => state().update(|s| {
+            if let Some(chat) = s.chat_sessions.get_mut(&id)
+                && chat.is_running()
+            {
+                chat.apply_event(
+                    &ChatEvent::TurnFinished {
+                        status: ChatSessionStatus::Stopped,
+                        error: None,
+                    },
+                    current_unix_seconds(),
+                );
+                s.persist_chat(&id);
+            }
+        }),
+    }
+}
+
+/// Deletes a chat and its runtime files, stopping it first if it is replying.
+pub(crate) fn delete_chat(id: &str) {
+    let control = chat_registry()
+        .lock()
+        .ok()
+        .and_then(|reg| reg.active.get(id).cloned());
+    if let Some(control) = control {
+        control.stop();
+    }
+    state().update(|s| {
+        let Some(chat) = s.chat_sessions.remove(id) else {
+            return;
+        };
+        if !s.using_sample_projects
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.delete_chat_session(id);
+        }
+        // Remove the worktree through git (so the repository forgets it), then the chat's
+        // folder; off the main thread, since a big checkout takes a moment.
+        let worktree = chat
+            .worktree
+            .clone()
+            .filter(|_| chat.workspace == ChatWorkspace::Worktree);
+        let project_root = s
+            .factory
+            .project(chat.project_id)
+            .map(|project| project.root_path.clone());
+        let chat_dir = s.home.as_ref().map(|home| home.chat_dir(id));
+        std::thread::spawn(move || {
+            if let (Some(worktree), Some(root)) = (worktree.as_ref(), project_root.as_ref()) {
+                let _ = remove_chat_worktree(root, &worktree.path);
+            }
+            if let Some(dir) = chat_dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        });
+        if s.chat_selected.get(&chat.project_id).map(String::as_str) == Some(id) {
+            s.chat_selected.remove(&chat.project_id);
+        }
+        s.chat_context_loading.remove(id);
+        s.chat_context_errors.remove(id);
+        s.status_message = Some(match chat.worktree.as_ref() {
+            Some(worktree) if chat.workspace == ChatWorkspace::Worktree => format!(
+                "Deleted chat '{}' and its worktree. Branch {} is kept.",
+                chat.display_title(),
+                worktree.branch
+            ),
+            _ => format!("Deleted chat '{}'", chat.display_title()),
+        });
+        s.refresh_dashboard_dataset();
     });
 }
 
@@ -7528,22 +8455,11 @@ fn spawn_real_workflow_run(
                 .and_then(|db| db.next_run_number_for_project(project.id).ok())
                 .unwrap_or(1);
 
-        let path_env = s.claude_path_lookup.resolve_path_env();
-        let claude_binary = resolve_claude_binary(
-            s.preferences.claude.custom_cli_path.as_deref(),
-            path_env.as_deref(),
-        )
-        .ok();
-        let codex_binary = s.preferences.codex.as_ref().and_then(|cx| {
-            resolve_codex_binary(cx.custom_cli_path.as_deref(), path_env.as_deref()).ok()
-        });
-        let source_codex_home = Some(
-            s.preferences
-                .codex
-                .as_ref()
-                .map(|cx| factory_core::expand_tilde(&cx.config_dir))
-                .unwrap_or_else(|| factory_core::expand_tilde("~/.codex")),
-        );
+        let ProviderLaunch {
+            claude_binary,
+            codex_binary,
+            source_codex_home,
+        } = s.provider_launch();
 
         let github_auth = s.resolve_github_auth_for_project(project_name).ok();
         let github_repo = if settings.github_repo.trim().is_empty() {
@@ -7789,8 +8705,9 @@ fn spawn_real_workflow_run(
                         {
                             let _ = db.save_workflow_run(&persisted);
                             if let Ok(all_runs) = db.list_all_workflow_runs() {
+                                let chat_usage = db.list_chat_usage().unwrap_or_default();
                                 s.dashboard_dataset =
-                                    DashboardDataset::from_persisted_runs(&all_runs);
+                                    DashboardDataset::from_usage(&all_runs, &chat_usage);
                             }
                         }
 

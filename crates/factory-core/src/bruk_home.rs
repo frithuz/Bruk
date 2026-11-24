@@ -41,6 +41,8 @@ pub const HOME_DATABASE_FILE: &str = "bruk.db";
 pub const HOME_PROJECTS_DIR: &str = "projects";
 /// Directory holding per-run step bundles and worktrees.
 pub const HOME_RUNS_DIR: &str = "runs";
+/// Per-chat runtime files (agent instructions, Codex's isolated home) inside the Bruk folder.
+pub const HOME_CHATS_DIR: &str = "chats";
 /// Directory holding fetched git modules.
 pub const HOME_MODULE_CACHE_DIR: &str = "cache/modules";
 
@@ -133,6 +135,15 @@ impl BrukHome {
         self.runs_dir().join(run_id)
     }
 
+    pub fn chats_dir(&self) -> PathBuf {
+        self.root.join(HOME_CHATS_DIR)
+    }
+
+    /// Runtime directory for one chat session, kept across its turns.
+    pub fn chat_dir(&self, chat_id: &str) -> PathBuf {
+        self.chats_dir().join(chat_id)
+    }
+
     pub fn module_cache_dir(&self) -> PathBuf {
         self.root.join(HOME_MODULE_CACHE_DIR)
     }
@@ -158,6 +169,7 @@ impl BrukHome {
             self.root.clone(),
             self.projects_dir(),
             self.runs_dir(),
+            self.chats_dir(),
             self.module_cache_dir(),
         ] {
             fs::create_dir_all(&dir)
@@ -571,7 +583,7 @@ mod tests {
             .unwrap();
         assert_eq!(setup.imported_from, None);
         assert!(!setup.adopted_existing);
-        for dir in ["projects", "runs", "cache/modules"] {
+        for dir in ["projects", "runs", "chats", "cache/modules"] {
             assert!(env.default_root.join(dir).is_dir(), "{dir} missing");
         }
         assert!(!env.locator_path.exists());
@@ -677,6 +689,10 @@ mod tests {
         let from_db = BrukHome::with_database_path("/tmp/test/factory.db");
         assert_eq!(from_db.root(), Path::new("/tmp/test"));
         assert_eq!(from_db.runs_dir(), Path::new("/tmp/test/runs"));
+        assert_eq!(
+            from_db.chat_dir("chat-1"),
+            Path::new("/tmp/test/chats/chat-1")
+        );
     }
 
     #[test]

@@ -1,5 +1,6 @@
 //! Main macOS desktop shell: unified header toolbar, left navigation rail, and active canvas.
 
+mod chat;
 mod claude_spawn_settings;
 mod codex_spawn_settings;
 mod dashboard;
@@ -152,6 +153,9 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::WorkflowRun => store::active_workflow_run().workflow_name,
                 ActiveView::ProjectSettings => "Project settings".to_owned(),
                 ActiveView::RegisterProject => "Register Project".to_owned(),
+                ActiveView::Chat => store::active_chat_meta()
+                    .map(|chat| chat.title)
+                    .unwrap_or_else(|| "New chat".to_owned()),
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| p.name)
                     .unwrap_or_else(|| "Workspace".to_owned()),
@@ -220,6 +224,10 @@ fn header_title_block() -> impl IntoElement {
                 ActiveView::RegisterProject => {
                     "Clone into your Bruk folder or link an existing clone".to_owned()
                 }
+                ActiveView::Chat => match store::selected_project() {
+                    Some(project) => format!("{} · Chats", project.name),
+                    None => "No project selected".to_owned(),
+                },
                 ActiveView::Workspace => store::selected_project()
                     .map(|p| format!("{} · {}", p.default_branch, p.root_path.display()))
                     .unwrap_or_else(|| "Select a project to run workflows".to_owned()),
@@ -964,6 +972,8 @@ fn sidebar_agent_slots_summary() -> impl IntoElement {
 fn sidebar_dashboard_item() -> impl IntoElement {
     let is_active = || store::active_view() == ActiveView::Dashboard;
     button()
+        .test_id("sidebar-dashboard-btn")
+        .accessibility_label("Dashboard")
         .on_press(store::open_dashboard)
         .rounded(px(7.0))
         .hover(|s| s.bg(palette::sidebar_hover_bg()))
@@ -1521,6 +1531,87 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
             list
         }))
         .child({
+            let is_chats_active = move || {
+                store::active_view() == ActiveView::Chat && store::selected_project_id() == Some(id)
+            };
+            let chats_test_id = format!("sidebar-chats-{id}");
+            button()
+                .test_id(&chats_test_id)
+                .accessibility_label(move || {
+                    let name = store::project_by_id(id).map(|p| p.name).unwrap_or_default();
+                    Some(SharedString::from(format!("Chats for {name}")))
+                })
+                .on_press(move || store::open_chats_for_project(id))
+                .rounded(px(7.0))
+                .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                .active(|s| s.opacity(0.85))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .gap(px(6.0))
+                        .px(px(9.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .bg(move || {
+                            if is_chats_active() {
+                                palette::nav_active_bg()
+                            } else {
+                                AdaptiveColor::TRANSPARENT
+                            }
+                        })
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(icons::chat_bubbles(14.0, move || {
+                                    if is_chats_active() {
+                                        palette::nav_active_fg()
+                                    } else {
+                                        palette::text_secondary()
+                                    }
+                                }))
+                                .child(
+                                    text("Chats")
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(move || {
+                                            if is_chats_active() {
+                                                palette::nav_active_fg()
+                                            } else {
+                                                palette::text_primary()
+                                            }
+                                        }),
+                                ),
+                        )
+                        .child(dynamic(move || {
+                            let (total, running) = store::chat_counts_for_project(id);
+                            let color = if is_chats_active() {
+                                palette::nav_active_fg()
+                            } else {
+                                palette::text_muted()
+                            };
+                            if running > 0 {
+                                icons::status_running(if is_chats_active() {
+                                    palette::nav_active_fg()
+                                } else {
+                                    palette::link_blue()
+                                })
+                                .into_element()
+                            } else {
+                                text(total.to_string())
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .tabular_nums()
+                                    .text_color(color)
+                                    .into_element()
+                            }
+                        })),
+                )
+        })
+        .child({
             let run_history_test_id = format!("sidebar-run-history-{id}");
             button()
                 .test_id(&run_history_test_id)
@@ -1663,6 +1754,10 @@ fn content_pane() -> impl IntoElement {
                 .child(when(
                     || store::active_view() == ActiveView::RegisterProject,
                     register_project::register_project_view,
+                ))
+                .child(when(
+                    || store::active_view() == ActiveView::Chat,
+                    chat::chat_view,
                 )),
         )
         .child(when(|| store::status_message().is_some(), status_banner))

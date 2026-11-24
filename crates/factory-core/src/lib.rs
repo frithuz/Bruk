@@ -5,6 +5,7 @@
 //! and reused across the macOS app, CLI tools, or background daemons.
 
 pub mod bruk_home;
+pub mod chat;
 pub mod claude_cli;
 pub mod claude_settings;
 pub mod codex_cli;
@@ -30,6 +31,16 @@ pub use bruk_home::{
     BRUK_HOME_ENV, BrukHome, CloneError, CloneSource, ClonedRepository, DEFAULT_HOME_DIR_NAME,
     HOME_DATABASE_FILE, HomeEnvironment, HomeError, HomeResolution, HomeSetup, clone_repository,
     display_with_tilde, parse_clone_source, project_dir_name, resolve_system_home,
+};
+pub use chat::{
+    ChatContextCategory, ChatContextGroup, ChatContextItem, ChatContextKind, ChatContextUsage,
+    ChatEntry, ChatEvent, ChatNoticeTone, ChatProviderTotals, ChatSession, ChatSessionStatus,
+    ChatSessionSummary, ChatStreamItem, ChatToolStatus, ChatTurnControl, ChatTurnError,
+    ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
+    UNTITLED_CHAT_TITLE, UsageCount, build_chat_turn_command, chat_title_from_message,
+    chat_worktree_branch, execute_chat_turn_blocking, micros_to_cents, parse_claude_chat_line,
+    parse_claude_context_usage, parse_codex_chat_line, parse_codex_rollout_context,
+    query_chat_context, remove_chat_worktree, spawn_chat_turn,
 };
 pub use claude_cli::{
     CLAUDE_BINARY_NAME, ClaudeBinaryError, ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption,
@@ -125,7 +136,7 @@ pub use step_context::{
     TemplateContext, build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan,
     compile_step_context, default_step_runtime_dir, materialize_step_context,
 };
-pub use storage::{PersistedWorkflowRun, ProjectDatabase, StorageError};
+pub use storage::{PersistedChatUsage, PersistedWorkflowRun, ProjectDatabase, StorageError};
 pub use work_queue::{
     GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue,
     WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,

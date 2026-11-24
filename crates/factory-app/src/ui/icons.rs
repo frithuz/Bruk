@@ -508,3 +508,24 @@ pub(crate) fn globe(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement
     )
     .text_color(color)
 }
+
+/// Two overlapping speech bubbles for Chats.
+pub(crate) fn chat_bubbles(
+    size_px: f32,
+    color: impl IntoReactive<AdaptiveColor>,
+) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3.6a1.1 1.1 0 0 1 1.1-1.1h6.3a1.1 1.1 0 0 1 1.1 1.1v3.9a1.1 1.1 0 0 1-1.1 1.1H5.4L3.2 10.2V8.6h-.1A1.1 1.1 0 0 1 2 7.5Z"/><path d="M12.4 5.6h.5a1.1 1.1 0 0 1 1.1 1.1v3.7a1.1 1.1 0 0 1-1.1 1.1h-.1v1.6l-2.2-1.6H7.6a1.1 1.1 0 0 1-1.1-1.1v-.3"/></svg>"#,
+        size_px,
+    )
+    .text_color(color)
+}
+
+/// Upward arrow for sending a chat message.
+pub(crate) fn arrow_up(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 13V3.5"/><path d="M4 7.3 8 3.3l4 4"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}

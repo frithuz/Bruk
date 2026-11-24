@@ -72,7 +72,7 @@ fn dashboard_landing_page_renders_reference_metrics_and_interactive_controls() {
     assert!(app.screen().shows("Tokens per day"));
     assert!(app.screen().shows("Tokens by project"));
     assert!(app.screen().shows("Projects worked on"));
-    assert!(app.screen().shows("Highest token runs"));
+    assert!(app.screen().shows("Highest token runs & chats"));
     assert!(app.screen().shows("Dependency upgrade · run #6"));
     assert!(app.screen().shows("Time agents waited on you"));
     assert!(app.screen().shows("2 h 10 m"));
@@ -3533,4 +3533,344 @@ fn default_projects_dir_follows_bruk_folder_and_redirects_clones_when_changed() 
         factory_core::display_with_tilde(&home_root.join("projects"))
     ))
     .unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn chat_sessions_stream_replies_resume_the_agent_session_and_persist() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("chat-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let log = temp.path().join("claude-calls.log");
+
+    let context_log = temp.path().join("claude-context.log");
+
+    // Chat turns are the only calls with `--include-partial-messages`, and context readings
+    // the only ones with `--fork-session`; anything else is the app's own account and
+    // details probing.
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+  *" --fork-session "*)
+    echo "CONTEXT: $* STDIN: $(cat)" >> '{context_log}'
+    echo '{{"type":"control_response","response":{{"subtype":"success","request_id":"bruk_context_usage","response":{{"categories":[{{"id":"system_prompt","name":"System prompt","tokens":3000,"kind":"used"}},{{"id":"messages","name":"Messages","tokens":1234,"kind":"used"}},{{"id":"autocompact_buffer","name":"Autocompact buffer","tokens":33000,"kind":"buffer"}},{{"id":"free_space","name":"Free space","tokens":162766,"kind":"free"}}],"totalTokens":4234,"maxTokens":200000,"model":"claude-test","memoryFiles":[{{"path":"/repo/CLAUDE.md","tokens":120}}],"autoCompactThreshold":167000,"isAutoCompactEnabled":true}}}}}}'
+    ;;
+  *" --include-partial-messages "*)
+    prompt=$(cat)
+    echo "ARGS: $*" >> '{log}'
+    echo "PROMPT: $prompt" >> '{log}'
+    echo '{{"type":"system","subtype":"init","session_id":"sess-42"}}'
+    echo '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_1","name":"Read","input":{{"file_path":"src/auth.rs"}}}}]}}}}'
+    echo '{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"fn login()"}}]}}}}'
+    echo "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reply to: $prompt\"}}]}}}}"
+    echo '{{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.02,"usage":{{"input_tokens":1200,"output_tokens":34}},"model_usage_since_last_result":{{"claude-test":{{"inputTokens":1200,"outputTokens":34,"costUSD":0.02}}}}}}'
+    ;;
+  *)
+    echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"chat@example.com"}}'
+    ;;
+esac
+"#,
+            log = log.display(),
+            context_log = context_log.display()
+        ),
+    );
+
+    {
+        let mut app =
+            start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+        app.press("id:dashboard-empty-register-project").unwrap();
+        app.wait_for("Add a project").unwrap();
+        app.press("id:register-mode-link").unwrap();
+        app.type_text("text:Project name", "chat-repo").unwrap();
+        app.type_text("text:Repository path", &repo_dir.display().to_string())
+            .unwrap();
+        app.press("role:button[Link Project]").unwrap();
+        app.wait_for("Registered project 'chat-repo'").unwrap();
+
+        // Chats sit beside the project's workflows with a fresh composer.
+        app.press("id:sidebar-chats-1").unwrap();
+        app.wait_for("Chat with an agent in chat-repo").unwrap();
+        assert!(app.screen().shows("chat-repo · Chats"));
+        assert!(
+            app.screen()
+                .shows("No chats yet. Ask an agent about this project, or have it make a change.")
+        );
+        assert!(!app.screen().enabled("id:chat-send-btn").unwrap());
+
+        // The first message starts the chat, names it, and streams the reply with its tool calls.
+        app.type_text("id:chat-composer-input", "Where is auth handled")
+            .unwrap();
+        app.press("id:chat-send-btn").unwrap();
+        app.wait_for("Reply to: Where is auth handled").unwrap();
+        assert!(app.screen().shows("src/auth.rs"));
+        app.wait_for("Claude · 1 message · 1K tokens · $0.02")
+            .unwrap();
+        assert!(
+            app.screen()
+                .matches("role:button[Where is auth handled]")
+                .unwrap()
+        );
+        app.wait_for("id:chat-send-btn").unwrap();
+        assert!(
+            app.screen().shows(
+                "Return to send · Shift+Return for a new line · Works in the project checkout"
+            )
+        );
+
+        // After the reply Bruk measures the context window; the panel breaks it down.
+        app.wait_for("4.2K / 200K").unwrap();
+        app.press("id:chat-context-btn").unwrap();
+        app.wait_for("4.2K of 200K tokens").unwrap();
+        for shown in [
+            "Context window",
+            "2% full · claude-test",
+            "System prompt",
+            "Messages",
+            "Autocompact buffer",
+            "Free space",
+            "Memory files · 1",
+            "/repo/CLAUDE.md",
+        ] {
+            assert!(app.screen().shows(shown), "missing {shown}");
+        }
+        app.press("id:chat-context-close").unwrap();
+        assert!(!app.screen().shows("4.2K of 200K tokens"));
+
+        // Return sends the next message, which resumes the same agent session.
+        app.type_text("id:chat-composer-input", "Show me the tests")
+            .unwrap();
+        app.submit("id:chat-composer-input").unwrap();
+        app.wait_for("Reply to: Show me the tests").unwrap();
+        app.wait_for("Claude · 2 messages · 2K tokens · $0.04")
+            .unwrap();
+        assert!(app.screen().shows("Reply to: Where is auth handled"));
+
+        // The Dashboard counts what the chat used.
+        app.press("id:sidebar-dashboard-btn").unwrap();
+        app.wait_for("Highest token runs & chats").unwrap();
+        app.wait_for("chat-repo · Chat · Claude").unwrap();
+        assert!(app.screen().shows("$0.04 · 2 replies"));
+        app.press("id:sidebar-chats-1").unwrap();
+        app.wait_for("Reply to: Show me the tests").unwrap();
+
+        // A new chat leaves the first one in the list.
+        app.press("id:chat-new-btn").unwrap();
+        app.wait_for("Chat with an agent in chat-repo").unwrap();
+        assert!(
+            app.screen()
+                .matches("role:button[Where is auth handled]")
+                .unwrap()
+        );
+    }
+
+    let calls = std::fs::read_to_string(&log).unwrap();
+    let lines: Vec<&str> = calls.lines().collect();
+    assert_eq!(lines.len(), 4, "{calls}");
+    assert!(!lines[0].contains("--resume"), "{}", lines[0]);
+    assert!(
+        lines[0].contains("--setting-sources project"),
+        "{}",
+        lines[0]
+    );
+    assert_eq!(lines[1], "PROMPT: Where is auth handled");
+    assert!(lines[2].ends_with("--resume sess-42"), "{}", lines[2]);
+    assert_eq!(lines[3], "PROMPT: Show me the tests");
+
+    // Each reply is followed by one context reading of an unsaved fork of the session.
+    let context_calls = std::fs::read_to_string(&context_log).unwrap();
+    let context_lines: Vec<&str> = context_calls.lines().collect();
+    assert_eq!(context_lines.len(), 2, "{context_calls}");
+    for line in &context_lines {
+        assert!(
+            line.contains("--resume sess-42 --fork-session --no-session-persistence"),
+            "{line}"
+        );
+        assert!(line.contains(r#""subtype":"get_context_usage""#), "{line}");
+    }
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let chats = db.list_chat_sessions().unwrap();
+    assert_eq!(chats.len(), 1);
+    assert_eq!(chats[0].title, "Where is auth handled");
+    assert_eq!(chats[0].provider_session_id.as_deref(), Some("sess-42"));
+    assert_eq!(chats[0].status, factory_core::ChatSessionStatus::Idle);
+    assert_eq!(
+        chats[0]
+            .context
+            .as_ref()
+            .map(|c| (c.used_tokens, c.window_tokens)),
+        Some((4_234, 200_000))
+    );
+    let usage = db.list_chat_usage().unwrap();
+    assert_eq!(usage.len(), 1);
+    assert_eq!(
+        (usage[0].tokens, usage[0].cost_micros, usage[0].turns),
+        (2_468, 40_000, 2)
+    );
+    drop(db);
+
+    // Chats survive a restart and can be deleted.
+    let mut reopened = start_with_db_and_claude_path(db_path.clone(), bin_dir.into_os_string());
+    reopened.press("id:sidebar-chats-1").unwrap();
+    reopened
+        .wait_for("role:button[Where is auth handled]")
+        .unwrap();
+    reopened
+        .press("role:button[Where is auth handled]")
+        .unwrap();
+    reopened.wait_for("Reply to: Show me the tests").unwrap();
+    reopened.press("id:chat-delete-btn").unwrap();
+    reopened.press("id:chat-delete-confirm").unwrap();
+    reopened
+        .wait_for("Deleted chat 'Where is auth handled'")
+        .unwrap();
+    assert!(reopened.screen().shows("Chat with an agent in chat-repo"));
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    assert!(db.list_chat_sessions().unwrap().is_empty());
+
+    // What a deleted chat used still counts.
+    reopened.press("id:sidebar-dashboard-btn").unwrap();
+    reopened.wait_for("$0.04 · 2 replies · deleted").unwrap();
+    assert!(db.list_chat_usage().unwrap()[0].deleted);
+}
+
+#[cfg(unix)]
+#[test]
+fn worktree_chats_work_on_their_own_branch_and_leave_the_checkout_alone() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("wt-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(repo_dir.join("README.md"), "demo\n").unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test"],
+        vec!["add", "."],
+        vec!["commit", "-m", "initial"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let log = temp.path().join("claude-calls.log");
+    // The agent "edits" a file wherever it runs.
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        &format!(
+            r#"#!/bin/sh
+case " $* " in
+  *" --include-partial-messages "*)
+    cat > /dev/null
+    echo "CWD: $(pwd -P)" >> '{log}'
+    echo "edited" > agent-notes.txt
+    echo '{{"type":"system","subtype":"init","session_id":"wt-sess"}}'
+    echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"Wrote agent-notes.txt"}}]}}}}'
+    echo '{{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{{"input_tokens":10,"output_tokens":2}}}}'
+    ;;
+  *" --fork-session "*)
+    cat > /dev/null
+    ;;
+  *)
+    echo '{{"loggedIn":true,"authMethod":"claude.ai","email":"chat@example.com"}}'
+    ;;
+esac
+"#,
+            log = log.display()
+        ),
+    );
+
+    let mut app =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "wt-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'wt-repo'").unwrap();
+
+    app.press("id:sidebar-chats-1").unwrap();
+    app.wait_for("Chat with an agent in wt-repo").unwrap();
+    app.press("id:chat-new-workspace").unwrap();
+    app.press("role:option[New worktree]").unwrap();
+    app.wait_for("The agent gets a new branch from HEAD in a folder of its own, so your checkout stays as it is.")
+        .unwrap();
+    assert!(
+        app.screen()
+            .shows("Return to send · Shift+Return for a new line · Works in a new worktree")
+    );
+
+    app.type_text("id:chat-composer-input", "Add release notes")
+        .unwrap();
+    app.press("id:chat-send-btn").unwrap();
+    app.wait_for("Wrote agent-notes.txt").unwrap();
+    app.wait_for(
+        "Return to send · Shift+Return for a new line · Works in worktree agent/chat-add-release-notes",
+    )
+        .unwrap();
+    assert!(
+        app.screen()
+            .matches("role:button[Show worktree agent/chat-add-release-notes in Finder]")
+            .unwrap()
+    );
+
+    // The edit landed in the chat's worktree, not in the checkout.
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let chat = db.list_chat_sessions().unwrap().remove(0);
+    drop(db);
+    let worktree = chat.worktree.clone().unwrap();
+    assert_eq!(worktree.branch, "agent/chat-add-release-notes");
+    assert!(
+        worktree
+            .path
+            .ends_with(format!("chats/{}/worktree", chat.id))
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.path.join("agent-notes.txt")).unwrap(),
+        "edited\n"
+    );
+    assert!(!repo_dir.join("agent-notes.txt").exists());
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert_eq!(
+        calls.trim(),
+        format!(
+            "CWD: {}",
+            std::fs::canonicalize(&worktree.path).unwrap().display()
+        )
+    );
+
+    // Deleting the chat removes its worktree; the branch stays.
+    app.press("id:chat-delete-btn").unwrap();
+    app.wait_for("Delete the chat and its worktree? Uncommitted changes there are lost.")
+        .unwrap();
+    app.press("id:chat-delete-confirm").unwrap();
+    app.wait_for("Deleted chat 'Add release notes' and its worktree. Branch agent/chat-add-release-notes is kept.")
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while worktree.path.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(!worktree.path.exists());
+    let branches = std::process::Command::new("git")
+        .args(["branch", "--list", "agent/chat-add-release-notes"])
+        .current_dir(&repo_dir)
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&branches.stdout).contains("agent/chat-add-release-notes"));
 }

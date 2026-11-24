@@ -18,9 +18,10 @@ Everything Bruk stores lives in one folder, `~/Bruk` by default:
 
 ```text
 ~/Bruk/
-├── bruk.db           SQLite: projects, preferences, project settings, secrets, run history
+├── bruk.db           SQLite: projects, preferences, project settings, secrets, run history, chats and their token use
 ├── projects/<name>/  Repositories Bruk cloned for you
 ├── runs/<run-id>/    Per-run step bundles and isolated git worktrees
+├── chats/<chat-id>/  Per-chat agent instructions, Codex's isolated home, and the chat's worktree
 └── cache/modules/    Git modules fetched for .agents/bruk/bruk.yaml
 ```
 
@@ -41,6 +42,35 @@ Data from the old location (`~/Library/Application Support/software-factory/fact
 offered for a one-time import during setup; the original file is left untouched.
 
 Set `BRUK_HOME` to use a specific folder and skip setup (handy for development).
+
+## Chats
+
+Next to workflows, each project has **Chats**: open-ended conversations with one of its agents
+(sidebar › project › Chats, or File › New Chat, ⌘T). A new chat picks a provider (Claude, or
+Codex once added in Settings), an optional agent from the project's `.agents/bruk` catalog,
+what the agent may do (Read-only, Workspace write, Full access; changeable later), and where it
+works:
+
+- **Project checkout**: the agent works in your checkout, next to your own edits.
+- **New worktree** (git projects): the first message creates a worktree in
+  `chats/<chat-id>/worktree` on a new branch from `HEAD`, named after the message
+  (`<branch prefix>chat-<title>`). The checkout is left alone. Deleting the chat removes the worktree,
+  including uncommitted changes; the branch and its commits stay.
+
+Each message runs one non-interactive turn of the provider CLI and resumes the provider's own
+session (`claude --resume <id>`, `codex exec … resume <id>`), so the agent keeps the whole
+conversation. Turns get the same user-context isolation as workflow steps: only the chosen agent
+and the skills and subagents it declares, plus the repository's own instructions. Replies stream
+in as Markdown, with tool calls shown inline; transcripts are kept in `bruk.db`.
+
+After each reply Bruk measures the agent's **context window**: the header shows how full it is,
+and the Context panel breaks it down. For Claude the breakdown covers system prompt, tools,
+memory files, skills, messages, the autocompact buffer and free space. Claude Code reports this
+for an unsaved fork of the session, so the chat itself is untouched and no model is called.
+Codex reports only the total, read from its own record of the thread.
+
+Every token and cent a chat uses is recorded per turn and counted on the **Dashboard** next to
+workflow runs, even after the chat is deleted.
 
 ## Prerequisites
 

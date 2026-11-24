@@ -318,6 +318,10 @@ pub fn compile_step_context(
     })
 }
 
+/// Folder (inside a step's or chat's runtime directory) of the isolated `CODEX_HOME` that Codex
+/// runs with.
+pub const ISOLATED_CODEX_HOME_DIR: &str = "codex-home";
+
 /// Materializes a [`StepContextBundle`] into an out-of-repo `runtime_dir`.
 ///
 /// For Codex runs, creates an isolated `codex-home/` directory copying **only** auth credential
@@ -392,7 +396,7 @@ pub fn materialize_step_context(
     };
 
     let codex_home_dir = if bundle.provider == ProviderKind::Codex {
-        let home = runtime_dir.join("codex-home");
+        let home = runtime_dir.join(ISOLATED_CODEX_HOME_DIR);
         fs::create_dir_all(&home).map_err(|source| StepContextError::CreateDir {
             path: home.clone(),
             source,

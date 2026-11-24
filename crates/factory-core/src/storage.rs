@@ -10,8 +10,9 @@ use thiserror::Error;
 
 use crate::{
     bruk_home::{BrukHome, HomeError},
+    chat::{ChatSession, ChatUsageDelta},
     model::{Project, ProjectId},
-    preferences::AppPreferences,
+    preferences::{AppPreferences, ProviderKind},
     project_settings::ProjectSettings,
     work_queue::ProjectWorkQueue,
     workflow_run::{RunExecutionState, WorkflowRunViewData},
@@ -184,7 +185,31 @@ impl ProjectDatabase {
                  view_json        TEXT NOT NULL,
                  started_at       INTEGER NOT NULL DEFAULT (unixepoch()),
                  finished_at      INTEGER
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS chat_sessions (
+                 id               TEXT PRIMARY KEY,
+                 project_id       INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 title            TEXT NOT NULL DEFAULT '',
+                 provider         TEXT NOT NULL,
+                 status           TEXT NOT NULL,
+                 total_tokens     INTEGER NOT NULL DEFAULT 0,
+                 total_cost_cents INTEGER NOT NULL DEFAULT 0,
+                 value_json       TEXT NOT NULL,
+                 created_at       INTEGER NOT NULL DEFAULT (unixepoch()),
+                 updated_at       INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS chat_usage (
+                 id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                 chat_id      TEXT NOT NULL,
+                 project_id   INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 project_name TEXT NOT NULL,
+                 chat_title   TEXT NOT NULL DEFAULT '',
+                 provider     TEXT NOT NULL,
+                 tokens       INTEGER NOT NULL DEFAULT 0,
+                 cost_micros  INTEGER NOT NULL DEFAULT 0,
+                 recorded_at  INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE INDEX IF NOT EXISTS chat_usage_by_chat ON chat_usage(chat_id);",
         )?;
         Ok(())
     }
@@ -526,6 +551,146 @@ impl ProjectDatabase {
         }
         Ok(out)
     }
+
+    /// Inserts or updates a chat session with its whole transcript.
+    pub fn save_chat_session(&self, session: &ChatSession) -> Result<(), StorageError> {
+        let provider = serde_json::to_string(&session.provider)?;
+        let status = serde_json::to_string(&session.status)?;
+        let json = serde_json::to_string(session)?;
+        self.conn.execute(
+            "INSERT INTO chat_sessions (
+                 id, project_id, title, provider, status, total_tokens, total_cost_cents,
+                 value_json, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(id) DO UPDATE SET
+                 title = excluded.title,
+                 provider = excluded.provider,
+                 status = excluded.status,
+                 total_tokens = excluded.total_tokens,
+                 total_cost_cents = excluded.total_cost_cents,
+                 value_json = excluded.value_json,
+                 updated_at = excluded.updated_at",
+            params![
+                session.id,
+                session.project_id as i64,
+                session.title,
+                provider,
+                status,
+                session.total_tokens as i64,
+                session.total_cost_cents() as i64,
+                json,
+                session.created_at,
+                session.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Loads every chat session across projects, most recently active first. Rows that no
+    /// longer parse are skipped.
+    pub fn list_chat_sessions(&self) -> Result<Vec<ChatSession>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value_json FROM chat_sessions ORDER BY updated_at DESC, id DESC")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut out = Vec::new();
+        for row in rows {
+            if let Ok(session) = serde_json::from_str::<ChatSession>(&row?) {
+                out.push(session);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Deletes a chat session. Returns `true` if a row was deleted. Its usage records stay.
+    pub fn delete_chat_session(&self, id: &str) -> Result<bool, StorageError> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM chat_sessions WHERE id = ?1", params![id])?;
+        Ok(affected > 0)
+    }
+
+    /// Records the tokens and cost one turn of `session` used. Records outlive the chat, so the
+    /// Dashboard keeps counting what a deleted chat consumed.
+    pub fn record_chat_usage(
+        &self,
+        session: &ChatSession,
+        usage: ChatUsageDelta,
+        recorded_at: i64,
+    ) -> Result<(), StorageError> {
+        let provider = serde_json::to_string(&session.provider)?;
+        self.conn.execute(
+            "INSERT INTO chat_usage (
+                 chat_id, project_id, project_name, chat_title, provider, tokens, cost_micros,
+                 recorded_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                session.id,
+                session.project_id as i64,
+                session.project_name,
+                session.display_title(),
+                provider,
+                usage.tokens as i64,
+                usage.cost_micros as i64,
+                recorded_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Usage of every chat that recorded any, deleted chats included, one row per chat
+    /// (named as of its latest turn), most tokens first.
+    pub fn list_chat_usage(&self) -> Result<Vec<PersistedChatUsage>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT t.chat_id, l.project_name, l.chat_title, l.provider, t.tokens, t.cost_micros,
+                    t.turns, t.last_recorded_at,
+                    EXISTS (SELECT 1 FROM chat_sessions s WHERE s.id = t.chat_id)
+             FROM (
+                 SELECT chat_id, MAX(id) AS last_id, SUM(tokens) AS tokens,
+                        SUM(cost_micros) AS cost_micros, COUNT(*) AS turns,
+                        MAX(recorded_at) AS last_recorded_at
+                 FROM chat_usage
+                 GROUP BY chat_id
+             ) t
+             JOIN chat_usage l ON l.id = t.last_id
+             ORDER BY t.tokens DESC, t.chat_id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            let provider_raw: String = row.get(3)?;
+            Ok(PersistedChatUsage {
+                chat_id: row.get(0)?,
+                project_name: row.get(1)?,
+                title: row.get(2)?,
+                provider: serde_json::from_str(&provider_raw).unwrap_or(ProviderKind::Claude),
+                tokens: row.get::<_, i64>(4)?.max(0) as u64,
+                cost_micros: row.get::<_, i64>(5)?.max(0) as u64,
+                turns: row.get::<_, i64>(6)?.max(0) as u32,
+                last_recorded_at: row.get(7)?,
+                deleted: !row.get::<_, bool>(8)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+}
+
+/// What one chat's turns used, summed from its usage records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PersistedChatUsage {
+    pub chat_id: String,
+    pub project_name: String,
+    pub title: String,
+    pub provider: ProviderKind,
+    pub tokens: u64,
+    pub cost_micros: u64,
+    /// Turns that reported usage.
+    pub turns: u32,
+    pub last_recorded_at: i64,
+    /// The chat itself was deleted; its usage still counts.
+    pub deleted: bool,
 }
 
 fn map_workflow_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<PersistedWorkflowRun> {
@@ -561,6 +726,119 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn persists_chat_sessions_and_drops_them_with_their_project() {
+        use crate::{
+            chat::{ChatEvent, ChatSessionStatus},
+            project_settings::ProjectSandboxMode,
+        };
+
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("bruk.db");
+        let db = ProjectDatabase::open(&db_path).unwrap();
+        let project = db.register_project("api", "/work/api", "main", "").unwrap();
+
+        let mut older = ChatSession::new(
+            "chat-1",
+            project.id,
+            "api",
+            ProviderKind::Claude,
+            None,
+            None,
+            ProjectSandboxMode::ReadOnly,
+            10,
+        );
+        older.push_user_message("Where is auth handled?", 10);
+        let mut newer = ChatSession::new(
+            "chat-2",
+            project.id,
+            "api",
+            ProviderKind::Codex,
+            Some("reviewer".to_owned()),
+            Some("Reviewer".to_owned()),
+            ProjectSandboxMode::WorkspaceWrite,
+            20,
+        );
+        newer.push_user_message("Review my branch", 20);
+        db.save_chat_session(&older).unwrap();
+        db.save_chat_session(&newer).unwrap();
+
+        // Updates replace the row in place.
+        older.apply_event(&ChatEvent::TurnStarted, 30);
+        older.apply_event(
+            &ChatEvent::AssistantMessage {
+                text: "In `src/auth.rs`.".to_owned(),
+            },
+            30,
+        );
+        older.apply_event(
+            &ChatEvent::TurnFinished {
+                status: ChatSessionStatus::Idle,
+                error: None,
+            },
+            30,
+        );
+        db.save_chat_session(&older).unwrap();
+
+        let reopened = ProjectDatabase::open(&db_path).unwrap();
+        let chats = reopened.list_chat_sessions().unwrap();
+        assert_eq!(
+            chats.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["chat-1", "chat-2"]
+        );
+        assert_eq!(chats[0], older);
+        assert_eq!(chats[1], newer);
+
+        // Usage is recorded per turn and outlives the chat.
+        let turn = |tokens, cost_micros| ChatUsageDelta {
+            tokens,
+            cost_micros,
+        };
+        reopened
+            .record_chat_usage(&older, turn(1_000, 20_000), 31)
+            .unwrap();
+        reopened
+            .record_chat_usage(&older, turn(500, 5_000), 32)
+            .unwrap();
+        reopened
+            .record_chat_usage(&newer, turn(4_000, 0), 33)
+            .unwrap();
+        assert!(reopened.delete_chat_session("chat-2").unwrap());
+        assert!(!reopened.delete_chat_session("chat-2").unwrap());
+        let usage = reopened.list_chat_usage().unwrap();
+        assert_eq!(
+            usage,
+            vec![
+                PersistedChatUsage {
+                    chat_id: "chat-2".to_owned(),
+                    project_name: "api".to_owned(),
+                    title: "Review my branch".to_owned(),
+                    provider: ProviderKind::Codex,
+                    tokens: 4_000,
+                    cost_micros: 0,
+                    turns: 1,
+                    last_recorded_at: 33,
+                    deleted: true,
+                },
+                PersistedChatUsage {
+                    chat_id: "chat-1".to_owned(),
+                    project_name: "api".to_owned(),
+                    title: "Where is auth handled?".to_owned(),
+                    provider: ProviderKind::Claude,
+                    tokens: 1_500,
+                    cost_micros: 25_000,
+                    turns: 2,
+                    last_recorded_at: 32,
+                    deleted: false,
+                },
+            ]
+        );
+
+        assert!(reopened.delete_project(project.id).unwrap());
+        assert!(reopened.list_chat_sessions().unwrap().is_empty());
+        assert!(reopened.list_chat_usage().unwrap().is_empty());
+    }
 
     #[test]
     fn creates_nested_dir_and_persists_projects_across_reopen() {

@@ -1797,6 +1797,10 @@ pub fn parse_claude_stream_json_line(line: &str) -> Option<ParsedStreamEvent> {
                 .and_then(|u| u.get("cache_read_input_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
+            let cache_write = usage
+                .and_then(|u| u.get("cache_creation_input_tokens"))
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
             let cost_usd = val
                 .get("total_cost_usd")
                 .and_then(|v| v.as_f64())
@@ -1806,7 +1810,7 @@ pub fn parse_claude_stream_json_line(line: &str) -> Option<ParsedStreamEvent> {
                 .and_then(|v| v.as_str())
                 .map(str::to_owned);
             Some(ParsedStreamEvent::Usage {
-                tokens: input + output + cache_read,
+                tokens: input + output + cache_read + cache_write,
                 cost_cents: (cost_usd * 100.0).round() as u64,
                 result_text,
             })
@@ -2082,7 +2086,7 @@ fn wait_child_with_cancel(
     }
 }
 
-fn terminate_pid(pid: u32) {
+pub(crate) fn terminate_pid(pid: u32) {
     #[cfg(unix)]
     {
         let _ = Command::new("/bin/kill")

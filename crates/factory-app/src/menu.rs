@@ -189,6 +189,10 @@ fn file_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 .shortcut("mod+n")
                 .disabled(!snapshot.has_projects)
                 .on_select(open_new_workflow),
+            MenuItem::new("New Chat")
+                .shortcut("mod+t")
+                .disabled(!snapshot.has_projects)
+                .on_select(open_new_chat),
             MenuItem::new("New Project…")
                 .shortcut("mod+shift+n")
                 .on_select(open_new_project),
@@ -557,6 +561,11 @@ fn open_ad_hoc_run() {
 
 fn open_new_workflow() {
     store::open_new_workflow_drawer();
+    main_window().focus();
+}
+
+fn open_new_chat() {
+    store::start_new_chat();
     main_window().focus();
 }
 

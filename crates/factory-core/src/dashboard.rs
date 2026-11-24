@@ -106,6 +106,9 @@ pub struct ProjectActivityRow {
     pub succeeded: u32,
     pub failed: u32,
     pub est_cost_cents: u64,
+    /// Chats with recorded usage (their tokens and cost are in the project's totals).
+    #[serde(default)]
+    pub chats: u32,
 }
 
 impl ProjectActivityRow {
@@ -118,7 +121,7 @@ impl ProjectActivityRow {
     }
 }
 
-/// One entry in the "Highest token runs" card.
+/// One entry in the "Highest token runs & chats" card.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HighTokenRun {
     pub rank: u8,
@@ -129,6 +132,9 @@ pub struct HighTokenRun {
     pub est_cost_cents: u64,
     pub duration_minutes: u32,
     pub outcome_note: String,
+    /// A chat rather than a workflow run (`duration_minutes` is unknown).
+    #[serde(default)]
+    pub is_chat: bool,
 }
 
 /// Summary of human-in-the-loop response latency and wait impact.
@@ -362,15 +368,33 @@ impl DashboardDataset {
 
     /// Aggregates real persisted workflow runs into live Dashboard telemetry.
     pub fn from_persisted_runs(runs: &[crate::storage::PersistedWorkflowRun]) -> Self {
-        if runs.is_empty() {
+        Self::from_usage(runs, &[])
+    }
+
+    /// Aggregates persisted workflow runs and chat usage into live Dashboard telemetry: every
+    /// token and cent the agents used, whether a workflow or a chat spent it.
+    pub fn from_usage(
+        runs: &[crate::storage::PersistedWorkflowRun],
+        chats: &[crate::storage::PersistedChatUsage],
+    ) -> Self {
+        if runs.is_empty() && chats.is_empty() {
             return Self::empty();
+        }
+
+        #[derive(Default)]
+        struct ProjectTally {
+            succeeded: u32,
+            failed: u32,
+            runs: u32,
+            chats: u32,
+            tokens: u64,
+            cost_cents: u64,
         }
 
         let mut total_cost_cents = 0u64;
         let mut total_duration_ms = 0u64;
         let mut by_provider: BTreeMap<String, u64> = BTreeMap::new();
-        // (succeeded, failed, total, tokens, cost)
-        let mut by_project: BTreeMap<String, (u32, u32, u32, u64, u64)> = BTreeMap::new();
+        let mut by_project: BTreeMap<String, ProjectTally> = BTreeMap::new();
 
         for run in runs {
             total_cost_cents = total_cost_cents.saturating_add(run.total_cost_cents);
@@ -382,35 +406,43 @@ impl DashboardDataset {
             };
             *by_provider.entry(prov_key).or_insert(0) += run.total_tokens;
 
-            let proj = by_project
-                .entry(run.project_name.clone())
-                .or_insert((0, 0, 0, 0, 0));
+            let proj = by_project.entry(run.project_name.clone()).or_default();
             match run.status {
-                crate::workflow_run::RunExecutionState::Succeeded => proj.0 += 1,
+                crate::workflow_run::RunExecutionState::Succeeded => proj.succeeded += 1,
                 crate::workflow_run::RunExecutionState::Failed
-                | crate::workflow_run::RunExecutionState::Stopped => proj.1 += 1,
+                | crate::workflow_run::RunExecutionState::Stopped => proj.failed += 1,
                 _ => {}
             }
-            proj.2 += 1;
-            proj.3 = proj.3.saturating_add(run.total_tokens);
-            proj.4 = proj.4.saturating_add(run.total_cost_cents);
+            proj.runs += 1;
+            proj.tokens = proj.tokens.saturating_add(run.total_tokens);
+            proj.cost_cents = proj.cost_cents.saturating_add(run.total_cost_cents);
+        }
+        for chat in chats {
+            let cost_cents = crate::chat::micros_to_cents(chat.cost_micros);
+            total_cost_cents = total_cost_cents.saturating_add(cost_cents);
+            *by_provider
+                .entry(chat.provider.label().to_owned())
+                .or_insert(0) += chat.tokens;
+            let proj = by_project.entry(chat.project_name.clone()).or_default();
+            proj.chats += 1;
+            proj.tokens = proj.tokens.saturating_add(chat.tokens);
+            proj.cost_cents = proj.cost_cents.saturating_add(cost_cents);
         }
 
         let project_rows: Vec<ProjectActivityRow> = by_project
             .iter()
-            .map(
-                |(name, (succeeded, failed, total, _tokens, cost))| ProjectActivityRow {
-                    project_name: name.clone(),
-                    source: "Local runner".to_owned(),
-                    color: ProjectColor::for_project_name(name),
-                    issues_resolved: *succeeded,
-                    prs_merged: 0,
-                    runs: *total,
-                    succeeded: *succeeded,
-                    failed: *failed,
-                    est_cost_cents: *cost,
-                },
-            )
+            .map(|(name, tally)| ProjectActivityRow {
+                project_name: name.clone(),
+                source: "Local runner".to_owned(),
+                color: ProjectColor::for_project_name(name),
+                issues_resolved: tally.succeeded,
+                prs_merged: 0,
+                runs: tally.runs,
+                succeeded: tally.succeeded,
+                failed: tally.failed,
+                est_cost_cents: tally.cost_cents,
+                chats: tally.chats,
+            })
             .collect();
 
         let providers: Vec<ProviderUsage> = by_provider
@@ -421,14 +453,10 @@ impl DashboardDataset {
             })
             .collect();
 
-        let mut sorted_runs: Vec<&crate::storage::PersistedWorkflowRun> = runs.iter().collect();
-        sorted_runs.sort_by_key(|a| std::cmp::Reverse(a.total_tokens));
-        let highest_token_runs: Vec<HighTokenRun> = sorted_runs
-            .into_iter()
-            .take(5)
-            .enumerate()
-            .map(|(idx, run)| HighTokenRun {
-                rank: (idx + 1) as u8,
+        let mut heaviest: Vec<HighTokenRun> = runs
+            .iter()
+            .map(|run| HighTokenRun {
+                rank: 0,
                 title: format!("{} #{}", run.workflow_name, run.run_number),
                 project_name: run.project_name.clone(),
                 subtitle: run.provider.clone(),
@@ -436,16 +464,52 @@ impl DashboardDataset {
                 est_cost_cents: run.total_cost_cents,
                 duration_minutes: ((run.duration_ms as f64 / 60_000.0).ceil() as u32).max(1),
                 outcome_note: run.summary.clone(),
+                is_chat: false,
+            })
+            .chain(chats.iter().map(|chat| {
+                let replies = match chat.turns {
+                    1 => "1 reply".to_owned(),
+                    n => format!("{n} replies"),
+                };
+                HighTokenRun {
+                    rank: 0,
+                    title: chat.title.clone(),
+                    project_name: chat.project_name.clone(),
+                    subtitle: format!("Chat · {}", chat.provider.label()),
+                    tokens: chat.tokens,
+                    est_cost_cents: crate::chat::micros_to_cents(chat.cost_micros),
+                    duration_minutes: 0,
+                    outcome_note: if chat.deleted {
+                        format!("{replies} · deleted")
+                    } else {
+                        replies
+                    },
+                    is_chat: true,
+                }
+            }))
+            .collect();
+        heaviest.sort_by_key(|item| std::cmp::Reverse(item.tokens));
+        let highest_token_runs: Vec<HighTokenRun> = heaviest
+            .into_iter()
+            .take(5)
+            .enumerate()
+            .map(|(idx, mut item)| {
+                item.rank = (idx + 1) as u8;
+                item
             })
             .collect();
 
         let bucket_entries: Vec<(String, u64)> = by_project
             .iter()
-            .map(|(name, (_, _, _, tokens, _))| (name.clone(), *tokens))
+            .map(|(name, tally)| (name.clone(), tally.tokens))
             .collect();
         let total_tokens: u64 = bucket_entries.iter().map(|(_, t)| *t).sum();
         let chart_max = total_tokens.max(1000);
-        let working_tenths = ((total_duration_ms as f64 / 360_000.0).round() as u32).max(1);
+        let working_tenths = if total_duration_ms == 0 {
+            0
+        } else {
+            ((total_duration_ms as f64 / 360_000.0).round() as u32).max(1)
+        };
 
         let empty_wait = WaitMetrics {
             median_answer_minutes: 0,
@@ -457,14 +521,21 @@ impl DashboardDataset {
             reviews: 0,
             timed_out: 0,
         };
+        let plural =
+            |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let date_range_label = match (runs.len(), chats.len()) {
+            (runs, 0) => plural(runs, "recorded run", "recorded runs"),
+            (0, chats) => plural(chats, "chat", "chats"),
+            (runs, chats) => format!(
+                "{} · {}",
+                plural(runs, "recorded run", "recorded runs"),
+                plural(chats, "chat", "chats")
+            ),
+        };
         let period = PeriodData {
             offset: 0,
             period_label: "This week".to_owned(),
-            date_range_label: format!(
-                "{} recorded run{}",
-                runs.len(),
-                if runs.len() == 1 { "" } else { "s" }
-            ),
+            date_range_label,
             issues_delta_prev: 0,
             prs_delta_prev: 0,
             tokens_delta_pct: 0,
@@ -663,6 +734,7 @@ impl DashboardDataset {
                         succeeded: 0,
                         failed: 0,
                         est_cost_cents: 0,
+                        chats: 0,
                     });
                 }
             }
@@ -1009,6 +1081,7 @@ impl DashboardDataset {
                     succeeded: 28,
                     failed: 3,
                     est_cost_cents: 3910,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1020,6 +1093,7 @@ impl DashboardDataset {
                     succeeded: 11,
                     failed: 1,
                     est_cost_cents: 1240,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1031,6 +1105,7 @@ impl DashboardDataset {
                     succeeded: 7,
                     failed: 2,
                     est_cost_cents: 1170,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![
@@ -1043,6 +1118,7 @@ impl DashboardDataset {
                     est_cost_cents: 465,
                     duration_minutes: 52,
                     outcome_note: "5 loop attempts".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 2,
@@ -1053,6 +1129,7 @@ impl DashboardDataset {
                     est_cost_cents: 340,
                     duration_minutes: 41,
                     outcome_note: "Failed after 5 attempts".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 3,
@@ -1063,6 +1140,7 @@ impl DashboardDataset {
                     est_cost_cents: 210,
                     duration_minutes: 24,
                     outcome_note: "Read 140 pages for context".to_owned(),
+                    is_chat: false,
                 },
             ],
             wait_metrics: WaitMetrics {
@@ -1189,6 +1267,7 @@ impl DashboardDataset {
                     succeeded: 24,
                     failed: 2,
                     est_cost_cents: 3320,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1200,6 +1279,7 @@ impl DashboardDataset {
                     succeeded: 9,
                     failed: 1,
                     est_cost_cents: 1080,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1211,6 +1291,7 @@ impl DashboardDataset {
                     succeeded: 7,
                     failed: 1,
                     est_cost_cents: 1090,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![
@@ -1223,6 +1304,7 @@ impl DashboardDataset {
                     est_cost_cents: 385,
                     duration_minutes: 46,
                     outcome_note: "Succeeded on 3rd attempt".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 2,
@@ -1233,6 +1315,7 @@ impl DashboardDataset {
                     est_cost_cents: 295,
                     duration_minutes: 38,
                     outcome_note: "Succeeded · 1 review round".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 3,
@@ -1243,6 +1326,7 @@ impl DashboardDataset {
                     est_cost_cents: 185,
                     duration_minutes: 21,
                     outcome_note: "Succeeded on 1st attempt".to_owned(),
+                    is_chat: false,
                 },
             ],
             wait_metrics: WaitMetrics {
@@ -1366,6 +1450,7 @@ impl DashboardDataset {
                     succeeded: 20,
                     failed: 2,
                     est_cost_cents: 2980,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1377,6 +1462,7 @@ impl DashboardDataset {
                     succeeded: 8,
                     failed: 1,
                     est_cost_cents: 980,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1388,6 +1474,7 @@ impl DashboardDataset {
                     succeeded: 6,
                     failed: 1,
                     est_cost_cents: 940,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![HighTokenRun {
@@ -1399,6 +1486,7 @@ impl DashboardDataset {
                 est_cost_cents: 325,
                 duration_minutes: 39,
                 outcome_note: "Succeeded on 2nd attempt".to_owned(),
+                is_chat: false,
             }],
             wait_metrics: WaitMetrics {
                 median_answer_minutes: 7,
@@ -1512,6 +1600,7 @@ impl DashboardDataset {
                     succeeded: 19,
                     failed: 2,
                     est_cost_cents: 2740,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1523,6 +1612,7 @@ impl DashboardDataset {
                     succeeded: 7,
                     failed: 1,
                     est_cost_cents: 840,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1534,6 +1624,7 @@ impl DashboardDataset {
                     succeeded: 6,
                     failed: 1,
                     est_cost_cents: 890,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![
@@ -1546,6 +1637,7 @@ impl DashboardDataset {
                     est_cost_cents: 305,
                     duration_minutes: 36,
                     outcome_note: "Waiting in Inbox for review".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 2,
@@ -1556,6 +1648,7 @@ impl DashboardDataset {
                     est_cost_cents: 260,
                     duration_minutes: 29,
                     outcome_note: "Waiting in Inbox for answer".to_owned(),
+                    is_chat: false,
                 },
             ],
             wait_metrics: WaitMetrics {
@@ -1646,6 +1739,7 @@ impl DashboardDataset {
                     succeeded: 91,
                     failed: 9,
                     est_cost_cents: 12950,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1657,6 +1751,7 @@ impl DashboardDataset {
                     succeeded: 35,
                     failed: 4,
                     est_cost_cents: 4140,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1668,6 +1763,7 @@ impl DashboardDataset {
                     succeeded: 26,
                     failed: 5,
                     est_cost_cents: 4090,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![
@@ -1680,6 +1776,7 @@ impl DashboardDataset {
                     est_cost_cents: 465,
                     duration_minutes: 52,
                     outcome_note: "5 loop attempts".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 2,
@@ -1690,6 +1787,7 @@ impl DashboardDataset {
                     est_cost_cents: 385,
                     duration_minutes: 46,
                     outcome_note: "Succeeded on 3rd attempt".to_owned(),
+                    is_chat: false,
                 },
                 HighTokenRun {
                     rank: 3,
@@ -1700,6 +1798,7 @@ impl DashboardDataset {
                     est_cost_cents: 340,
                     duration_minutes: 41,
                     outcome_note: "Failed after 5 attempts".to_owned(),
+                    is_chat: false,
                 },
             ],
             wait_metrics: WaitMetrics {
@@ -1804,6 +1903,7 @@ impl DashboardDataset {
                     succeeded: 74,
                     failed: 8,
                     est_cost_cents: 10820,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "marketing-site".to_owned(),
@@ -1815,6 +1915,7 @@ impl DashboardDataset {
                     succeeded: 31,
                     failed: 3,
                     est_cost_cents: 3650,
+                    chats: 0,
                 },
                 ProjectActivityRow {
                     project_name: "mobile-app".to_owned(),
@@ -1826,6 +1927,7 @@ impl DashboardDataset {
                     succeeded: 22,
                     failed: 4,
                     est_cost_cents: 3410,
+                    chats: 0,
                 },
             ],
             highest_token_runs: vec![HighTokenRun {
@@ -1837,6 +1939,7 @@ impl DashboardDataset {
                 est_cost_cents: 410,
                 duration_minutes: 49,
                 outcome_note: "Succeeded on 2nd attempt".to_owned(),
+                is_chat: false,
             }],
             wait_metrics: WaitMetrics {
                 median_answer_minutes: 8,
@@ -1960,6 +2063,97 @@ fn nice_chart_ceiling(peak: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_usage_counts_toward_every_dashboard_total() {
+        use crate::{
+            preferences::ProviderKind,
+            storage::{PersistedChatUsage, PersistedWorkflowRun},
+            workflow_run::{RunExecutionState, WorkflowRunViewData},
+        };
+        let run = PersistedWorkflowRun {
+            id: "run-1".to_owned(),
+            project_id: 1,
+            project_name: "api".to_owned(),
+            workflow_id: "fix".to_owned(),
+            workflow_name: "Fix issue".to_owned(),
+            run_number: 1,
+            status: RunExecutionState::Succeeded,
+            provider: "Claude".to_owned(),
+            issue_number: None,
+            branch_name: String::new(),
+            total_tokens: 10_000,
+            total_cost_cents: 40,
+            duration_ms: 120_000,
+            summary: "Done".to_owned(),
+            view: WorkflowRunViewData::empty("", ""),
+            started_at: 1,
+            finished_at: Some(2),
+        };
+        let chat =
+            |id: &str, project: &str, provider, tokens, cost_micros, deleted| PersistedChatUsage {
+                chat_id: id.to_owned(),
+                project_name: project.to_owned(),
+                title: format!("Chat {id}"),
+                provider,
+                tokens,
+                cost_micros,
+                turns: 2,
+                last_recorded_at: 3,
+                deleted,
+            };
+        let chats = vec![
+            chat("a", "api", ProviderKind::Claude, 25_000, 120_000, false),
+            chat("b", "web", ProviderKind::Codex, 4_000, 0, true),
+        ];
+        let dataset = DashboardDataset::from_usage(&[run], &chats);
+        let snap = dataset.snapshot(&DashboardQuery::default(), &[], &[]);
+
+        assert_eq!(snap.total_tokens, 39_000);
+        assert_eq!(snap.billed_cost_cents, 52);
+        assert_eq!(snap.date_range_label, "1 recorded run · 2 chats");
+        let providers: Vec<(&str, u64)> = snap
+            .providers
+            .iter()
+            .map(|p| (p.provider_name.as_str(), p.tokens))
+            .collect();
+        assert_eq!(providers, vec![("Claude", 35_000), ("Codex", 4_000)]);
+        let rows: Vec<(&str, u32, u32, u64)> = snap
+            .project_rows
+            .iter()
+            .map(|r| (r.project_name.as_str(), r.runs, r.chats, r.est_cost_cents))
+            .collect();
+        assert_eq!(rows, vec![("api", 1, 1, 52), ("web", 0, 1, 0)]);
+        let heaviest: Vec<(u8, &str, bool, &str)> = snap
+            .highest_token_runs
+            .iter()
+            .map(|r| (r.rank, r.title.as_str(), r.is_chat, r.outcome_note.as_str()))
+            .collect();
+        assert_eq!(
+            heaviest,
+            vec![
+                (1, "Chat a", true, "2 replies"),
+                (2, "Fix issue #1", false, "Done"),
+                (3, "Chat b", true, "2 replies · deleted"),
+            ]
+        );
+
+        // Filtering to a project keeps only its share.
+        let web = dataset.snapshot(
+            &DashboardQuery {
+                project_filter: Some("web".to_owned()),
+                ..DashboardQuery::default()
+            },
+            &[],
+            &[],
+        );
+        assert_eq!(web.total_tokens, 4_000);
+        assert!(
+            DashboardDataset::from_usage(&[], &[])
+                .snapshot(&DashboardQuery::default(), &[], &[])
+                .is_empty()
+        );
+    }
 
     #[test]
     fn default_last_week_snapshot_matches_reference_metrics() {
