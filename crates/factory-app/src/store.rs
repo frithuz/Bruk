@@ -2106,52 +2106,6 @@ pub(crate) fn deploy_watch_entries() -> Vec<DeployWatchEntry> {
     state().with(|s| s.deploy_watch_entries.clone())
 }
 
-pub(crate) fn sidebar_provider_statuses() -> Vec<(String, &'static str, bool)> {
-    state().with(|s| {
-        let run = s.active_workflow_run_clone();
-        let running = !run.is_empty() && run.execution_state == RunExecutionState::Running;
-        let active_provider = run.active_provider_name.as_str();
-        let mut rows = Vec::new();
-        if s.preferences.claude.connected {
-            let is_running = running && active_provider == "Claude";
-            rows.push((
-                "Claude".to_owned(),
-                if is_running { "Running" } else { "Ready" },
-                is_running,
-            ));
-        }
-        if s.preferences.codex.as_ref().is_some_and(|c| c.connected) {
-            let is_running = running && active_provider == "Codex";
-            rows.push((
-                "Codex".to_owned(),
-                if is_running { "Running" } else { "Ready" },
-                is_running,
-            ));
-        }
-        if s.preferences
-            .antigravity
-            .as_ref()
-            .is_some_and(|a| a.connected)
-        {
-            let is_running = running && active_provider == "Antigravity";
-            rows.push((
-                "Antigravity".to_owned(),
-                if is_running { "Running" } else { "Ready" },
-                is_running,
-            ));
-        }
-        let openrouter_key = s
-            .preferences
-            .openrouter_key("openrouter-acme")
-            .or_else(|| s.preferences.openrouter_keys.iter().find(|k| k.is_default))
-            .or_else(|| s.preferences.openrouter_keys.first());
-        if let Some(key) = openrouter_key {
-            rows.push((format!("OpenRouter · {}", key.name), "Ready", false));
-        }
-        rows
-    })
-}
-
 /// Persists a new project in SQLite and adds it to the reactive factory state.
 pub(crate) fn register_project(name: &str, path: &str) -> bool {
     register_project_with_branch(name, path, "main")

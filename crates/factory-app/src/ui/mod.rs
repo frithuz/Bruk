@@ -786,20 +786,16 @@ fn sidebar() -> impl IntoElement {
                     )),
             ),
         )
-        .child(
-            view()
-                .pt(px(8.0))
-                .border_t_1()
-                .border_color(palette::divider_color())
-                .child(when(
-                    || store::active_view() == ActiveView::WorkQueue,
-                    sidebar_agent_slots_summary,
-                ))
-                .child(when(
-                    || store::active_view() != ActiveView::WorkQueue,
-                    sidebar_providers_section,
-                )),
-        )
+        .child(when(
+            || store::active_view() == ActiveView::WorkQueue,
+            || {
+                view()
+                    .pt(px(8.0))
+                    .border_t_1()
+                    .border_color(palette::divider_color())
+                    .child(sidebar_agent_slots_summary())
+            },
+        ))
 }
 
 fn sidebar_deploy_watch_section() -> impl IntoElement {
@@ -869,85 +865,6 @@ fn sidebar_deploy_watch_section() -> impl IntoElement {
                 );
             }
             rows
-        }))
-}
-
-fn sidebar_providers_section() -> impl IntoElement {
-    view()
-        .px(px(8.0))
-        .gap(px(5.0))
-        .child(
-            text("Providers")
-                .text_size(px(11.0))
-                .font_weight(FontWeight::MEDIUM)
-                .text_color(palette::text_muted()),
-        )
-        .child(dynamic(|| {
-            let statuses = store::sidebar_provider_statuses();
-            if statuses.is_empty() {
-                return view()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .gap(px(6.0))
-                    .child(
-                        text("None connected")
-                            .text_size(px(11.5))
-                            .text_color(palette::text_muted()),
-                    )
-                    .child(
-                        button()
-                            .test_id("sidebar-configure-providers")
-                            .accessibility_label("Configure Providers")
-                            .on_press(|| store::open_preferences_tab(PreferencesTab::Providers))
-                            .hover(|s| s.opacity(0.8))
-                            .child(
-                                text("Configure…")
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(palette::link_blue()),
-                            ),
-                    )
-                    .into_element();
-            }
-
-            let mut rows = view().gap(px(4.5));
-            for (name, status, is_running) in statuses {
-                rows = rows.child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .gap(px(6.0))
-                        .child(
-                            view()
-                                .flex_1()
-                                .min_w(px(0.0))
-                                .flex_row()
-                                .items_center()
-                                .gap(px(7.0))
-                                .child(view().w(px(6.5)).h(px(6.5)).rounded_full().bg(
-                                    if is_running {
-                                        palette::provider_dot_blue()
-                                    } else {
-                                        palette::provider_dot_green()
-                                    },
-                                ))
-                                .child(
-                                    text(name)
-                                        .flex_1()
-                                        .text_size(px(12.0))
-                                        .text_color(palette::text_primary()),
-                                ),
-                        )
-                        .child(
-                            text(status)
-                                .text_size(px(11.0))
-                                .text_color(palette::text_muted()),
-                        ),
-                );
-            }
-            rows.into_element()
         }))
 }
 

@@ -215,10 +215,6 @@ pub(crate) fn provider_dot_green() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0x16A34A), rgb(0x34D399))
 }
 
-pub(crate) fn provider_dot_blue() -> AdaptiveColor {
-    AdaptiveColor::new(rgb(0x1668D6), rgb(0x58A6FF))
-}
-
 pub(crate) fn run_dot_success_bg() -> AdaptiveColor {
     AdaptiveColor::new(rgb(0x189A57), rgb(0x22B56B))
 }

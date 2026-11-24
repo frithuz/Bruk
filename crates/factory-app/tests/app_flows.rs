@@ -544,7 +544,7 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
     app.press("id:sidebar-workflow-1-release-prep").unwrap();
     app.wait_for("api-gateway · Run #42").unwrap();
 
-    // Verify top header, sidebar extensions/providers, and footer status bar.
+    // Verify top header, sidebar extensions, and footer status bar.
     assert!(app.screen().shows("Release prep"));
     assert!(app.screen().shows("Search or run a command"));
     assert!(app.screen().shows("Edit Workflow"));
@@ -552,7 +552,6 @@ fn workflow_run_page_renders_reference_release_prep_and_interactive_flows() {
     assert!(app.screen().shows("2.7.3"));
     assert!(app.screen().shows("2.7.2"));
     assert!(app.screen().shows("Run history"));
-    assert!(app.screen().shows("Providers"));
     assert!(
         app.screen()
             .shows("Codex running in worktree run-42 on release/2.8 · attempt 2 of 5")
@@ -1687,7 +1686,7 @@ fn fresh_launch_without_demo_mode_shows_proper_empty_states_across_views() {
             .shows("Want to preview visuals with sample data? Enable Demo Mode in the Bruk menu.")
     );
     assert!(app.screen().shows("No projects yet"));
-    assert!(app.screen().shows("None connected"));
+    assert!(!app.screen().shows("None connected"));
     assert!(!app.screen().shows("api-gateway"));
     assert!(!app.screen().shows("18.4M"));
     assert!(!app.screen().shows("$63.20"));
