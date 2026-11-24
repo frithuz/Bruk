@@ -4089,3 +4089,63 @@ esac
     app.press("id:prefs-antigravity-confirm-remove").unwrap();
     app.wait_for("No Antigravity account configured").unwrap();
 }
+
+#[test]
+fn project_mcp_servers_need_approval_and_users_can_add_their_own() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo = temp.path().join("mcp-service");
+    std::fs::create_dir_all(repo.join(".agents")).unwrap();
+    std::fs::write(
+        repo.join(".agents/mcp_config.json"),
+        r#"{"mcpServers":{"playwright":{"command":"npx","args":["-y","@playwright/mcp"]}}}"#,
+    )
+    .unwrap();
+
+    let mut app = start_with_db(db_path.clone());
+    app.press("role:button[Register Project]").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "mcp-service").unwrap();
+    app.type_text("text:Repository path", &repo.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'mcp-service'").unwrap();
+
+    app.press("id:sidebar-project-settings-1").unwrap();
+    app.wait_for("mcp-service · Issues & intake").unwrap();
+    app.press("id:ps-tab-mcp-servers").unwrap();
+    app.wait_for("Project servers").unwrap();
+    assert!(app.screen().shows(".agents/mcp_config.json"));
+    assert!(app.screen().shows("npx -y @playwright/mcp"));
+    assert!(app.screen().shows(
+        "These servers run commands from the repository. Review them, then approve to let agents use them."
+    ));
+
+    app.press("id:ps-mcp-approve").unwrap();
+    app.wait_for("Approved").unwrap();
+    assert!(app.screen().matches("id:ps-mcp-revoke").unwrap());
+
+    app.press("id:mcp-add-server").unwrap();
+    app.wait_for("id:mcp-form-name").unwrap();
+    app.type_text("id:mcp-form-name", "docs").unwrap();
+    app.type_text("id:mcp-form-target", "https://docs.example/mcp")
+        .unwrap();
+    app.type_text("id:mcp-form-pairs", "Authorization: Bearer ${DOCS_TOKEN}")
+        .unwrap();
+    app.press("id:mcp-form-save").unwrap();
+    app.wait_for("Added MCP server 'docs'.").unwrap();
+    assert!(app.screen().shows("https://docs.example/mcp"));
+    assert!(app.screen().shows("Needs DOCS_TOKEN"));
+
+    // Approval and the user's server are kept in bruk.db.
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let project = db.list_projects().unwrap().into_iter().next().unwrap();
+    let settings = db.load_project_settings(project.id).unwrap().unwrap();
+    assert_eq!(settings.mcp_servers.len(), 1);
+    let config = factory_core::mcp::load_project_mcp(&repo);
+    assert_eq!(
+        settings.approved_mcp_fingerprint.as_deref(),
+        config.config().map(|c| c.fingerprint.as_str())
+    );
+}

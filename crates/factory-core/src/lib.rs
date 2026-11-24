@@ -18,6 +18,7 @@ pub mod engine;
 pub mod github_intake;
 pub mod inbox;
 pub mod machines;
+pub mod mcp;
 pub mod model;
 pub mod preferences;
 pub mod project_settings;

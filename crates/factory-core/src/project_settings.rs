@@ -8,6 +8,7 @@ use crate::{
         DetectedGitRemote, GitHubFilterClause, GitHubFilterQualifier, build_github_search_query,
         current_unix_seconds, format_synced_relative,
     },
+    mcp::McpServerDef,
     preferences::{ProviderKind, format_dollars_cents},
 };
 
@@ -21,6 +22,7 @@ pub enum ProjectSettingsTab {
     Providers,
     Workflows,
     Environment,
+    McpServers,
     AgentsAndLimits,
 }
 
@@ -31,6 +33,7 @@ impl ProjectSettingsTab {
         Self::Providers,
         Self::Workflows,
         Self::Environment,
+        Self::McpServers,
         Self::AgentsAndLimits,
     ];
 
@@ -41,6 +44,7 @@ impl ProjectSettingsTab {
             Self::Providers => "Providers",
             Self::Workflows => "Workflows",
             Self::Environment => "Environment",
+            Self::McpServers => "MCP servers",
             Self::AgentsAndLimits => "Agents & limits",
         }
     }
@@ -282,6 +286,15 @@ pub struct ProjectSettings {
     pub sandbox_mode: ProjectSandboxMode,
     pub preferred_runner: String,
 
+    // MCP servers
+    /// Servers this user adds for this project on top of the project's tracked ones.
+    #[serde(default)]
+    pub mcp_servers: Vec<McpServerDef>,
+    /// Fingerprint of the project's MCP file the user approved; servers load only while the
+    /// file still matches it.
+    #[serde(default)]
+    pub approved_mcp_fingerprint: Option<String>,
+
     next_rule_id: u64,
     next_env_id: u64,
 }
@@ -346,6 +359,8 @@ impl ProjectSettings {
             sandbox_mode: ProjectSandboxMode::WorkspaceWrite,
             preferred_runner: "Any available machine".to_owned(),
 
+            mcp_servers: Vec::new(),
+            approved_mcp_fingerprint: None,
             next_rule_id: 1,
             next_env_id: 1,
         }
@@ -512,6 +527,8 @@ impl ProjectSettings {
             sandbox_mode: ProjectSandboxMode::WorkspaceWrite,
             preferred_runner: "Auto".to_owned(),
 
+            mcp_servers: Vec::new(),
+            approved_mcp_fingerprint: None,
             next_rule_id: 4,
             next_env_id: 5,
         }
@@ -972,6 +989,20 @@ impl ProjectSettings {
             is_secret,
         });
         Ok(id)
+    }
+
+    /// Adds (or replaces, by name) one of this user's servers for the project.
+    pub fn upsert_mcp_server(&mut self, server: McpServerDef) {
+        match self.mcp_servers.iter_mut().find(|s| s.name == server.name) {
+            Some(existing) => *existing = server,
+            None => self.mcp_servers.push(server),
+        }
+    }
+
+    pub fn remove_mcp_server(&mut self, name: &str) -> bool {
+        let before = self.mcp_servers.len();
+        self.mcp_servers.retain(|s| s.name != name);
+        self.mcp_servers.len() != before
     }
 
     /// Removes a project environment variable by id.

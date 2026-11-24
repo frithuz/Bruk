@@ -12,6 +12,7 @@ use crate::{
         OpenPullRequestStepDef, SetIssueStatusStepDef, ShellCommandStepDef, WorkflowDef,
         WorkflowNodeDef, WorkflowTriggersDef,
     },
+    mcp::McpSourcesPolicy,
     preferences::ProviderKind,
     workflows_overview::{
         WorkflowOverviewEntry, WorkflowStepGroup, WorkflowStepPreview, WorkflowTriggerKind,
@@ -485,6 +486,9 @@ pub struct EditorStep {
     /// Extra step-level skills injected alongside the agent's own skills.
     #[serde(default)]
     pub skills: Vec<String>,
+    /// MCP servers the step needs (`mcp:`), kept so saving from the editor doesn't drop them.
+    #[serde(default)]
+    pub mcp: Vec<String>,
 }
 
 /// Fallback branch card rendered beside the main flow when a loop runs out of attempts.
@@ -600,6 +604,9 @@ pub struct WorkflowEditorDocument {
     pub description: String,
     #[serde(default)]
     pub is_draft: bool,
+    /// `project` runs every step with only the project's MCP servers.
+    #[serde(default)]
+    pub mcp_sources: McpSourcesPolicy,
     #[serde(default)]
     pub origin: Option<DefinitionOrigin>,
     pub has_unsaved_changes: bool,
@@ -619,6 +626,7 @@ impl WorkflowEditorDocument {
             workflow_name: "Fix issue".to_owned(),
             description: String::new(),
             is_draft: false,
+            mcp_sources: McpSourcesPolicy::All,
             origin: None,
             has_unsaved_changes: true,
             trigger: EditorTriggerConfig {
@@ -638,6 +646,7 @@ impl WorkflowEditorDocument {
                     agent_ref: None,
                     composite_ref: None,
                     skills: Vec::new(),
+                    mcp: Vec::new(),
                 }),
                 EditorNode::Loop(EditorLoopBlock {
                     id: "loop-fix-tests".to_owned(),
@@ -671,6 +680,7 @@ impl WorkflowEditorDocument {
                             agent_ref: None,
                             composite_ref: None,
                             skills: Vec::new(),
+                            mcp: Vec::new(),
                         },
                         EditorStep {
                             id: "step-run-tests".to_owned(),
@@ -682,6 +692,7 @@ impl WorkflowEditorDocument {
                             agent_ref: None,
                             composite_ref: None,
                             skills: Vec::new(),
+                            mcp: Vec::new(),
                         },
                     ],
                 }),
@@ -695,6 +706,7 @@ impl WorkflowEditorDocument {
                     agent_ref: None,
                     composite_ref: None,
                     skills: Vec::new(),
+                    mcp: Vec::new(),
                 }),
                 EditorNode::Step(EditorStep {
                     id: "step-open-pr".to_owned(),
@@ -706,6 +718,7 @@ impl WorkflowEditorDocument {
                     agent_ref: None,
                     composite_ref: None,
                     skills: Vec::new(),
+                    mcp: Vec::new(),
                 }),
                 EditorNode::Step(EditorStep {
                     id: "step-comment-issue".to_owned(),
@@ -717,6 +730,7 @@ impl WorkflowEditorDocument {
                     agent_ref: None,
                     composite_ref: None,
                     skills: Vec::new(),
+                    mcp: Vec::new(),
                 }),
             ],
             selected: EditorSelection::Loop("loop-fix-tests".to_owned()),
@@ -785,6 +799,7 @@ impl WorkflowEditorDocument {
                         agent_ref: None,
                         composite_ref: None,
                         skills: Vec::new(),
+                        mcp: Vec::new(),
                     }));
                 }
                 WorkflowStepGroup::Loop { title, steps, .. } => {
@@ -808,6 +823,7 @@ impl WorkflowEditorDocument {
                             agent_ref: None,
                             composite_ref: None,
                             skills: Vec::new(),
+                            mcp: Vec::new(),
                         });
                     }
                     let exit_step_id = inner_steps
@@ -854,6 +870,7 @@ impl WorkflowEditorDocument {
             workflow_name: entry.name.clone(),
             description: String::new(),
             is_draft: false,
+            mcp_sources: McpSourcesPolicy::All,
             origin: None,
             has_unsaved_changes: false,
             trigger: EditorTriggerConfig {
@@ -894,6 +911,7 @@ impl WorkflowEditorDocument {
             workflow_name: name.to_owned(),
             description: String::new(),
             is_draft: false,
+            mcp_sources: McpSourcesPolicy::All,
             origin: None,
             has_unsaved_changes: false,
             trigger: EditorTriggerConfig {
@@ -1081,6 +1099,7 @@ impl WorkflowEditorDocument {
                         agent_ref: None,
                         composite_ref: None,
                         skills: Vec::new(),
+                        mcp: Vec::new(),
                     },
                     EditorStep {
                         id: step_b_id,
@@ -1092,6 +1111,7 @@ impl WorkflowEditorDocument {
                         agent_ref: None,
                         composite_ref: None,
                         skills: Vec::new(),
+                        mcp: Vec::new(),
                     },
                 ],
             }));
@@ -1111,6 +1131,7 @@ impl WorkflowEditorDocument {
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         }));
         self.selected = EditorSelection::Step(step_id.clone());
         self.has_unsaved_changes = true;
@@ -1351,6 +1372,15 @@ impl WorkflowEditorDocument {
 
     pub fn toggle_trigger_ad_hoc(&mut self) {
         self.trigger.ad_hoc_allowed = !self.trigger.ad_hoc_allowed;
+        self.has_unsaved_changes = true;
+    }
+
+    /// Switches between giving steps the user's own MCP servers too, or only the project's.
+    pub fn toggle_mcp_project_only(&mut self) {
+        self.mcp_sources = match self.mcp_sources {
+            McpSourcesPolicy::All => McpSourcesPolicy::Project,
+            McpSourcesPolicy::Project => McpSourcesPolicy::All,
+        };
         self.has_unsaved_changes = true;
     }
 
@@ -1606,6 +1636,7 @@ impl WorkflowEditorDocument {
             workflow_name: workflow.name.clone(),
             description: workflow.description.clone(),
             is_draft: workflow.draft,
+            mcp_sources: workflow.mcp_sources,
             origin: Some(workflow.origin.clone()),
             has_unsaved_changes: false,
             trigger: EditorTriggerConfig {
@@ -1656,6 +1687,7 @@ impl WorkflowEditorDocument {
                 issue_labels: Vec::new(),
             },
             inputs: BTreeMap::new(),
+            mcp_sources: self.mcp_sources,
             nodes,
             origin: self.origin.clone().unwrap_or_default(),
         }
@@ -1676,6 +1708,7 @@ impl WorkflowEditorDocument {
             agent_ref: None,
             composite_ref: Some(composite.id.clone()),
             skills: Vec::new(),
+            mcp: Vec::new(),
         }));
         self.selected = EditorSelection::Step(step_id.clone());
         self.has_unsaved_changes = true;
@@ -1801,6 +1834,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
                 agent_ref: step.agent.clone(),
                 composite_ref: None,
                 skills: step.skills.clone(),
+                mcp: step.mcp.clone(),
             }
         }
         WorkflowNodeDef::ShellCommand(step) => {
@@ -1819,6 +1853,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
                 agent_ref: None,
                 composite_ref: None,
                 skills: Vec::new(),
+                mcp: Vec::new(),
             }
         }
         WorkflowNodeDef::ApprovalGate(step) => EditorStep {
@@ -1831,6 +1866,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
         WorkflowNodeDef::Composite(step) => {
             let comp = catalog.resolve_composite(&step.uses);
@@ -1855,6 +1891,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
                 agent_ref: None,
                 composite_ref: Some(step.uses.clone()),
                 skills: Vec::new(),
+                mcp: Vec::new(),
             }
         }
         WorkflowNodeDef::CommentOnIssue(step) => EditorStep {
@@ -1867,6 +1904,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
         WorkflowNodeDef::SetIssueStatus(step) => EditorStep {
             id: step.id.clone(),
@@ -1878,6 +1916,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
         WorkflowNodeDef::OpenPullRequest(step) => EditorStep {
             id: step.id.clone(),
@@ -1889,6 +1928,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
         WorkflowNodeDef::Condition(step) => EditorStep {
             id: step.id.clone(),
@@ -1900,6 +1940,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
         WorkflowNodeDef::Loop(lp) => EditorStep {
             id: lp.id.clone(),
@@ -1911,6 +1952,7 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
             agent_ref: None,
             composite_ref: None,
             skills: Vec::new(),
+            mcp: Vec::new(),
         },
     }
 }
@@ -1969,6 +2011,7 @@ fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
             prompt: step.detail.clone(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: step.mcp.clone(),
         }),
         StepTypeKind::CodexTask => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
             id: step.id.clone(),
@@ -1980,6 +2023,7 @@ fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
             prompt: step.detail.clone(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: step.mcp.clone(),
         }),
         StepTypeKind::AntigravityTask => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
             id: step.id.clone(),
@@ -1991,6 +2035,7 @@ fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
             prompt: step.detail.clone(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: step.mcp.clone(),
         }),
         StepTypeKind::ModelCall => WorkflowNodeDef::AgentTask(AgentTaskStepDef {
             id: step.id.clone(),
@@ -2002,6 +2047,7 @@ fn editor_step_to_workflow_node(step: &EditorStep) -> WorkflowNodeDef {
             prompt: step.detail.clone(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: step.mcp.clone(),
         }),
         StepTypeKind::ShellCommand => WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
             id: step.id.clone(),

@@ -8,6 +8,7 @@ pub(crate) mod home_setup;
 mod icons;
 pub(crate) mod inbox;
 mod machines;
+mod mcp;
 pub(crate) mod menubar;
 mod palette;
 pub(crate) mod preferences;

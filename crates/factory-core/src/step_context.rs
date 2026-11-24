@@ -28,6 +28,12 @@ use crate::{
         CodexSpawnSettings, build_codex_spawn_plan,
     },
     definitions::{AgentTaskStepDef, AgentToolsPolicy, BrukCatalog, CatalogError, ResolvedAgent},
+    mcp::{
+        ANTIGRAVITY_LOG_FILE, AntigravityMcpDelivery, CODEX_DISABLE_APPS_ARG, CODEX_MCP_RUST_LOG,
+        CodexMcpDelivery, McpSources, McpSourcesPolicy, ResolvedMcpSet, antigravity_mcp_delivery,
+        claude_mcp_config, claude_mcp_config_path, codex_mcp_delivery, preflight_mcp_servers,
+        resolve_mcp_servers,
+    },
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
 };
@@ -142,6 +148,35 @@ pub struct StepContextBundle {
     pub system_instructions: String,
     /// Rendered task prompt for this single step.
     pub rendered_prompt: String,
+    /// The MCP servers this step gets, and every problem keeping one from it.
+    pub mcp: ResolvedMcpSet,
+    /// How [`Self::mcp`] reaches Codex (when the provider is Codex).
+    pub codex_mcp: CodexMcpDelivery,
+    /// What Bruk does about MCP for Antigravity (when the provider is Antigravity).
+    pub antigravity_mcp: AntigravityMcpDelivery,
+}
+
+/// What a step chooses MCP servers from.
+#[derive(Debug, Clone, Copy)]
+pub struct StepMcpScope<'a> {
+    pub sources: &'a McpSources,
+    /// The strictest `mcp_sources` of the workflow and composites around the step.
+    pub policy: McpSourcesPolicy,
+    /// The environment the agent gets on top of Bruk's own, for `${VAR}`s.
+    pub env: &'a BTreeMap<String, String>,
+}
+
+impl StepMcpScope<'static> {
+    /// No MCP servers at all (tests and callers without a project).
+    pub fn none() -> Self {
+        static SOURCES: std::sync::OnceLock<McpSources> = std::sync::OnceLock::new();
+        static ENV: BTreeMap<String, String> = BTreeMap::new();
+        Self {
+            sources: SOURCES.get_or_init(McpSources::default),
+            policy: McpSourcesPolicy::All,
+            env: &ENV,
+        }
+    }
 }
 
 /// Out-of-repo materialized runtime files for one step execution.
@@ -152,6 +187,8 @@ pub struct MaterializedStepContext {
     pub instructions_file: Option<PathBuf>,
     pub claude_agents_file: Option<PathBuf>,
     pub codex_home_dir: Option<PathBuf>,
+    /// The `--mcp-config` file for Claude, when the step has servers.
+    pub claude_mcp_file: Option<PathBuf>,
 }
 
 /// Compiles the minimal [`StepContextBundle`] for one [`AgentTaskStepDef`].
@@ -165,6 +202,7 @@ pub fn compile_step_context(
     default_provider: ProviderKind,
     default_sandbox: ProjectSandboxMode,
     project_model_override: Option<&str>,
+    mcp_scope: StepMcpScope<'_>,
 ) -> Result<StepContextBundle, StepContextError> {
     let resolved_agent = match step
         .agent
@@ -302,6 +340,46 @@ pub fn compile_step_context(
     }
     let rendered_prompt = step_ctx.render(&step.prompt);
 
+    // MCP servers: the agent can only tighten the policy; the agent's and step's `mcp:` lists
+    // narrow it to the servers they name.
+    let policy = mcp_scope.policy.stricter(
+        resolved_agent
+            .as_ref()
+            .map(|a| a.mcp_sources)
+            .unwrap_or_default(),
+    );
+    let mut allowlist: Vec<String> = resolved_agent
+        .as_ref()
+        .map(|a| a.mcp.clone())
+        .unwrap_or_default();
+    for name in step.mcp.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        if !allowlist.iter().any(|existing| existing == name) {
+            allowlist.push(name.to_owned());
+        }
+    }
+    let mut mcp = resolve_mcp_servers(mcp_scope.sources, policy, &allowlist);
+    let lookup = |key: &str| {
+        mcp_scope
+            .env
+            .get(key)
+            .cloned()
+            .or_else(|| std::env::var(key).ok())
+    };
+    let mut codex_mcp = CodexMcpDelivery::default();
+    let mut antigravity_mcp = AntigravityMcpDelivery::default();
+    match provider {
+        ProviderKind::Claude => preflight_mcp_servers(&mut mcp, &lookup),
+        ProviderKind::Codex => {
+            preflight_mcp_servers(&mut mcp, &lookup);
+            codex_mcp = codex_mcp_delivery(&mut mcp, &lookup);
+        }
+        ProviderKind::Antigravity => {
+            antigravity_mcp = antigravity_mcp_delivery(&mut mcp, mcp_scope.sources, &allowlist);
+            preflight_mcp_servers(&mut mcp, &lookup);
+        }
+        ProviderKind::OpenRouter => {}
+    }
+
     Ok(StepContextBundle {
         step_id: step.id.clone(),
         step_name: step.name.clone(),
@@ -316,6 +394,9 @@ pub fn compile_step_context(
         subagents,
         system_instructions: sections.join("\n\n"),
         rendered_prompt,
+        mcp,
+        codex_mcp,
+        antigravity_mcp,
     })
 }
 
@@ -417,12 +498,28 @@ pub fn materialize_step_context(
         None
     };
 
+    // Claude gets the step's servers as an out-of-repo `--mcp-config` file. `${VAR}`s stay
+    // unexpanded (Claude expands them from its environment), so no secret is written.
+    let claude_mcp_file =
+        if bundle.provider == ProviderKind::Claude && !bundle.mcp.servers.is_empty() {
+            let path = claude_mcp_config_path(&runtime_dir);
+            let json = serde_json::to_string_pretty(&claude_mcp_config(&bundle.mcp))?;
+            fs::write(&path, json).map_err(|source| StepContextError::WriteFile {
+                path: path.clone(),
+                source,
+            })?;
+            Some(path)
+        } else {
+            None
+        };
+
     Ok(MaterializedStepContext {
         bundle,
         runtime_dir,
         instructions_file,
         claude_agents_file,
         codex_home_dir,
+        claude_mcp_file,
     })
 }
 
@@ -470,7 +567,23 @@ pub fn build_isolated_claude_spawn_plan(
 
     // Strip user-level context while allowing repo-checked-in project config (`CLAUDE.md`, `.claude/`).
     set_or_push_flag(&mut plan.args, "--setting-sources", "project");
+    if materialized.bundle.mcp.policy == McpSourcesPolicy::Project {
+        // The user's own `--mcp-config` from Claude spawn settings is an extra too.
+        remove_variadic_flag(&mut plan.args, "--mcp-config");
+    }
     push_bool_flag_if_missing(&mut plan.args, "--strict-mcp-config");
+    if let Some(mcp_file) = materialized.claude_mcp_file.as_ref() {
+        // `--mcp-config` takes several values, so it goes right before another flag where it
+        // can't swallow the prompt.
+        let at = plan
+            .args
+            .iter()
+            .position(|a| a == "--strict-mcp-config")
+            .unwrap_or(plan.args.len());
+        plan.args.insert(at, "--mcp-config".to_owned());
+        plan.args
+            .insert(at + 1, mcp_file.to_string_lossy().into_owned());
+    }
     push_bool_flag_if_missing(&mut plan.args, "--disable-slash-commands");
 
     // Permission mode derived from resolved agent/project sandbox if not overridden.
@@ -567,6 +680,22 @@ pub fn build_isolated_codex_spawn_plan(
     push_codex_config(&mut plan, "skills.bundled.enabled", "false");
     push_codex_config(&mut plan, "skills.include_instructions", "false");
 
+    // MCP: the ChatGPT account's connectors are the user's own and load even from an isolated
+    // CODEX_HOME, so they're always off. Under a project-only policy the user's own
+    // `mcp_servers` from Codex spawn settings go too. Bruk's servers come after the spawn
+    // settings so a whole-table `mcp_servers=` override there can't replace them.
+    if !plan.args.iter().any(|a| a == CODEX_DISABLE_APPS_ARG) {
+        plan.args.push("-c".to_owned());
+        plan.args.push(CODEX_DISABLE_APPS_ARG.to_owned());
+    }
+    if materialized.bundle.mcp.policy == McpSourcesPolicy::Project {
+        remove_codex_config_prefix(&mut plan, "mcp_servers");
+    }
+    for override_arg in &materialized.bundle.codex_mcp.config_overrides {
+        plan.args.push("-c".to_owned());
+        plan.args.push(override_arg.clone());
+    }
+
     // Apply resolved sandbox mode.
     let sandbox_val = match materialized.bundle.sandbox {
         ProjectSandboxMode::ReadOnly => "\"read-only\"",
@@ -615,6 +744,13 @@ pub fn build_isolated_codex_spawn_plan(
             codex_home.to_string_lossy().into_owned(),
         );
     }
+    // Variables Codex forwards to servers (`env_vars`), and the logging that makes it report
+    // servers that fail to start on stderr.
+    for (k, v) in &materialized.bundle.codex_mcp.env {
+        plan.env.insert(k.clone(), v.clone());
+    }
+    plan.env
+        .insert("RUST_LOG".to_owned(), CODEX_MCP_RUST_LOG.to_owned());
 
     Ok(plan)
 }
@@ -623,6 +759,9 @@ pub fn build_isolated_codex_spawn_plan(
 /// not tools: `write_file` covers every file edit, `command` every shell command, `mcp` every
 /// MCP tool. Reading and searching stay allowed.
 pub const ANTIGRAVITY_READ_ONLY_DENY_RULES: &[&str] = &["write_file(*)", "command(*)", "mcp(*)"];
+
+/// Antigravity permission rules that keep every MCP tool from being used.
+pub const ANTIGRAVITY_DENY_MCP_RULES: &[&str] = &["mcp(*)"];
 
 /// Antigravity permission rules a Workspace write step or chat runs with (inside `--sandbox`).
 pub const ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES: &[&str] = &["write_file(*)", "command(*)"];
@@ -709,6 +848,21 @@ pub fn build_isolated_antigravity_spawn_plan(
         args.push(effort.to_owned());
     }
     args.push("--disable-slash-commands".to_owned());
+    // Antigravity reports MCP servers that fail to start only in its log.
+    args.push(format!(
+        "--log-file={}",
+        materialized
+            .runtime_dir
+            .join(ANTIGRAVITY_LOG_FILE)
+            .display()
+    ));
+    // Antigravity starts the servers in `.agents/mcp_config.json` on its own; until the user
+    // approves that file, none of their tools may be used.
+    let deny_mcp: &[&str] = if bundle.antigravity_mcp.deny_all_mcp {
+        ANTIGRAVITY_DENY_MCP_RULES
+    } else {
+        &[]
+    };
     // Print mode can't ask anyone, so it refuses any tool call that would need approval.
     match bundle.sandbox {
         ProjectSandboxMode::ReadOnly => {
@@ -724,14 +878,23 @@ pub fn build_isolated_antigravity_spawn_plan(
         ProjectSandboxMode::WorkspaceWrite => {
             // `--mode auto` isn't offered to every account, so allow edits and commands
             // outright and keep the terminal sandbox around them.
-            let settings = serde_json::json!({
-                "permissions": { "allow": ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES },
+            let mut permissions = serde_json::json!({
+                "allow": ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES,
             });
+            if !deny_mcp.is_empty() {
+                permissions["deny"] = serde_json::json!(deny_mcp);
+            }
+            let settings = serde_json::json!({ "permissions": permissions });
             args.push("--settings".to_owned());
             args.push(settings.to_string());
             args.push("--sandbox".to_owned());
         }
         ProjectSandboxMode::FullAccess => {
+            if !deny_mcp.is_empty() {
+                let settings = serde_json::json!({ "permissions": { "deny": deny_mcp } });
+                args.push("--settings".to_owned());
+                args.push(settings.to_string());
+            }
             args.push("--dangerously-skip-permissions".to_owned());
         }
     }
@@ -763,6 +926,41 @@ fn push_codex_config(plan: &mut CodexSpawnPlan, key: &str, toml_value: &str) {
     plan.args.push(format!("{key}={toml_value}"));
     plan.config_overrides
         .push((key.to_owned(), toml_value.to_owned()));
+}
+
+/// Removes `-c <key>…` overrides (from spawn settings) whose key starts with `prefix`.
+fn remove_codex_config_prefix(plan: &mut CodexSpawnPlan, prefix: &str) {
+    let matches = |value: &str| {
+        let key = value.split('=').next().unwrap_or("").trim();
+        key == prefix || key.starts_with(&format!("{prefix}."))
+    };
+    let mut i = 0;
+    while i < plan.args.len() {
+        if plan.args[i] == "-c" && plan.args.get(i + 1).is_some_and(|v| matches(v)) {
+            plan.args.drain(i..i + 2);
+        } else {
+            i += 1;
+        }
+    }
+    plan.config_overrides.retain(|(key, _)| !matches(key));
+}
+
+/// Removes `flag` and the values after it (up to the next `-`-prefixed argument).
+fn remove_variadic_flag(args: &mut Vec<String>, flag: &str) {
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == flag {
+            let mut end = i + 1;
+            while end < args.len() && !args[end].starts_with('-') {
+                end += 1;
+            }
+            args.drain(i..end);
+        } else if args[i].starts_with(&format!("{flag}=")) {
+            args.remove(i);
+        } else {
+            i += 1;
+        }
+    }
 }
 
 fn toml_quote(raw: &str) -> String {
@@ -819,6 +1017,7 @@ mod tests {
             prompt: "Plan fix for {{ inputs.prompt }}".to_owned(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: Vec::new(),
         };
         let mut ctx = TemplateContext::default();
         ctx.inputs
@@ -831,6 +1030,7 @@ mod tests {
             ProviderKind::Claude,
             ProjectSandboxMode::WorkspaceWrite,
             None,
+            StepMcpScope::none(),
         )
         .unwrap();
 
@@ -877,6 +1077,7 @@ mod tests {
             prompt: "Analyze {{ steps.prev.output }}".to_owned(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: Vec::new(),
         };
         let mut ctx = TemplateContext::default();
         ctx.step_outputs
@@ -889,6 +1090,7 @@ mod tests {
             ProviderKind::Claude,
             ProjectSandboxMode::WorkspaceWrite,
             Some("claude-sonnet-4-6"),
+            StepMcpScope::none(),
         )
         .unwrap();
         let mat = materialize_step_context(bundle, &runtime_dir, None).unwrap();
@@ -970,6 +1172,7 @@ mod tests {
             prompt: "Apply patch".to_owned(),
             inputs: BTreeMap::new(),
             outputs: Vec::new(),
+            mcp: Vec::new(),
         };
 
         let bundle = compile_step_context(
@@ -979,6 +1182,7 @@ mod tests {
             ProviderKind::Codex,
             ProjectSandboxMode::WorkspaceWrite,
             None,
+            StepMcpScope::none(),
         )
         .unwrap();
         let mat = materialize_step_context(bundle, &runtime_dir, Some(&fake_user_codex)).unwrap();
@@ -1027,5 +1231,338 @@ mod tests {
         // Repo AGENTS.md remains enabled (project_doc_max_bytes is NOT zeroed).
         assert!(!plan.args.contains(&"project_doc_max_bytes=0".to_owned()));
         assert_eq!(plan.args.last().map(String::as_str), Some("Apply patch"));
+    }
+
+    fn mcp_sources_for(repo: &Path) -> McpSources {
+        let project = crate::mcp::load_project_mcp(repo);
+        let fingerprint = project.config().map(|c| c.fingerprint.clone());
+        McpSources {
+            project,
+            allow_project_servers: true,
+            approved_fingerprint: fingerprint,
+            project_extras: Vec::new(),
+            user_extras: vec![crate::mcp::McpServerDef::from_form("mine", "sh", "", "").unwrap()],
+        }
+    }
+
+    fn mcp_repo(temp: &TempDir) -> PathBuf {
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".agents")).unwrap();
+        fs::write(
+            repo.join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{
+                "proj":{"command":"sh","args":["-c","true"],"env":{"TOKEN":"${PROJ_TOKEN}"}},
+                "web":{"serverUrl":"https://example.com/mcp","headers":{"Authorization":"Bearer ${WEB_TOKEN}"}}
+            }}"#,
+        )
+        .unwrap();
+        repo
+    }
+
+    fn agent_step(provider: ProviderKind) -> AgentTaskStepDef {
+        AgentTaskStepDef {
+            id: "s".to_owned(),
+            name: "S".to_owned(),
+            agent: None,
+            provider: Some(provider),
+            model: None,
+            skills: Vec::new(),
+            prompt: "Go".to_owned(),
+            inputs: BTreeMap::new(),
+            outputs: Vec::new(),
+            mcp: Vec::new(),
+        }
+    }
+
+    fn mcp_env() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("PROJ_TOKEN".to_owned(), "p-secret".to_owned()),
+            ("WEB_TOKEN".to_owned(), "w-secret".to_owned()),
+            ("PATH".to_owned(), "/bin:/usr/bin".to_owned()),
+        ])
+    }
+
+    #[test]
+    fn claude_gets_project_and_user_servers_without_secrets_on_disk() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        let sources = mcp_sources_for(&repo);
+        let env = mcp_env();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        let bundle = compile_step_context(
+            &catalog,
+            &agent_step(ProviderKind::Claude),
+            &TemplateContext::default(),
+            ProviderKind::Claude,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            StepMcpScope {
+                sources: &sources,
+                policy: McpSourcesPolicy::All,
+                env: &env,
+            },
+        )
+        .unwrap();
+        assert!(bundle.mcp.problems.is_empty(), "{:?}", bundle.mcp.problems);
+        let runtime_dir = temp.path().join("rt");
+        let mat = materialize_step_context(bundle, &runtime_dir, None).unwrap();
+        let file = mat.claude_mcp_file.clone().unwrap();
+        let raw = fs::read_to_string(&file).unwrap();
+        assert!(raw.contains("${PROJ_TOKEN}") && !raw.contains("p-secret"));
+        let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        let names: Vec<&String> = json["mcpServers"].as_object().unwrap().keys().collect();
+        assert_eq!(names, ["mine", "proj", "web"]);
+
+        let mut user_settings = ClaudeSpawnSettings::default();
+        user_settings
+            .set_from_text("cli.mcp-config", "/home/me/mcp.json")
+            .unwrap();
+        let plan = build_isolated_claude_spawn_plan(
+            "/usr/local/bin/claude",
+            None,
+            &user_settings,
+            &repo,
+            &mat,
+            None,
+            &env,
+        )
+        .unwrap();
+        let strict = plan
+            .args
+            .iter()
+            .position(|a| a == "--strict-mcp-config")
+            .unwrap();
+        assert_eq!(plan.args[strict - 2], "--mcp-config");
+        assert_eq!(plan.args[strict - 1], file.to_string_lossy());
+        assert!(
+            plan.args.contains(&"/home/me/mcp.json".to_owned()),
+            "user extras stay under `all`"
+        );
+        assert_eq!(plan.args.last().map(String::as_str), Some("Go"));
+    }
+
+    #[test]
+    fn project_only_policy_strips_user_mcp_settings_for_claude_and_codex() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        let sources = mcp_sources_for(&repo);
+        let env = mcp_env();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        let scope = StepMcpScope {
+            sources: &sources,
+            policy: McpSourcesPolicy::Project,
+            env: &env,
+        };
+
+        let bundle = compile_step_context(
+            &catalog,
+            &agent_step(ProviderKind::Claude),
+            &TemplateContext::default(),
+            ProviderKind::Claude,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            scope,
+        )
+        .unwrap();
+        assert_eq!(bundle.mcp.withheld.len(), 1);
+        let mat = materialize_step_context(bundle, temp.path().join("rt-claude"), None).unwrap();
+        let mut user_settings = ClaudeSpawnSettings::default();
+        user_settings
+            .set_from_text("cli.mcp-config", "/home/me/mcp.json")
+            .unwrap();
+        let plan = build_isolated_claude_spawn_plan(
+            "/usr/local/bin/claude",
+            None,
+            &user_settings,
+            &repo,
+            &mat,
+            None,
+            &env,
+        )
+        .unwrap();
+        assert!(!plan.args.contains(&"/home/me/mcp.json".to_owned()));
+        assert_eq!(plan.args.iter().filter(|a| *a == "--mcp-config").count(), 1);
+
+        let bundle = compile_step_context(
+            &catalog,
+            &agent_step(ProviderKind::Codex),
+            &TemplateContext::default(),
+            ProviderKind::Codex,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            scope,
+        )
+        .unwrap();
+        let mat = materialize_step_context(bundle, temp.path().join("rt-codex"), None).unwrap();
+        let mut codex_settings = CodexSpawnSettings::default();
+        codex_settings
+            .set_from_text("mcp_servers", r#"{"mine":{"command":"sh"}}"#)
+            .unwrap();
+        let plan = build_isolated_codex_spawn_plan(
+            "/usr/local/bin/codex",
+            None,
+            &codex_settings,
+            &repo,
+            &mat,
+            &env,
+        )
+        .unwrap();
+        let overrides: Vec<&String> = plan
+            .args
+            .windows(2)
+            .filter(|w| w[0] == "-c")
+            .map(|w| &w[1])
+            .collect();
+        assert!(!overrides.iter().any(|o| o.starts_with("mcp_servers=")));
+        assert!(overrides.iter().any(|o| o.starts_with("mcp_servers.proj=")));
+        assert!(
+            overrides
+                .iter()
+                .any(|o| o.contains("bearer_token_env_var=\"WEB_TOKEN\""))
+        );
+        assert!(
+            overrides
+                .iter()
+                .any(|o| *o == crate::mcp::CODEX_DISABLE_APPS_ARG)
+        );
+        assert!(!overrides.iter().any(|o| o.contains("p-secret")));
+        assert_eq!(plan.env.get("TOKEN").map(String::as_str), Some("p-secret"));
+        assert_eq!(
+            plan.env.get("RUST_LOG").map(String::as_str),
+            Some(crate::mcp::CODEX_MCP_RUST_LOG)
+        );
+    }
+
+    #[test]
+    fn codex_puts_bruk_servers_after_a_whole_table_override_from_spawn_settings() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        let sources = mcp_sources_for(&repo);
+        let env = mcp_env();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        let bundle = compile_step_context(
+            &catalog,
+            &agent_step(ProviderKind::Codex),
+            &TemplateContext::default(),
+            ProviderKind::Codex,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            StepMcpScope {
+                sources: &sources,
+                policy: McpSourcesPolicy::All,
+                env: &env,
+            },
+        )
+        .unwrap();
+        let mat = materialize_step_context(bundle, temp.path().join("rt"), None).unwrap();
+        let mut codex_settings = CodexSpawnSettings::default();
+        codex_settings
+            .set_from_text("mcp_servers", r#"{"theirs":{"command":"sh"}}"#)
+            .unwrap();
+        let plan = build_isolated_codex_spawn_plan(
+            "/usr/local/bin/codex",
+            None,
+            &codex_settings,
+            &repo,
+            &mat,
+            &env,
+        )
+        .unwrap();
+        let table = plan
+            .args
+            .iter()
+            .position(|a| a.starts_with("mcp_servers="))
+            .unwrap();
+        let ours = plan
+            .args
+            .iter()
+            .position(|a| a.starts_with("mcp_servers.proj="))
+            .unwrap();
+        assert!(
+            table < ours,
+            "a whole-table override after ours would replace them"
+        );
+    }
+
+    #[test]
+    fn antigravity_denies_mcp_tools_until_the_project_file_is_approved() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        let mut sources = mcp_sources_for(&repo);
+        sources.approved_fingerprint = None;
+        let env = mcp_env();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        for (sandbox, approved) in [
+            (ProjectSandboxMode::WorkspaceWrite, false),
+            (ProjectSandboxMode::FullAccess, false),
+            (ProjectSandboxMode::WorkspaceWrite, true),
+        ] {
+            let mut sources = sources.clone();
+            if approved {
+                sources.approved_fingerprint =
+                    sources.project.config().map(|c| c.fingerprint.clone());
+            }
+            let bundle = compile_step_context(
+                &catalog,
+                &agent_step(ProviderKind::Antigravity),
+                &TemplateContext::default(),
+                ProviderKind::Antigravity,
+                sandbox,
+                None,
+                StepMcpScope {
+                    sources: &sources,
+                    policy: McpSourcesPolicy::All,
+                    env: &env,
+                },
+            )
+            .unwrap();
+            assert!(!bundle.mcp.has_blocking_problem());
+            let mat = materialize_step_context(bundle, temp.path().join("rt"), None).unwrap();
+            let plan = build_isolated_antigravity_spawn_plan("/bin/agy", None, &repo, &mat, &env);
+            let settings = plan.args.iter().find(|a| a.contains("permissions"));
+            let denies_mcp = settings.is_some_and(|s| s.contains("mcp(*)"));
+            assert_eq!(denies_mcp, !approved, "{sandbox:?} approved={approved}");
+            assert!(plan.args.iter().any(|a| a.starts_with("--log-file=")));
+        }
+    }
+
+    #[test]
+    fn agent_frontmatter_narrows_servers_and_tightens_the_policy() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        fs::create_dir_all(repo.join(BRUK_CONFIG_DIR).join("agents")).unwrap();
+        fs::write(
+            repo.join(BRUK_CONFIG_DIR).join("agents/web.md"),
+            "---\nid: web\nmcp:\n  - web\nmcp_sources: project\n---\nBrowse.\n",
+        )
+        .unwrap();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        let sources = mcp_sources_for(&repo);
+        let env = mcp_env();
+        let mut step = agent_step(ProviderKind::Claude);
+        step.agent = Some("web".to_owned());
+        let bundle = compile_step_context(
+            &catalog,
+            &step,
+            &TemplateContext::default(),
+            ProviderKind::Claude,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            StepMcpScope {
+                sources: &sources,
+                policy: McpSourcesPolicy::All,
+                env: &env,
+            },
+        )
+        .unwrap();
+        assert_eq!(bundle.mcp.policy, McpSourcesPolicy::Project);
+        let names: Vec<&str> = bundle
+            .mcp
+            .servers
+            .iter()
+            .map(|s| s.def.name.as_str())
+            .collect();
+        assert_eq!(names, ["web"]);
+        assert!(bundle.mcp.servers[0].required);
     }
 }

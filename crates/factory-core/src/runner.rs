@@ -31,13 +31,17 @@ use crate::{
         resolve_gh_binary,
     },
     inbox::ReviewFileStat,
+    mcp::{
+        ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
+        McpSourcesPolicy, antigravity_log_failures, claude_init_failures, codex_stderr_failure,
+    },
     model::ProjectId,
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
     step_context::{
-        TemplateContext, build_isolated_antigravity_spawn_plan, build_isolated_claude_spawn_plan,
-        build_isolated_codex_spawn_plan, compile_step_context, default_step_runtime_dir,
-        materialize_step_context,
+        StepMcpScope, TemplateContext, build_isolated_antigravity_spawn_plan,
+        build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
+        default_step_runtime_dir, materialize_step_context,
     },
     workflow_editor::{ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode},
     workflow_run::{
@@ -62,6 +66,8 @@ pub enum RunnerError {
     CompositeNotFound(String),
     #[error("run stopped by operator")]
     Stopped,
+    #[error("{0}")]
+    Mcp(String),
 }
 
 /// Complete configuration passed to [`spawn_workflow_run`] or [`execute_workflow_blocking`].
@@ -96,6 +102,8 @@ pub struct WorkflowRunRequest {
     pub open_prs_as_draft: bool,
     pub link_pr_closes_issue: bool,
     pub project_env: BTreeMap<String, String>,
+    /// MCP servers the run's steps choose from, gathered when the run starts.
+    pub mcp: McpSources,
     pub runtime_root: Option<PathBuf>,
     pub budget_limit_cents: u64,
 }
@@ -255,6 +263,16 @@ pub enum RunnerEvent {
         step_index: usize,
         entry: StepTranscriptEntry,
     },
+    /// An MCP server didn't reach a step (also appended to its transcript), for notifications.
+    McpProblem {
+        step_index: usize,
+        step_title: String,
+        problem: McpProblem,
+    },
+    /// MCP servers that started for a step, so earlier notifications about them can clear.
+    McpServersReady {
+        servers: Vec<(String, McpOrigin)>,
+    },
     StepFinished {
         step_index: usize,
         status: RunStepStatus,
@@ -365,6 +383,7 @@ pub fn execute_workflow_blocking(
         next_step_index: 0,
         total_tokens: 0,
         total_cost_cents: 0,
+        mcp_policy: request.workflow.mcp_sources,
     };
 
     let result = execute_node_list(&mut state, &request.workflow.nodes, &mut template_ctx);
@@ -432,6 +451,8 @@ struct ExecutionCursor<'a> {
     next_step_index: usize,
     total_tokens: u64,
     total_cost_cents: u64,
+    /// The strictest `mcp_sources` of the workflow and the composites the cursor is inside.
+    mcp_policy: McpSourcesPolicy,
 }
 
 #[derive(Debug, Default)]
@@ -536,6 +557,11 @@ fn execute_agent_step(
         cursor.request.default_provider,
         cursor.request.default_sandbox,
         cursor.request.model_override.as_deref(),
+        StepMcpScope {
+            sources: &cursor.request.mcp,
+            policy: cursor.mcp_policy,
+            env: &cursor.request.project_env,
+        },
     )?;
     let step_runtime_dir =
         cursor
@@ -571,13 +597,16 @@ fn execute_agent_step(
             .clone()
             .unwrap_or_else(|| "default".to_owned()),
         sandbox: materialized.bundle.sandbox.label().to_owned(),
-        config: if materialized.bundle.included_skill_ids.is_empty() {
-            "Isolated (repo rules allowed)".to_owned()
-        } else {
-            format!(
-                "Skills: {}",
-                materialized.bundle.included_skill_ids.join(", ")
-            )
+        config: {
+            let base = if materialized.bundle.included_skill_ids.is_empty() {
+                "Isolated (repo rules allowed)".to_owned()
+            } else {
+                format!(
+                    "Skills: {}",
+                    materialized.bundle.included_skill_ids.join(", ")
+                )
+            };
+            format!("{base} · {}", materialized.bundle.mcp.summary())
         },
         approvals: "Isolated".to_owned(),
     };
@@ -599,6 +628,24 @@ fn execute_agent_step(
             step_index,
             entry: StepTranscriptEntry::UserSteering { message: note },
         });
+    }
+
+    for problem in &materialized.bundle.mcp.problems {
+        report_mcp_problem(cursor, step_index, &step.name, problem.clone());
+    }
+    if let Some(summary) = materialized.bundle.mcp.blocking_summary() {
+        let _ = cursor.tx.send(RunnerEvent::StepFinished {
+            step_index,
+            status: RunStepStatus::Failed,
+            duration_ms: started.elapsed().as_millis() as u64,
+            output_preview: truncate_for_prompt(&summary, 240),
+            tokens_used: 0,
+            cost_cents: 0,
+        });
+        return Err(RunnerError::Mcp(format!(
+            "step '{}' can't run without its MCP servers: {summary}",
+            step.name
+        )));
     }
 
     let mut cmd = match provider {
@@ -669,17 +716,24 @@ fn execute_agent_step(
     let stderr_pipe = child.stderr.take();
     let stderr_handle = std::thread::spawn(move || {
         let mut buf = String::new();
+        let mut mcp_failures = Vec::new();
         if let Some(pipe) = stderr_pipe {
             let reader = BufReader::new(pipe);
             for line in reader.lines().map_while(Result::ok) {
+                if let Some(failure) = codex_stderr_failure(&line) {
+                    mcp_failures.push(failure);
+                    continue;
+                }
                 if !buf.is_empty() {
                     buf.push('\n');
                 }
                 buf.push_str(&line);
             }
         }
-        buf
+        (buf, mcp_failures)
     });
+    let mut mcp_tracker = McpFailureTracker::default();
+    let mut mcp_blocking: Vec<String> = Vec::new();
 
     let mut assistant_chunks = Vec::new();
     let mut raw_stdout = String::new();
@@ -699,6 +753,25 @@ fn execute_agent_step(
                 raw_stdout.push('\n');
             }
             raw_stdout.push_str(&line);
+
+            if provider == ProviderKind::Claude
+                && line.contains("\"mcp_servers\"")
+                && let Ok(event) = serde_json::from_str::<serde_json::Value>(&line)
+            {
+                for failure in claude_init_failures(&event) {
+                    if let Some(problem) = mcp_tracker.record(&materialized.bundle.mcp, &failure) {
+                        if problem.blocking {
+                            mcp_blocking.push(problem.title());
+                        }
+                        report_mcp_problem(cursor, step_index, &step.name, problem);
+                    }
+                }
+                if !mcp_blocking.is_empty() {
+                    // A server the step needs didn't start: stop before the model runs.
+                    let _ = child.kill();
+                    break;
+                }
+            }
 
             let parsed = match provider {
                 ProviderKind::Claude => parse_claude_stream_json_line(&line),
@@ -785,8 +858,47 @@ fn execute_agent_step(
 
     let status = wait_child_with_cancel(&mut child, cursor.control)?;
     cursor.control.clear_active_pid();
-    let stderr_text = stderr_handle.join().unwrap_or_default();
+    let (stderr_text, codex_failures) = stderr_handle.join().unwrap_or_default();
     let duration_ms = started.elapsed().as_millis() as u64;
+
+    let mut late_failures = codex_failures;
+    if provider == ProviderKind::Antigravity
+        && let Ok(log) =
+            std::fs::read_to_string(materialized.runtime_dir.join(ANTIGRAVITY_LOG_FILE))
+    {
+        late_failures.extend(antigravity_log_failures(&log));
+    }
+    for failure in &late_failures {
+        if let Some(problem) = mcp_tracker.record(&materialized.bundle.mcp, failure) {
+            if problem.blocking {
+                mcp_blocking.push(problem.title());
+            }
+            report_mcp_problem(cursor, step_index, &step.name, problem);
+        }
+    }
+    if mcp_blocking.is_empty() && !cursor.control.is_stopped() {
+        let servers = mcp_tracker.healthy(&materialized.bundle.mcp);
+        if !servers.is_empty() {
+            let _ = cursor.tx.send(RunnerEvent::McpServersReady { servers });
+        }
+    }
+    if !mcp_blocking.is_empty() && !cursor.control.is_stopped() {
+        let summary = mcp_blocking.join("; ");
+        let _ = cursor.tx.send(RunnerEvent::StepFinished {
+            step_index,
+            status: RunStepStatus::Failed,
+            duration_ms,
+            output_preview: truncate_for_prompt(&summary, 240),
+            tokens_used,
+            cost_cents,
+        });
+        cursor.total_tokens = cursor.total_tokens.saturating_add(tokens_used);
+        cursor.total_cost_cents = cursor.total_cost_cents.saturating_add(cost_cents);
+        return Err(RunnerError::Mcp(format!(
+            "step '{}' lost MCP servers it needs: {summary}",
+            step.name
+        )));
+    }
 
     cursor.total_tokens = cursor.total_tokens.saturating_add(tokens_used);
     cursor.total_cost_cents = cursor.total_cost_cents.saturating_add(cost_cents);
@@ -839,6 +951,26 @@ fn execute_agent_step(
         stderr: stderr_text,
         output,
     })
+}
+
+/// Shows an MCP problem in the step's transcript and passes it on for notifications.
+fn report_mcp_problem(
+    cursor: &ExecutionCursor<'_>,
+    step_index: usize,
+    step_title: &str,
+    problem: McpProblem,
+) {
+    let _ = cursor.tx.send(RunnerEvent::TranscriptAppended {
+        step_index,
+        entry: StepTranscriptEntry::McpProblem {
+            problem: problem.clone(),
+        },
+    });
+    let _ = cursor.tx.send(RunnerEvent::McpProblem {
+        step_index,
+        step_title: step_title.to_owned(),
+        problem,
+    });
 }
 
 fn execute_shell_step(
@@ -1147,7 +1279,11 @@ fn execute_composite(
         child_ctx.inputs.insert(k.clone(), rendered);
     }
 
-    execute_node_list(cursor, &comp.nodes, &mut child_ctx)?;
+    let outer_policy = cursor.mcp_policy;
+    cursor.mcp_policy = outer_policy.stricter(comp.mcp_sources);
+    let result = execute_node_list(cursor, &comp.nodes, &mut child_ctx);
+    cursor.mcp_policy = outer_policy;
+    result?;
 
     let mut primary_output = String::new();
     for (out_name, expr) in &comp.outputs {
@@ -2096,6 +2232,8 @@ pub fn apply_runner_event_to_view_data(
             view.budget_guard.spent_cents =
                 view.budget_guard.spent_cents.saturating_add(*cost_cents);
         }
+        // The transcript entry sent alongside it carries the problem into the view.
+        RunnerEvent::McpProblem { .. } | RunnerEvent::McpServersReady { .. } => {}
         RunnerEvent::DiffUpdated { diffs } => {
             view.diffs = diffs.clone();
         }
@@ -2321,6 +2459,7 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             draft: false,
             triggers: WorkflowTriggersDef::default(),
             inputs: BTreeMap::new(),
+            mcp_sources: Default::default(),
             nodes: vec![
                 WorkflowNodeDef::Loop(LoopNodeDef {
                     id: "fix_loop".to_owned(),
@@ -2349,6 +2488,7 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
                             prompt: "Fix status file".to_owned(),
                             inputs: BTreeMap::new(),
                             outputs: Vec::new(),
+                            mcp: Vec::new(),
                         }),
                         WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
                             id: "check".to_owned(),
@@ -2399,6 +2539,7 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             open_prs_as_draft: false,
             link_pr_closes_issue: false,
             project_env: BTreeMap::new(),
+            mcp: Default::default(),
             runtime_root: Some(runtime_root.clone()),
             budget_limit_cents: 500,
         };
@@ -2439,5 +2580,196 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             fs::read_to_string(runtime_root.join("worktree/status.txt")).unwrap(),
             "fixed\n"
         );
+    }
+
+    /// Runs a one-step Claude workflow against a fake `claude` that reports `statuses` for the
+    /// MCP servers it was given, returning every event and whether the fake CLI ran.
+    fn run_mcp_workflow(
+        policy: McpSourcesPolicy,
+        approved: bool,
+        statuses: &str,
+    ) -> (Vec<RunnerEvent>, bool) {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(repo.join(".agents")).unwrap();
+        fs::write(
+            repo.join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{"proj":{"command":"sh"},"other":{"command":"sh"}}}"#,
+        )
+        .unwrap();
+        let marker = temp.path().join("ran");
+        let fake_claude = temp.path().join("fake-claude");
+        fs::write(
+            &fake_claude,
+            format!(
+                r#"#!/bin/sh
+echo "$@" | grep -q -- "--mcp-config" || {{ echo "missing mcp-config" >&2; exit 2; }}
+touch "{marker}"
+echo '{{"type":"system","subtype":"init","mcp_servers":[{statuses}]}}'
+echo '{{"type":"assistant","message":{{"content":[{{"type":"text","text":"done"}}]}}}}'
+echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output_tokens":1}}}}'
+"#,
+                marker = marker.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&fake_claude, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let project = crate::mcp::load_project_mcp(&repo);
+        let fingerprint = project.config().map(|c| c.fingerprint.clone());
+        let workflow = WorkflowDef {
+            id: "mcp".to_owned(),
+            name: "MCP".to_owned(),
+            description: String::new(),
+            draft: false,
+            triggers: WorkflowTriggersDef::default(),
+            inputs: BTreeMap::new(),
+            mcp_sources: policy,
+            nodes: vec![WorkflowNodeDef::AgentTask(AgentTaskStepDef {
+                id: "work".to_owned(),
+                name: "Work".to_owned(),
+                agent: None,
+                provider: Some(ProviderKind::Claude),
+                model: None,
+                skills: Vec::new(),
+                prompt: "Go".to_owned(),
+                inputs: BTreeMap::new(),
+                outputs: Vec::new(),
+                mcp: Vec::new(),
+            })],
+            origin: crate::definitions::DefinitionOrigin::BuiltIn,
+        };
+        let req = WorkflowRunRequest {
+            run_id: "run-mcp".to_owned(),
+            run_number: 1,
+            project_id: 1,
+            project_name: "repo".to_owned(),
+            project_root: repo.clone(),
+            default_branch: "main".to_owned(),
+            workflow,
+            catalog: BrukCatalog::builtin_only(),
+            inputs: BTreeMap::new(),
+            issue_number: None,
+            github_repo: None,
+            github_auth: None,
+            default_provider: ProviderKind::Claude,
+            default_sandbox: ProjectSandboxMode::WorkspaceWrite,
+            model_override: None,
+            claude_binary: Some(fake_claude),
+            claude_default_model: None,
+            claude_settings: ClaudeSpawnSettings::default(),
+            codex_binary: None,
+            codex_default_model: None,
+            codex_settings: CodexSpawnSettings::default(),
+            source_codex_home: None,
+            antigravity_binary: None,
+            antigravity_default_model: None,
+            use_isolated_worktrees: false,
+            branch_prefix: "agent/".to_owned(),
+            open_prs_as_draft: false,
+            link_pr_closes_issue: false,
+            project_env: BTreeMap::new(),
+            mcp: McpSources {
+                project,
+                allow_project_servers: true,
+                approved_fingerprint: if approved { fingerprint } else { None },
+                project_extras: Vec::new(),
+                user_extras: Vec::new(),
+            },
+            runtime_root: Some(temp.path().join("rt")),
+            budget_limit_cents: 500,
+        };
+        let (_control, rx) = spawn_workflow_run(req);
+        let mut events = Vec::new();
+        for event in rx {
+            let done = matches!(event, RunnerEvent::RunFinished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        (events, marker.exists())
+    }
+
+    fn run_status(events: &[RunnerEvent]) -> Option<RunExecutionState> {
+        events.iter().find_map(|e| match e {
+            RunnerEvent::RunFinished { status, .. } => Some(*status),
+            _ => None,
+        })
+    }
+
+    fn mcp_problems(events: &[RunnerEvent]) -> Vec<&McpProblem> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                RunnerEvent::McpProblem { problem, .. } => Some(problem),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn project_only_workflow_stops_when_a_project_server_fails_to_start() {
+        let (events, ran) = run_mcp_workflow(
+            McpSourcesPolicy::Project,
+            true,
+            r#"{"name":"proj","status":"failed"},{"name":"other","status":"connected"}"#,
+        );
+        assert!(ran);
+        assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
+        let problems = mcp_problems(&events);
+        assert_eq!(problems.len(), 1);
+        assert_eq!(problems[0].server.as_deref(), Some("proj"));
+        assert!(problems[0].blocking);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, RunnerEvent::McpServersReady { .. }))
+        );
+    }
+
+    #[test]
+    fn project_only_workflow_doesnt_start_the_agent_with_an_unapproved_project_file() {
+        let (events, ran) = run_mcp_workflow(McpSourcesPolicy::Project, false, "");
+        assert!(
+            !ran,
+            "the agent must not start without the servers it needs"
+        );
+        assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
+        let problems = mcp_problems(&events);
+        assert_eq!(problems[0].fix, crate::mcp::McpFix::ApproveProjectServers);
+        assert!(problems[0].blocking);
+    }
+
+    #[test]
+    fn permissive_workflow_continues_and_reports_failed_and_ready_servers() {
+        let (events, ran) = run_mcp_workflow(
+            McpSourcesPolicy::All,
+            true,
+            r#"{"name":"proj","status":"failed"},{"name":"other","status":"connected"}"#,
+        );
+        assert!(ran);
+        assert_eq!(run_status(&events), Some(RunExecutionState::Succeeded));
+        let problems = mcp_problems(&events);
+        assert_eq!(problems.len(), 1);
+        assert!(!problems[0].blocking);
+        let ready = events
+            .iter()
+            .find_map(|e| match e {
+                RunnerEvent::McpServersReady { servers } => Some(servers.clone()),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(
+            ready.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(),
+            ["other"]
+        );
+        assert!(events.iter().any(|e| matches!(
+            e,
+            RunnerEvent::TranscriptAppended {
+                entry: StepTranscriptEntry::McpProblem { .. },
+                ..
+            }
+        )));
     }
 }

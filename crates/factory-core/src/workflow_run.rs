@@ -124,6 +124,10 @@ pub enum StepTranscriptEntry {
     UserSteering {
         message: String,
     },
+    /// An MCP server that didn't reach the agent, shown as a banner in the step.
+    McpProblem {
+        problem: crate::mcp::McpProblem,
+    },
 }
 
 /// Agent and execution sandbox metadata shown in the right-hand step inspector.

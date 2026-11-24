@@ -39,12 +39,17 @@ use crate::{
     claude_settings::ClaudeSpawnSettings,
     codex_settings::CodexSpawnSettings,
     definitions::{AgentTaskStepDef, BrukCatalog},
+    mcp::{
+        ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
+        McpSourcesPolicy, ResolvedMcpSet, antigravity_log_failures, claude_init_failures,
+        codex_stderr_failure,
+    },
     model::ProjectId,
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
     runner::terminate_pid,
     step_context::{
-        ISOLATED_CODEX_HOME_DIR, StepContextError, TemplateContext,
+        ISOLATED_CODEX_HOME_DIR, StepContextError, StepMcpScope, TemplateContext,
         build_isolated_antigravity_spawn_plan, build_isolated_claude_spawn_plan,
         build_isolated_codex_spawn_plan, compile_step_context, materialize_step_context,
     },
@@ -141,6 +146,8 @@ pub enum ChatEntry {
         #[serde(default)]
         tone: ChatNoticeTone,
     },
+    /// An MCP server that didn't reach the agent, shown as a banner with a way to fix it.
+    McpProblem { problem: McpProblem },
 }
 
 /// Where a chat's agent works.
@@ -687,6 +694,12 @@ impl ChatSession {
                     branch: branch.clone(),
                 });
             }
+            ChatEvent::McpProblem(problem) => {
+                self.entries.push(ChatEntry::McpProblem {
+                    problem: problem.clone(),
+                });
+            }
+            ChatEvent::McpServersReady(_) => return delta,
             ChatEvent::ContextUsage(usage) => {
                 // Not activity: the chat keeps its place in the list.
                 self.context = Some(usage.clone());
@@ -944,6 +957,10 @@ pub enum ChatEvent {
         tokens: ChatTokenBreakdown,
         scope: TokenScope,
     },
+    /// An MCP server didn't reach the agent for this turn.
+    McpProblem(McpProblem),
+    /// MCP servers that started for this turn, so earlier notifications about them can clear.
+    McpServersReady(Vec<(String, McpOrigin)>),
     /// The turn ended: `Idle` when it succeeded.
     TurnFinished {
         status: ChatSessionStatus,
@@ -1719,6 +1736,8 @@ pub struct ChatTurnRequest {
     pub catalog: BrukCatalog,
     pub project_model_override: Option<String>,
     pub project_env: BTreeMap<String, String>,
+    /// MCP servers the chat's agent chooses from, gathered when the turn starts.
+    pub mcp: McpSources,
     pub claude_binary: Option<PathBuf>,
     pub claude_default_model: Option<String>,
     pub claude_settings: ClaudeSpawnSettings,
@@ -1793,14 +1812,14 @@ enum ChatCommandPurpose {
 /// Builds the provider command for one chat turn. The message itself is written to the
 /// command's stdin, so it is never read as a flag or a prompt template.
 pub fn build_chat_turn_command(request: &ChatTurnRequest) -> Result<Command, ChatTurnError> {
-    build_chat_command(request, ChatCommandPurpose::Turn).map(|(cmd, _)| cmd)
+    build_chat_command(request, ChatCommandPurpose::Turn).map(|(cmd, _, _)| cmd)
 }
 
-/// The command for one chat turn and what to write to its stdin.
+/// The command for one chat turn, what to write to its stdin, and the MCP servers it gets.
 fn build_chat_command(
     request: &ChatTurnRequest,
     purpose: ChatCommandPurpose,
-) -> Result<(Command, String), ChatTurnError> {
+) -> Result<(Command, String, ResolvedMcpSet), ChatTurnError> {
     let attachments: Vec<ChatAttachment> = match purpose {
         ChatCommandPurpose::Turn => request
             .attachments
@@ -1825,6 +1844,7 @@ fn build_chat_command(
         prompt: String::new(),
         inputs: BTreeMap::new(),
         outputs: Vec::new(),
+        mcp: Vec::new(),
     };
     let mut bundle = compile_step_context(
         &request.catalog,
@@ -1833,6 +1853,11 @@ fn build_chat_command(
         request.provider,
         request.sandbox,
         request.project_model_override.as_deref(),
+        StepMcpScope {
+            sources: &request.mcp,
+            policy: McpSourcesPolicy::All,
+            env: &request.project_env,
+        },
     )?;
     // The access the user picked for this chat wins over the agent's default.
     bundle.provider = request.provider;
@@ -1899,7 +1924,11 @@ fn build_chat_command(
                     plan.args.push("--no-session-persistence".to_owned());
                 }
             }
-            Ok((plan.to_command(), stdin_text))
+            Ok((
+                plan.to_command(),
+                stdin_text,
+                materialized.bundle.mcp.clone(),
+            ))
         }
         ProviderKind::Codex => {
             let binary = request
@@ -1930,7 +1959,7 @@ fn build_chat_command(
             }
             // `-`: read the prompt from stdin.
             plan.args.push("-".to_owned());
-            Ok((plan.to_command(), prompt))
+            Ok((plan.to_command(), prompt, materialized.bundle.mcp.clone()))
         }
         ProviderKind::Antigravity => {
             let binary =
@@ -1966,7 +1995,11 @@ fn build_chat_command(
                 "event": "user",
                 "message": { "role": "user", "content": content },
             });
-            Ok((plan.to_command(), format!("{line}\n")))
+            Ok((
+                plan.to_command(),
+                format!("{line}\n"),
+                materialized.bundle.mcp.clone(),
+            ))
         }
         ProviderKind::OpenRouter => Err(ChatTurnError::UnsupportedProvider(
             ProviderKind::OpenRouter.label(),
@@ -2033,7 +2066,21 @@ fn run_chat_turn(
         }
     }
 
-    let (mut cmd, stdin_text) = build_chat_command(request, ChatCommandPurpose::Turn)?;
+    let (mut cmd, stdin_text, mcp) = build_chat_command(request, ChatCommandPurpose::Turn)?;
+    for problem in &mcp.problems {
+        let _ = tx.send(ChatEvent::McpProblem(problem.clone()));
+    }
+    if let Some(summary) = mcp.blocking_summary() {
+        return Ok((
+            ChatSessionStatus::Failed,
+            Some(truncate_chars(
+                &format!("This agent can't run without its MCP servers: {summary}"),
+                ERROR_MAX_CHARS,
+            )),
+        ));
+    }
+    let mut mcp_tracker = McpFailureTracker::default();
+    let mut mcp_blocking: Vec<String> = Vec::new();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2078,6 +2125,24 @@ fn run_chat_turn(
 
     if let Some(stdout) = child.stdout.take() {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if request.provider == ProviderKind::Claude
+                && line.contains("\"mcp_servers\"")
+                && let Ok(event) = serde_json::from_str::<Value>(&line)
+            {
+                for failure in claude_init_failures(&event) {
+                    if let Some(problem) = mcp_tracker.record(&mcp, &failure) {
+                        if problem.blocking {
+                            mcp_blocking.push(problem.title());
+                        }
+                        let _ = tx.send(ChatEvent::McpProblem(problem));
+                    }
+                }
+                if !mcp_blocking.is_empty() {
+                    // A server the agent needs didn't start: stop before the model runs.
+                    let _ = child.kill();
+                    break;
+                }
+            }
             let items = match request.provider {
                 ProviderKind::Claude => parse_claude_chat_line(&line),
                 ProviderKind::Codex => parse_codex_chat_line(&line),
@@ -2199,12 +2264,56 @@ fn run_chat_turn(
 
     let exit = child.wait();
     control.clear_child_pid();
-    let stderr_text = stderr_reader
+    let raw_stderr = stderr_reader
         .and_then(|handle| handle.join().ok())
         .unwrap_or_default();
 
+    // Codex reports servers that fail to start on stderr, Antigravity in its log.
+    let mut late_failures = Vec::new();
+    let mut stderr_lines = Vec::new();
+    for line in raw_stderr.lines() {
+        match codex_stderr_failure(line) {
+            Some(failure) => late_failures.push(failure),
+            None => stderr_lines.push(line),
+        }
+    }
+    let stderr_text = stderr_lines.join("\n");
+    if request.provider == ProviderKind::Antigravity
+        && let Ok(log) = std::fs::read_to_string(request.runtime_dir.join(ANTIGRAVITY_LOG_FILE))
+    {
+        late_failures.extend(antigravity_log_failures(&log));
+        // One log per turn, so the next turn doesn't report these again.
+        let _ = std::fs::remove_file(request.runtime_dir.join(ANTIGRAVITY_LOG_FILE));
+    }
+    for failure in &late_failures {
+        if let Some(problem) = mcp_tracker.record(&mcp, failure) {
+            if problem.blocking {
+                mcp_blocking.push(problem.title());
+            }
+            let _ = tx.send(ChatEvent::McpProblem(problem));
+        }
+    }
+
     if control.is_stopped() {
         return Ok((ChatSessionStatus::Stopped, None));
+    }
+    if mcp_blocking.is_empty() {
+        let servers = mcp_tracker.healthy(&mcp);
+        if !servers.is_empty() {
+            let _ = tx.send(ChatEvent::McpServersReady(servers));
+        }
+    }
+    if !mcp_blocking.is_empty() {
+        return Ok((
+            ChatSessionStatus::Failed,
+            Some(truncate_chars(
+                &format!(
+                    "This agent lost MCP servers it needs: {}",
+                    mcp_blocking.join("; ")
+                ),
+                ERROR_MAX_CHARS,
+            )),
+        ));
     }
     let exit_code = exit.ok().and_then(|status| status.code());
     if exit_code == Some(0) && result_error.is_none() {
@@ -2285,7 +2394,7 @@ pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatCon
 }
 
 fn query_claude_context(request: &ChatTurnRequest, now: i64) -> Result<ChatContextUsage, String> {
-    let (mut cmd, _) = build_chat_command(request, ChatCommandPurpose::ContextQuery)
+    let (mut cmd, _, _) = build_chat_command(request, ChatCommandPurpose::ContextQuery)
         .map_err(|err| err.to_string())?;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -3566,6 +3675,7 @@ mod tests {
             catalog: BrukCatalog::load_for_project(&repo),
             project_model_override: None,
             project_env: BTreeMap::new(),
+            mcp: Default::default(),
             claude_binary: (provider == ProviderKind::Claude).then(|| binary.to_path_buf()),
             claude_default_model: None,
             claude_settings: ClaudeSpawnSettings::default(),

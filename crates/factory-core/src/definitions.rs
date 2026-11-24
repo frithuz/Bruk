@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
+    mcp::{McpSourcesPolicy, ProjectMcpState},
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
     workflow_editor::{
@@ -351,6 +352,12 @@ struct AgentFrontmatter {
     subagents: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     include_repo_instructions: Option<bool>,
+    /// MCP servers this agent needs; when set, it gets only these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    mcp: Vec<String>,
+    /// `project` keeps the user's own MCP servers away from this agent.
+    #[serde(default, skip_serializing_if = "McpSourcesPolicy::is_default")]
+    mcp_sources: McpSourcesPolicy,
 }
 
 /// Raw agent definition parsed from `agents/<id>.md`.
@@ -369,6 +376,12 @@ pub struct AgentDef {
     pub skills: Vec<String>,
     pub subagents: Vec<String>,
     pub include_repo_instructions: Option<bool>,
+    /// MCP servers this agent needs (`mcp:`); empty means every server the policy allows.
+    #[serde(default)]
+    pub mcp: Vec<String>,
+    /// `mcp_sources: project` withholds the user's own MCP servers.
+    #[serde(default)]
+    pub mcp_sources: McpSourcesPolicy,
     pub instructions: String,
     #[serde(skip)]
     pub origin: DefinitionOrigin,
@@ -429,6 +442,8 @@ impl AgentDef {
             skills: dedup_strings(fm.skills),
             subagents: dedup_strings(fm.subagents),
             include_repo_instructions: fm.include_repo_instructions,
+            mcp: dedup_strings(fm.mcp),
+            mcp_sources: fm.mcp_sources,
             instructions: body.trim().to_owned(),
             origin,
         })
@@ -449,6 +464,8 @@ impl AgentDef {
             skills: self.skills.clone(),
             subagents: self.subagents.clone(),
             include_repo_instructions: self.include_repo_instructions,
+            mcp: self.mcp.clone(),
+            mcp_sources: self.mcp_sources,
         };
         let yaml = serde_saphyr::to_string(&fm)
             .map_err(|err| CatalogError::YamlSerialize(err.to_string()))?;
@@ -480,6 +497,10 @@ pub struct ResolvedAgent {
     pub subagents: Vec<String>,
     /// Whether repo-checked-in `CLAUDE.md` / `AGENTS.md` files remain active (default `true`).
     pub include_repo_instructions: bool,
+    /// MCP servers the agent (and its bases) need; empty means every allowed server.
+    pub mcp: Vec<String>,
+    /// The strictest `mcp_sources` along the `extends` chain.
+    pub mcp_sources: McpSourcesPolicy,
     pub instructions: String,
     /// Non-fatal notices (e.g., child tried to change an already-set base scalar under `extends`).
     pub notices: Vec<String>,
@@ -611,6 +632,9 @@ pub struct AgentTaskStepDef {
     pub inputs: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<String>,
+    /// MCP servers this step needs, on top of its agent's; when set, it gets only these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mcp: Vec<String>,
 }
 
 /// Deterministic shell command step run inside the workflow checkout.
@@ -775,6 +799,10 @@ pub struct CompositeDef {
     pub inputs: BTreeMap<String, InputParamDef>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub outputs: BTreeMap<String, String>,
+    /// `project` runs this composite's steps with only the project's MCP servers, even inside
+    /// a workflow that allows the user's own.
+    #[serde(default, skip_serializing_if = "McpSourcesPolicy::is_default")]
+    pub mcp_sources: McpSourcesPolicy,
     #[serde(default)]
     pub nodes: Vec<WorkflowNodeDef>,
     #[serde(skip)]
@@ -828,6 +856,10 @@ pub struct WorkflowDef {
     pub triggers: WorkflowTriggersDef,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, InputParamDef>,
+    /// `project` withholds the user's own MCP servers from every step, so the workflow runs
+    /// with exactly the servers the repository declares.
+    #[serde(default, skip_serializing_if = "McpSourcesPolicy::is_default")]
+    pub mcp_sources: McpSourcesPolicy,
     #[serde(default)]
     pub nodes: Vec<WorkflowNodeDef>,
     #[serde(skip)]
@@ -912,6 +944,9 @@ pub struct BrukCatalog {
     pub manifest: BrukManifest,
     pub loaded_modules: Vec<LoadedModuleInfo>,
     pub load_diagnostics: Vec<CatalogDiagnostic>,
+    /// The project's tracked MCP servers (`.agents/mcp_config.json`, else `.mcp.json`), read
+    /// from the project's checkout when the catalog loads.
+    pub project_mcp: ProjectMcpState,
 
     /// All definitions indexed by canonical `<namespace>/<id>`.
     agents_by_canonical: BTreeMap<String, AgentDef>,
@@ -1037,6 +1072,15 @@ impl BrukCatalog {
         if project_config_dir.is_dir() {
             catalog.load_directory_layer(&project_config_dir, |file_path| {
                 DefinitionOrigin::Project { file_path }
+            });
+        }
+
+        catalog.project_mcp = crate::mcp::load_project_mcp(&project_root);
+        if let ProjectMcpState::Invalid { file, message } = &catalog.project_mcp {
+            catalog.load_diagnostics.push(CatalogDiagnostic {
+                severity: DiagnosticSeverity::Error,
+                subject: file.relative_path().to_owned(),
+                message: format!("{message}; none of the project's MCP servers load"),
             });
         }
 
@@ -1335,6 +1379,8 @@ impl BrukCatalog {
         let mut deny_tools = Vec::new();
         let mut skills = Vec::new();
         let mut subagents = Vec::new();
+        let mut mcp = Vec::new();
+        let mut mcp_sources = McpSourcesPolicy::All;
         let mut instruction_blocks = Vec::new();
         let mut notices = Vec::new();
 
@@ -1382,6 +1428,8 @@ impl BrukCatalog {
             append_unique(&mut deny_tools, &agent.tools.deny);
             append_unique(&mut skills, &agent.skills);
             append_unique(&mut subagents, &agent.subagents);
+            append_unique(&mut mcp, &agent.mcp);
+            mcp_sources = mcp_sources.stricter(agent.mcp_sources);
 
             let trimmed_body = agent.instructions.trim();
             if !trimmed_body.is_empty() {
@@ -1414,6 +1462,8 @@ impl BrukCatalog {
             skills,
             subagents,
             include_repo_instructions: include_repo_instructions.unwrap_or(true),
+            mcp,
+            mcp_sources,
             instructions: instruction_blocks.join("\n\n"),
             notices,
         })
@@ -2272,6 +2322,7 @@ mod tests {
                 issue_labels: Vec::new(),
             },
             inputs: BTreeMap::new(),
+            mcp_sources: Default::default(),
             nodes: vec![
                 WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
                     id: "clippy".to_owned(),
@@ -2288,6 +2339,7 @@ mod tests {
                     prompt: "Summarize findings.".to_owned(),
                     inputs: BTreeMap::new(),
                     outputs: Vec::new(),
+                    mcp: Vec::new(),
                 }),
             ],
             origin: DefinitionOrigin::BuiltIn,
@@ -2357,5 +2409,44 @@ mod tests {
         let sec = catalog.resolve_agent("acme-sec/security").unwrap();
         assert_eq!(sec.name, "Security Auditor");
         assert!(sec.instructions.contains("Audit auth boundaries."));
+    }
+
+    #[test]
+    fn mcp_settings_survive_yaml_and_the_workflow_editor() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path();
+        fs::create_dir_all(repo.join(".agents/bruk/workflows")).unwrap();
+        fs::write(
+            repo.join(".agents/bruk/workflows/strict.yaml"),
+            "id: strict\nname: Strict\nmcp_sources: project\nnodes:\n  - kind: agent_task\n    id: browse\n    name: Browse\n    prompt: Go\n    mcp:\n      - playwright\n",
+        )
+        .unwrap();
+        fs::write(
+            repo.join(".mcp.json"),
+            r#"{"mcpServers":{"playwright":{"command":"npx"}}}"#,
+        )
+        .unwrap();
+        let catalog = BrukCatalog::load_for_project(repo);
+        assert_eq!(
+            catalog.project_mcp.file(),
+            Some(crate::mcp::ProjectMcpFile::RootMcpJson)
+        );
+        let wf = catalog.resolve_workflow("strict").cloned().unwrap();
+        assert_eq!(wf.mcp_sources, McpSourcesPolicy::Project);
+        let WorkflowNodeDef::AgentTask(step) = &wf.nodes[0] else {
+            panic!("expected an agent step, got {:?}", wf.nodes[0]);
+        };
+        assert_eq!(step.mcp, ["playwright"]);
+
+        let doc = crate::workflow_editor::WorkflowEditorDocument::from_workflow_def(
+            "repo", &wf, &catalog,
+        );
+        let saved = doc.to_workflow_def();
+        assert_eq!(saved.mcp_sources, McpSourcesPolicy::Project);
+        let WorkflowNodeDef::AgentTask(step) = &saved.nodes[0] else {
+            panic!("expected an agent step");
+        };
+        assert_eq!(step.mcp, ["playwright"]);
+        assert!(saved.to_yaml().unwrap().contains("mcp_sources: project"));
     }
 }

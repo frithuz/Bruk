@@ -2392,6 +2392,20 @@ pub(crate) struct ChatEntryRow {
 impl AppState {
     /// The extra environment every agent process gets: the project's variables, plus the
     /// `SSH_AUTH_SOCK` from Preferences when one is set (a project's own value wins).
+    /// The MCP servers a run or chat turn chooses from. The project's file is read from its
+    /// checkout now (never from a run's worktree), so edits show up without reloading.
+    fn mcp_sources(
+        &self,
+        project_root: &std::path::Path,
+        settings: Option<&ProjectSettings>,
+    ) -> factory_core::mcp::McpSources {
+        factory_core::mcp::McpSources::gather(
+            &factory_core::mcp::load_project_mcp(project_root),
+            settings,
+            &self.preferences.extensions,
+        )
+    }
+
     fn agent_env(&self, settings: Option<&ProjectSettings>) -> BTreeMap<String, String> {
         let mut env: BTreeMap<String, String> = settings
             .map(|settings| {
@@ -2705,6 +2719,7 @@ impl AppState {
                 .map(|s| s.model_override.trim().to_owned())
                 .filter(|m| !m.is_empty()),
             project_env,
+            mcp: self.mcp_sources(&project.root_path, settings),
             claude_binary: launch.claude_binary,
             claude_default_model: Some(self.preferences.claude.default_model.clone()),
             claude_settings: self.preferences.claude_spawn_settings.clone(),
@@ -3119,6 +3134,44 @@ fn start_chat_turn(chat_id: String, request: ChatTurnRequest) {
                         .iter()
                         .any(|event| matches!(event, ChatEvent::ProviderSessionStarted { .. }));
                 let now = current_unix_seconds();
+                let mut mcp_notifications = Vec::new();
+                let mut mcp_cleared = Vec::new();
+                state().update(|s| {
+                    let Some(chat) = s.chat_sessions.get(&chat_id) else {
+                        return;
+                    };
+                    let project_name = s
+                        .factory
+                        .project(chat.project_id)
+                        .map(|p| p.name.clone())
+                        .unwrap_or_default();
+                    let (title, provider) = (chat.title.clone(), chat.provider);
+                    for event in &batch {
+                        match event {
+                            ChatEvent::McpProblem(problem) => {
+                                if let Some(n) = s.file_mcp_problem(
+                                    McpProblemContext {
+                                        project_name: &project_name,
+                                        context_label: format!("Chat · {title}"),
+                                        where_label: format!("Chat '{title}'"),
+                                        run_number: 0,
+                                        provider,
+                                    },
+                                    problem,
+                                ) {
+                                    mcp_notifications.push(n);
+                                }
+                            }
+                            ChatEvent::McpServersReady(servers) => {
+                                mcp_cleared
+                                    .extend(s.clear_ready_mcp_servers(&project_name, servers));
+                            }
+                            _ => {}
+                        }
+                    }
+                });
+                post_mcp_notifications(mcp_notifications);
+                close_notifications(mcp_cleared);
                 state().update(|s| {
                     let Some(chat) = s.chat_sessions.get_mut(&chat_id) else {
                         return;
@@ -4505,6 +4558,7 @@ pub(crate) fn inbox_primary_answer() {
         AttentionRequestKind::Question => inbox_answer_question(),
         AttentionRequestKind::Review => inbox_approve_review(),
         AttentionRequestKind::LoopExhausted => inbox_grant_more_attempts(),
+        AttentionRequestKind::Setup => inbox_fix_setup_item(),
     }
 }
 
@@ -4517,6 +4571,7 @@ pub(crate) fn inbox_secondary_deny_shortcut() {
         AttentionRequestKind::Question => inbox_let_agent_decide(),
         AttentionRequestKind::Review => inbox_request_changes(),
         AttentionRequestKind::LoopExhausted => inbox_stop_exhausted_run(),
+        AttentionRequestKind::Setup => inbox_dismiss_setup_item(),
     }
 }
 
@@ -7062,6 +7117,371 @@ pub(crate) fn toggle_allow_project_mcp_servers() {
     });
 }
 
+// --- MCP servers ------------------------------------------------------------------------
+
+/// Whose servers an MCP list edits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum McpServerScope {
+    /// This user's servers for the selected project.
+    Project,
+    /// This user's servers for every project.
+    User,
+}
+
+/// What Project Settings › MCP Servers shows for the selected project.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProjectMcpOverview {
+    pub(crate) state: factory_core::mcp::ProjectMcpState,
+    pub(crate) allow_project_servers: bool,
+    pub(crate) approved: bool,
+    /// A file was approved, but its contents changed since.
+    pub(crate) changed_since_approval: bool,
+    pub(crate) project_extras: Vec<factory_core::mcp::McpServerDef>,
+    pub(crate) user_extras: Vec<factory_core::mcp::McpServerDef>,
+}
+
+pub(crate) fn project_mcp_overview() -> ProjectMcpOverview {
+    state().with(|s| {
+        let name = s.selected_project_name();
+        let state = s
+            .project_root_by_name(&name)
+            .map(|root| factory_core::mcp::load_project_mcp(&root))
+            .unwrap_or_default();
+        let settings = s.project_settings.get(&name);
+        let sources =
+            factory_core::mcp::McpSources::gather(&state, settings, &s.preferences.extensions);
+        let approved = sources.project_trusted();
+        ProjectMcpOverview {
+            changed_since_approval: !approved
+                && sources.approved_fingerprint.is_some()
+                && state.config().is_some(),
+            state,
+            allow_project_servers: s.preferences.extensions.allow_project_mcp_servers,
+            approved,
+            project_extras: sources.project_extras,
+            user_extras: sources.user_extras,
+        }
+    })
+}
+
+pub(crate) fn user_mcp_servers() -> Vec<factory_core::mcp::McpServerDef> {
+    state().with(|s| s.preferences.extensions.mcp_servers.clone())
+}
+
+/// Approves the project's current MCP file, so its servers load until it changes.
+pub(crate) fn approve_project_mcp_servers() {
+    let mut cleared = Vec::new();
+    state().update(|s| {
+        let name = s.selected_project_name();
+        let Some(root) = s.project_root_by_name(&name) else {
+            return;
+        };
+        let Some(config) = factory_core::mcp::load_project_mcp(&root).config().cloned() else {
+            s.project_settings_error =
+                Some("This project has no MCP servers to approve.".to_owned());
+            return;
+        };
+        let settings = s.ensure_project_settings_mut();
+        settings.approved_mcp_fingerprint = Some(config.fingerprint.clone());
+        s.project_settings_error = None;
+        s.project_settings_feedback = Some(format!(
+            "Approved the MCP servers in {}. They load until the file changes.",
+            config.file.relative_path()
+        ));
+        s.persist_active_project_settings();
+        cleared = s.inbox.clear_mcp_problems(&name, |p| {
+            p.fix == factory_core::mcp::McpFix::ApproveProjectServers
+        });
+        s.sync_inbox_selection_and_drafts();
+    });
+    close_notifications(cleared);
+}
+
+pub(crate) fn revoke_project_mcp_servers() {
+    state().update(|s| {
+        s.ensure_project_settings_mut().approved_mcp_fingerprint = None;
+        s.project_settings_error = None;
+        s.project_settings_feedback =
+            Some("Project MCP servers won't load until you approve them again.".to_owned());
+        s.persist_active_project_settings();
+    });
+}
+
+/// Adds one of this user's servers from the add-server form. `false` (with the reason shown)
+/// when the form isn't valid.
+pub(crate) fn add_mcp_server(
+    scope: McpServerScope,
+    name: &str,
+    command_or_url: &str,
+    args_text: &str,
+    pairs_text: &str,
+) -> bool {
+    let parsed =
+        factory_core::mcp::McpServerDef::from_form(name, command_or_url, args_text, pairs_text);
+    let mut added = false;
+    state().update(|s| match parsed {
+        Err(err) => match scope {
+            McpServerScope::Project => s.project_settings_error = Some(err),
+            McpServerScope::User => s.preferences_error = Some(err),
+        },
+        Ok(server) => {
+            let message = format!("Added MCP server '{}'.", server.name);
+            match scope {
+                McpServerScope::Project => {
+                    s.ensure_project_settings_mut().upsert_mcp_server(server);
+                    s.project_settings_error = None;
+                    s.project_settings_feedback = Some(message);
+                    s.persist_active_project_settings();
+                }
+                McpServerScope::User => {
+                    let servers = &mut s.preferences.extensions.mcp_servers;
+                    match servers.iter_mut().find(|x| x.name == server.name) {
+                        Some(existing) => *existing = server,
+                        None => servers.push(server),
+                    }
+                    s.preferences_error = None;
+                    s.preferences_feedback = Some(message);
+                    s.persist_preferences();
+                }
+            }
+            added = true;
+        }
+    });
+    added
+}
+
+pub(crate) fn remove_mcp_server(scope: McpServerScope, name: &str) {
+    state().update(|s| match scope {
+        McpServerScope::Project => {
+            if s.ensure_project_settings_mut().remove_mcp_server(name) {
+                s.project_settings_feedback = Some(format!("Removed MCP server '{name}'."));
+                s.persist_active_project_settings();
+            }
+        }
+        McpServerScope::User => {
+            s.preferences
+                .extensions
+                .mcp_servers
+                .retain(|x| x.name != name);
+            s.preferences_feedback = Some(format!("Removed MCP server '{name}'."));
+            s.persist_preferences();
+        }
+    });
+}
+
+pub(crate) fn toggle_mcp_server(scope: McpServerScope, name: &str) {
+    state().update(|s| match scope {
+        McpServerScope::Project => {
+            if let Some(server) = s
+                .ensure_project_settings_mut()
+                .mcp_servers
+                .iter_mut()
+                .find(|x| x.name == name)
+            {
+                server.disabled = !server.disabled;
+                s.persist_active_project_settings();
+            }
+        }
+        McpServerScope::User => {
+            if let Some(server) = s
+                .preferences
+                .extensions
+                .mcp_servers
+                .iter_mut()
+                .find(|x| x.name == name)
+            {
+                server.disabled = !server.disabled;
+                s.persist_preferences();
+            }
+        }
+    });
+}
+
+/// Takes the user to where `fix` gets done (for notifications, banners and the Inbox).
+pub(crate) fn apply_mcp_fix(project_name: Option<&str>, fix: &factory_core::mcp::McpFix) {
+    use factory_core::mcp::{McpFix, McpOrigin};
+    if let Some(name) = project_name {
+        state().update(|s| {
+            if let Some(project) = s.factory.projects().iter().find(|p| p.name == name) {
+                s.selected_project = Some(project.id);
+            }
+        });
+    }
+    match fix {
+        McpFix::SetEnvVar(key) => {
+            open_project_settings_tab(ProjectSettingsTab::Environment);
+            state().update(|s| {
+                s.project_settings_feedback = Some(format!(
+                    "Add {key} below (Add Variable) so MCP servers that need it can start."
+                ));
+            });
+        }
+        McpFix::ApproveProjectServers
+        | McpFix::EditProjectFile(_)
+        | McpFix::InstallCommand(_)
+        | McpFix::EditExtra {
+            origin: McpOrigin::ProjectExtra | McpOrigin::Project(_),
+            ..
+        } => open_project_settings_tab(ProjectSettingsTab::McpServers),
+        McpFix::AllowProjectServers
+        | McpFix::EditExtra {
+            origin: McpOrigin::UserExtra,
+            ..
+        } => open_preferences_tab(PreferencesTab::Extensions),
+        McpFix::ChangeProvider | McpFix::None => {}
+    }
+}
+
+/// Where an MCP problem happened, for its Inbox item.
+struct McpProblemContext<'a> {
+    project_name: &'a str,
+    /// The workflow or chat it happened in.
+    context_label: String,
+    /// The step's title, or the chat's.
+    where_label: String,
+    run_number: u32,
+    provider: ProviderKind,
+}
+
+impl AppState {
+    /// Files an MCP problem in the Inbox (once per problem and project) and returns the
+    /// notification to post for it, if it's new.
+    fn file_mcp_problem(
+        &mut self,
+        ctx: McpProblemContext<'_>,
+        problem: &factory_core::mcp::McpProblem,
+    ) -> Option<nsh_core::notifications::Notification> {
+        let id = format!("mcp:{}:{}", ctx.project_name, mcp_problem_id(problem));
+        if self.inbox.pending.iter().any(|r| r.id == id) {
+            return None;
+        }
+        let title = problem.title();
+        let stopped = if problem.blocking {
+            format!("{} stopped: it needs this server.", ctx.where_label)
+        } else {
+            format!("{} ran without it.", ctx.where_label)
+        };
+        let agent = match ctx.provider {
+            ProviderKind::Codex => AgentBadge::Codex,
+            _ => AgentBadge::Claude,
+        };
+        let req = AttentionRequest {
+            id: id.clone(),
+            kind: AttentionRequestKind::Setup,
+            agent,
+            project_name: ctx.project_name.to_owned(),
+            workflow_name: ctx.context_label.clone(),
+            context_label: ctx.context_label.clone(),
+            run_number: ctx.run_number,
+            machine_name: "This Mac".to_owned(),
+            inbox_title: title.clone(),
+            inbox_subtitle: stopped.clone(),
+            menubar_title: format!("{} · MCP server needs attention", ctx.project_name),
+            menubar_subtitle: title.clone(),
+            waiting_minutes: 0,
+            past_reminder_threshold: false,
+            status_pill: if problem.blocking {
+                "Stopped work".to_owned()
+            } else {
+                "Needs setup".to_owned()
+            },
+            why_text: format!("{title}\n\n{stopped}"),
+            deadline_badge: None,
+            timeout_footer: "Clears by itself once the server starts.".to_owned(),
+            note_placeholder: String::new(),
+            body: AttentionRequestBody::McpProblem(factory_core::inbox::McpProblemDetail {
+                problem: problem.clone(),
+                stopped_work: problem.blocking,
+            }),
+        };
+        self.inbox.pending.insert(0, req);
+        if self.inbox_selected_id.is_none() {
+            self.inbox_selected_id = self.inbox.default_selected_id();
+        }
+        self.sync_inbox_selection_and_drafts();
+        if self.inbox.notifications_snoozed_minutes.is_some() {
+            return None;
+        }
+        Some(nsh_core::notifications::Notification::new(
+            id,
+            format!("{}: MCP server needs attention", ctx.project_name),
+            format!("{title} {stopped}"),
+        ))
+    }
+
+    /// Clears Inbox items about servers that have since reached an agent.
+    fn clear_ready_mcp_servers(
+        &mut self,
+        project_name: &str,
+        servers: &[(String, factory_core::mcp::McpOrigin)],
+    ) -> Vec<String> {
+        let cleared = self.inbox.clear_mcp_problems(project_name, |p| {
+            servers.iter().any(|(name, origin)| {
+                p.server.as_deref() == Some(name) && p.origin == Some(*origin)
+            })
+        });
+        if !cleared.is_empty() {
+            self.sync_inbox_selection_and_drafts();
+        }
+        cleared
+    }
+}
+
+fn mcp_problem_id(problem: &factory_core::mcp::McpProblem) -> String {
+    factory_core::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned()
+}
+
+/// Shows MCP problem notifications, asking for permission the first time.
+fn post_mcp_notifications(notifications: Vec<nsh_core::notifications::Notification>) {
+    if notifications.is_empty() {
+        return;
+    }
+    Owner::detached().run(|| {
+        spawn(async move {
+            let _ = nsh_core::element::request_notification_permission().await;
+            for notification in notifications {
+                let _ = nsh_core::element::show_notification(notification).await;
+            }
+        });
+    });
+}
+
+fn close_notifications(ids: Vec<String>) {
+    for id in ids {
+        nsh_core::element::close_notification(id);
+    }
+}
+
+/// The Inbox's selected Setup item: its fix.
+pub(crate) fn inbox_fix_setup_item() {
+    let Some(req) = inbox_selected_pending() else {
+        return;
+    };
+    if let AttentionRequestBody::McpProblem(detail) = &req.body {
+        if detail.problem.fix.button_label().is_none() {
+            inbox_dismiss_setup_item();
+            return;
+        }
+        apply_mcp_fix(Some(&req.project_name), &detail.problem.fix);
+    }
+}
+
+pub(crate) fn inbox_dismiss_setup_item() {
+    let mut closed = None;
+    state().update(|s| {
+        let Some(id) = s.inbox_selected_id.clone() else {
+            return;
+        };
+        if let Some(answered) = s.inbox.dismiss_setup_item(&id) {
+            closed = Some(answered.id);
+            s.sync_inbox_selection_and_drafts();
+        }
+    });
+    if let Some(id) = closed {
+        nsh_core::element::close_notification(id);
+    }
+}
+
 pub(crate) fn toggle_extension(id: &str) {
     state().update(|s| {
         s.preferences.toggle_extension(id);
@@ -8005,6 +8425,7 @@ pub(crate) fn create_overview_workflow(
                     issue_labels: label.map(|l| vec![l.to_owned()]).unwrap_or_default(),
                 },
                 inputs: BTreeMap::new(),
+                mcp_sources: Default::default(),
                 nodes: vec![WorkflowNodeDef::AgentTask(AgentTaskStepDef {
                     id: "step_1".to_owned(),
                     name: "Run task".to_owned(),
@@ -8015,6 +8436,7 @@ pub(crate) fn create_overview_workflow(
                     prompt: "Complete the requested task: {{ inputs.prompt }}".to_owned(),
                     inputs: BTreeMap::new(),
                     outputs: Vec::new(),
+                    mcp: Vec::new(),
                 })],
                 origin: DefinitionOrigin::BuiltIn,
             };
@@ -8081,6 +8503,7 @@ pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
                     draft: true,
                     triggers: WorkflowTriggersDef::default(),
                     inputs: BTreeMap::new(),
+                    mcp_sources: Default::default(),
                     nodes: vec![WorkflowNodeDef::AgentTask(AgentTaskStepDef {
                         id: "step_1".to_owned(),
                         name: "Step 1".to_owned(),
@@ -8091,6 +8514,7 @@ pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
                         prompt: "{{ inputs.prompt }}".to_owned(),
                         inputs: BTreeMap::new(),
                         outputs: Vec::new(),
+                        mcp: Vec::new(),
                     })],
                     origin: DefinitionOrigin::BuiltIn,
                 });
@@ -8743,6 +9167,12 @@ pub(crate) fn toggle_workflow_editor_trigger_ad_hoc() {
     });
 }
 
+pub(crate) fn toggle_workflow_editor_mcp_project_only() {
+    state().update(|s| {
+        s.ensure_workflow_editor_mut().toggle_mcp_project_only();
+    });
+}
+
 pub(crate) fn validate_workflow_editor() {
     state().update(|s| {
         let doc = s.active_workflow_editor_clone();
@@ -9026,6 +9456,7 @@ fn spawn_real_workflow_run(
                 open_prs_as_draft: settings.open_prs_as_draft,
                 link_pr_closes_issue: settings.link_pr_closes_issue,
                 project_env,
+                mcp: s.mcp_sources(&project.root_path, Some(&settings)),
                 runtime_root,
                 budget_limit_cents: settings.per_run_budget_cents,
             },
@@ -9102,6 +9533,35 @@ fn spawn_real_workflow_run(
                 };
 
                 let is_finished = matches!(event, RunnerEvent::RunFinished { .. });
+                match &event {
+                    RunnerEvent::McpProblem {
+                        step_title,
+                        problem,
+                        ..
+                    } => {
+                        let mut notification = None;
+                        state().update(|s| {
+                            notification = s.file_mcp_problem(
+                                McpProblemContext {
+                                    project_name: &proj_name,
+                                    context_label: wf_name.clone(),
+                                    where_label: format!("Step '{step_title}'"),
+                                    run_number,
+                                    provider: ProviderKind::Claude,
+                                },
+                                problem,
+                            );
+                        });
+                        post_mcp_notifications(notification.into_iter().collect());
+                    }
+                    RunnerEvent::McpServersReady { servers } => {
+                        let mut cleared = Vec::new();
+                        state()
+                            .update(|s| cleared = s.clear_ready_mcp_servers(&proj_name, servers));
+                        close_notifications(cleared);
+                    }
+                    _ => {}
+                }
                 if let RunnerEvent::ApprovalRequested {
                     ref gate_id,
                     ref step_title,

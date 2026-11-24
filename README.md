@@ -105,6 +105,66 @@ Codex its turns still load your own rules, skills, plugins and MCP servers from
 Every token and cent a chat uses is recorded per turn and counted on the **Dashboard** next to
 workflow runs, even after the chat is deleted.
 
+## MCP Servers
+
+Workflow steps and chats get MCP servers from three places, added together:
+
+- **The project**: tracked in the repository at `.agents/mcp_config.json`, or at `.mcp.json`
+  when that file doesn't exist (never both). The format is the usual `mcpServers` object;
+  remote servers can give their address as `url`, `serverUrl` or `httpUrl`.
+- **Yours for one project**: Project Settings › MCP servers.
+- **Yours for every project**: Preferences › Extensions.
+
+Your servers only add to the project's: one with the same name as a project server is skipped,
+so a workflow always gets the project's definition. Put secrets in as `${VAR}` and set the
+variable in Project Settings › Environment; values never land in a file or an argument.
+
+```json
+{
+  "mcpServers": {
+    "playwright": { "command": "npx", "args": ["-y", "@playwright/mcp"] },
+    "linear": {
+      "serverUrl": "https://mcp.linear.app/mcp",
+      "headers": { "Authorization": "Bearer ${LINEAR_TOKEN}" }
+    }
+  }
+}
+```
+
+Project servers run commands from the repository, so they load only once you approve the file
+(Project Settings › MCP servers), and again after it changes. Preferences › Extensions can turn
+project servers off altogether. Bruk reads the file from the project's checkout when a run or
+turn starts, never from a run's worktree, so one step can't give the next new servers.
+
+**Isolation.** A workflow (or a composite, or an agent) with `mcp_sources: project` gets only
+the project's servers: yours are withheld, and so are the MCP settings in Claude's and Codex's
+spawn settings. An agent or step can also name the servers it needs (`mcp: [linear]`); it then
+gets only those. A scope inside another can only make this stricter.
+
+```yaml
+id: release
+name: Release
+mcp_sources: project
+```
+
+**When a server doesn't work**, Bruk says so before the agent starts if it can tell (a `${VAR}`
+that isn't set, a command that isn't on the `PATH`, an unapproved file), and afterwards from what
+the provider reports. Either way the step or chat shows a banner, the Inbox gets a **Setup**
+item with a button to the fix, and macOS shows a notification. The item clears once the server
+starts. A project server that fails in a project-only workflow, or a server an agent or step
+names, stops the work; otherwise the agent carries on without it.
+
+Per provider:
+
+- **Claude** gets the servers in an `--mcp-config` file, with `--strict-mcp-config` so nothing
+  else loads.
+- **Codex** gets them as `-c mcp_servers.<name>=…`, forwarding secrets through its environment.
+  The ChatGPT account's connectors are always off (`features.apps=false`): they're your own and
+  would otherwise load even in Bruk's isolated `CODEX_HOME`.
+- **Antigravity** reads `.agents/mcp_config.json` itself, so it doesn't see `.mcp.json` or your
+  extra servers, and can't run project-only workflows (it also loads `~/.gemini/config`). Until
+  the file is approved, its MCP tools are denied.
+
 ## Prerequisites
 
 - macOS 14+ with Xcode Command Line Tools (`xcode-select --install`)

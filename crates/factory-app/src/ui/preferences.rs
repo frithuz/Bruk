@@ -4731,11 +4731,12 @@ fn extensions_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(toggle_row(
                                 "Allow project-defined MCP servers",
-                                "Let repositories declare workspace-scoped MCP tool servers in their config.",
+                                "Let repositories give agents the MCP servers in .agents/mcp_config.json (or .mcp.json). Each project's file still needs approving in Project Settings › MCP servers.",
                                 prefs.allow_project_mcp_servers,
                                 store::toggle_allow_project_mcp_servers,
                             )),
                     )
+                    .child(crate::ui::mcp::user_mcp_servers_section())
             })),
     )
 }

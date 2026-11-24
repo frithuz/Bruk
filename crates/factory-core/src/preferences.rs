@@ -507,8 +507,13 @@ pub struct ExtensionEntry {
 /// Extensions and tool integration preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExtensionsSettings {
+    /// Whether projects' tracked MCP servers may load at all (each project's file still needs
+    /// approving).
     pub allow_project_mcp_servers: bool,
     pub entries: Vec<ExtensionEntry>,
+    /// Servers this user adds to every project.
+    #[serde(default)]
+    pub mcp_servers: Vec<crate::mcp::McpServerDef>,
 }
 
 impl Default for ExtensionsSettings {
@@ -523,6 +528,7 @@ impl ExtensionsSettings {
         Self {
             allow_project_mcp_servers: true,
             entries: Vec::new(),
+            mcp_servers: Vec::new(),
         }
     }
 
@@ -530,6 +536,7 @@ impl ExtensionsSettings {
     pub fn sample() -> Self {
         Self {
             allow_project_mcp_servers: true,
+            mcp_servers: Vec::new(),
             entries: vec![
                 ExtensionEntry {
                     id: "github".to_owned(),

@@ -15,11 +15,17 @@ pub enum InboxFilter {
     Permissions,
     Questions,
     Reviews,
+    Setup,
 }
 
 impl InboxFilter {
-    pub const ALL: &'static [Self] =
-        &[Self::All, Self::Permissions, Self::Questions, Self::Reviews];
+    pub const ALL: &'static [Self] = &[
+        Self::All,
+        Self::Permissions,
+        Self::Questions,
+        Self::Reviews,
+        Self::Setup,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -27,6 +33,7 @@ impl InboxFilter {
             Self::Permissions => "Permissions",
             Self::Questions => "Questions",
             Self::Reviews => "Reviews",
+            Self::Setup => "Setup",
         }
     }
 
@@ -36,6 +43,7 @@ impl InboxFilter {
             Self::Permissions => kind == AttentionRequestKind::Permission,
             Self::Questions => kind == AttentionRequestKind::Question,
             Self::Reviews => kind == AttentionRequestKind::Review,
+            Self::Setup => kind == AttentionRequestKind::Setup,
         }
     }
 }
@@ -48,6 +56,8 @@ pub enum AttentionRequestKind {
     Question,
     Review,
     LoopExhausted,
+    /// Something to fix before agents work as expected (an MCP server that didn't start).
+    Setup,
 }
 
 impl AttentionRequestKind {
@@ -57,6 +67,7 @@ impl AttentionRequestKind {
             Self::Question => "Question",
             Self::Review => "Review",
             Self::LoopExhausted => "Loop",
+            Self::Setup => "Setup",
         }
     }
 }
@@ -168,6 +179,15 @@ pub enum AttentionRequestBody {
     Question(QuestionDetail),
     Review(ReviewDetail),
     LoopExhausted(LoopExhaustedDetail),
+    McpProblem(McpProblemDetail),
+}
+
+/// An MCP server that didn't reach an agent, with what to do about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct McpProblemDetail {
+    pub problem: crate::mcp::McpProblem,
+    /// Whether it stopped the step or chat turn.
+    pub stopped_work: bool,
 }
 
 /// Scope for saving a new `Always Allow` rule from the Inbox permission pane.
@@ -273,6 +293,7 @@ impl AttentionRequest {
             AttentionRequestKind::Question => "Answer...",
             AttentionRequestKind::Review => "Review...",
             AttentionRequestKind::LoopExhausted => "Open...",
+            AttentionRequestKind::Setup => "Fix...",
         }
     }
 
@@ -283,6 +304,12 @@ impl AttentionRequest {
             AttentionRequestKind::Question => "Send Answer",
             AttentionRequestKind::Review => "Approve & Open PR",
             AttentionRequestKind::LoopExhausted => "Grant 3 More Attempts",
+            AttentionRequestKind::Setup => match &self.body {
+                AttentionRequestBody::McpProblem(detail) => {
+                    detail.problem.fix.button_label().unwrap_or("Dismiss")
+                }
+                _ => "Fix…",
+            },
         }
     }
 }
@@ -888,6 +915,35 @@ impl InboxState {
         note: Option<&str>,
     ) -> Option<AnsweredInboxItem> {
         self.resolve_request(id, "Stopped run".to_owned(), note)
+    }
+
+    /// Dismisses a Setup item without fixing anything.
+    pub fn dismiss_setup_item(&mut self, id: &str) -> Option<AnsweredInboxItem> {
+        self.resolve_request(id, "Dismissed".to_owned(), None)
+    }
+
+    /// Clears Setup items (`mcp_problem_id`s) whose problem is resolved, recording them as fixed.
+    /// Returns the ids cleared, so their notifications can be closed.
+    pub fn clear_mcp_problems(
+        &mut self,
+        project_name: &str,
+        mut resolved: impl FnMut(&crate::mcp::McpProblem) -> bool,
+    ) -> Vec<String> {
+        let ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|r| r.project_name == project_name)
+            .filter_map(|r| match &r.body {
+                AttentionRequestBody::McpProblem(detail) if resolved(&detail.problem) => {
+                    Some(r.id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for id in &ids {
+            self.resolve_request(id, "Fixed".to_owned(), None);
+        }
+        ids
     }
 
     pub fn toggle_pause_all_agents(&mut self) -> bool {

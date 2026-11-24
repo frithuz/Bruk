@@ -106,6 +106,7 @@ fn sidebar_tab_item(tab: ProjectSettingsTab) -> impl IntoElement {
         ProjectSettingsTab::Providers => "ps-tab-providers",
         ProjectSettingsTab::Workflows => "ps-tab-workflows",
         ProjectSettingsTab::Environment => "ps-tab-environment",
+        ProjectSettingsTab::McpServers => "ps-tab-mcp-servers",
         ProjectSettingsTab::AgentsAndLimits => "ps-tab-agents-limits",
     };
 
@@ -172,6 +173,10 @@ fn settings_content_pane() -> impl IntoElement {
         .child(when(
             || store::project_settings_tab() == ProjectSettingsTab::Environment,
             environment_tab,
+        ))
+        .child(when(
+            || store::project_settings_tab() == ProjectSettingsTab::McpServers,
+            crate::ui::mcp::project_mcp_tab,
         ))
         .child(when(
             || store::project_settings_tab() == ProjectSettingsTab::AgentsAndLimits,

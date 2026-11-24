@@ -710,6 +710,12 @@ fn output_tab_view(
                     toggled_tool_cards,
                 ));
             }
+            StepTranscriptEntry::McpProblem { problem } => {
+                stream_col = stream_col.child(crate::ui::mcp::mcp_problem_banner(
+                    problem.clone(),
+                    Some(run.project_name.clone()),
+                ));
+            }
             StepTranscriptEntry::UserSteering { message } => {
                 stream_col = stream_col.child(
                     view()

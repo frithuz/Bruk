@@ -1595,6 +1595,10 @@ fn chat_entry_view(row: ReadSignal<ChatEntryRow>) -> AnyElement {
         ChatEntry::Assistant { .. } => assistant_message(row, first.provider).into_element(),
         ChatEntry::Tool { .. } => tool_call_row(row).into_element(),
         ChatEntry::Notice { .. } => notice_row(row).into_element(),
+        ChatEntry::McpProblem { problem } => view()
+            .ml(px(34.0))
+            .child(crate::ui::mcp::mcp_problem_banner(problem, None))
+            .into_element(),
     }
 }
 

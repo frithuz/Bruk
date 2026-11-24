@@ -2644,6 +2644,37 @@ fn trigger_inspector() -> impl IntoElement {
                 .child(
                     view()
                         .gap(px(6.0))
+                        .child(inspector_field_label("MCP servers"))
+                        .child(
+                            button()
+                                .test_id("wfe-mcp-project-only")
+                                .accessibility_label("Only project MCP servers")
+                                .on_press(store::toggle_workflow_editor_mcp_project_only)
+                                .w_full()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(dynamic(|| {
+                                    checkbox_box(
+                                        store::active_workflow_editor().mcp_sources
+                                            == factory_core::mcp::McpSourcesPolicy::Project,
+                                    )
+                                }))
+                                .child(
+                                    text("Only the project's MCP servers")
+                                        .text_size(px(12.5))
+                                        .text_color(palette::text_primary()),
+                                ),
+                        )
+                        .child(
+                            text("Steps don't get anyone's own servers, so runs match on every machine. Antigravity steps can't run then.")
+                                .text_size(px(11.5))
+                                .text_color(palette::text_muted()),
+                        ),
+                )
+                .child(
+                    view()
+                        .gap(px(6.0))
                         .child(inspector_field_label("Inputs"))
                         .child(
                             view()
