@@ -4743,6 +4743,12 @@ fn extensions_tab() -> impl IntoElement {
 // --- Advanced Tab -----------------------------------------------------------------------
 
 fn advanced_tab() -> impl IntoElement {
+    let ssh_sock_draft = signal(store::preferences().advanced.ssh_auth_sock);
+    let apply_ssh_sock = move |value: &str| {
+        store::set_ssh_auth_sock(value);
+        ssh_sock_draft.set(store::preferences().advanced.ssh_auth_sock);
+    };
+
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
             .flex_1()
@@ -4789,6 +4795,7 @@ fn advanced_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(static_row("Run workspaces", runs_dir, true)),
                     )
+                    .child(ssh_agent_card(ssh_sock_draft, apply_ssh_sock))
                     .child(
                         grouped_card("Diagnostics & Worktrees")
                             .child(card_divider())
@@ -4845,6 +4852,107 @@ fn advanced_tab() -> impl IntoElement {
                     )
             })),
     )
+}
+
+/// Where agents find the SSH agent holding the user's keys (`SSH_AUTH_SOCK`).
+fn ssh_agent_card(draft: Signal<String>, apply: impl Fn(&str) + Copy + 'static) -> View {
+    let detected = store::detected_ssh_auth_sock();
+    let configured = store::preferences().advanced.ssh_auth_sock;
+    let description = match (configured.trim().is_empty(), detected.as_deref()) {
+        (true, Some(sock)) => format!("Agents use the detected socket: {sock}"),
+        (true, None) => {
+            "No SSH agent detected. Set a socket so agents can use your SSH keys.".to_owned()
+        }
+        (false, Some(sock)) => format!("Overrides the detected socket: {sock}"),
+        (false, None) => "Agents use this socket. No SSH agent was detected.".to_owned(),
+    };
+    let missing =
+        !configured.trim().is_empty() && !factory_core::expand_tilde(configured.trim()).exists();
+
+    let mut card = grouped_card("SSH Agent")
+        .child(card_divider())
+        .child(setting_row(
+            "SSH_AUTH_SOCK",
+            description,
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(
+                    input()
+                        .test_id("prefs-ssh-auth-sock")
+                        .value(move || draft.get())
+                        .on_change(move |v: &str| draft.set(v.to_owned()))
+                        .on_submit(move |v: &str| apply(v))
+                        .placeholder(detected.unwrap_or_else(|| "/path/to/agent.sock".to_owned()))
+                        .w(px(240.0))
+                        .app_class("font-mono")
+                        .px(px(9.0))
+                        .py(px(6.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::card_inset_bg())
+                        .rounded(px(7.0))
+                        .text_color(palette::text_primary()),
+                )
+                .child(secondary_button("Apply", move || {
+                    apply(&draft.get_untracked());
+                })),
+        ));
+
+    // Quick picks fill in the field; Apply still saves, so the path can be checked first.
+    let mut presets = view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(16.0))
+        .pb(px(10.0))
+        .child(
+            text("Fill in:")
+                .text_size(px(11.5))
+                .text_color(palette::text_secondary()),
+        );
+    for preset in factory_core::SSH_AGENT_PRESETS {
+        let label = if preset.is_installed() {
+            format!("{} ✓", preset.label)
+        } else {
+            preset.label.to_owned()
+        };
+        let path = preset.socket_path;
+        presets = presets.child(
+            button()
+                .test_id(&format!("prefs-ssh-preset-{}", preset.id))
+                .accessibility_label(format!("Fill in the {} SSH agent socket", preset.label))
+                .on_press(move || draft.set(path.to_owned()))
+                .flex_shrink_0()
+                .px(px(10.0))
+                .py(px(4.0))
+                .rounded(px(7.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .active(|s| s.opacity(0.8))
+                .child(
+                    text(label)
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                ),
+        );
+    }
+    card = card.child(presets);
+
+    if missing {
+        card = card.child(
+            view().px(px(16.0)).pb(px(10.0)).child(
+                text("Nothing exists at this path yet. Agents will still be given it.")
+                    .text_size(px(11.5))
+                    .text_color(palette::text_secondary()),
+            ),
+        );
+    }
+    card
 }
 
 fn reveal_bruk_folder() {

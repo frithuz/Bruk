@@ -2429,6 +2429,23 @@ pub(crate) struct ChatEntryRow {
 }
 
 impl AppState {
+    /// The extra environment every agent process gets: the project's variables, plus the
+    /// `SSH_AUTH_SOCK` from Preferences when one is set (a project's own value wins).
+    fn agent_env(&self, settings: Option<&ProjectSettings>) -> BTreeMap<String, String> {
+        let mut env: BTreeMap<String, String> = settings
+            .map(|settings| {
+                settings
+                    .env_vars
+                    .iter()
+                    .filter(|var| !var.key.trim().is_empty())
+                    .map(|var| (var.key.clone(), var.value.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.preferences.advanced.apply_agent_env(&mut env);
+        env
+    }
+
     fn provider_launch(&self) -> ProviderLaunch {
         let path_env = self.claude_path_lookup.resolve_path_env();
         let claude_binary = resolve_claude_binary(
@@ -2689,16 +2706,7 @@ impl AppState {
             .unwrap_or_else(|| load_catalog(self.home.as_ref(), &project.root_path));
         let settings = self.project_settings.get(&project.name);
         let launch = self.provider_launch();
-        let project_env = settings
-            .map(|settings| {
-                settings
-                    .env_vars
-                    .iter()
-                    .filter(|var| !var.key.trim().is_empty())
-                    .map(|var| (var.key.clone(), var.value.clone()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let project_env = self.agent_env(settings);
         let worktree = match (session.workspace, session.worktree.as_ref()) {
             (ChatWorkspace::Worktree, Some(worktree)) => Some(ChatWorktreeSetup {
                 project_root: project.root_path.clone(),
@@ -6960,6 +6968,19 @@ pub(crate) fn toggle_keep_worktrees_on_failure() {
     });
 }
 
+/// Sets the SSH agent socket handed to agents. Empty clears it so agents inherit the detected one.
+pub(crate) fn set_ssh_auth_sock(path: &str) {
+    state().update(|s| {
+        s.preferences.advanced.ssh_auth_sock = path.trim().to_owned();
+        s.persist_preferences();
+    });
+}
+
+/// The SSH agent socket Bruk inherited from its environment, if any.
+pub(crate) fn detected_ssh_auth_sock() -> Option<String> {
+    factory_core::detected_ssh_auth_sock()
+}
+
 pub(crate) fn step_log_retention_days(delta: i32) {
     state().update(|s| {
         let next = (s.preferences.advanced.log_retention_days as i32 + delta).clamp(7, 365) as u32;
@@ -8828,12 +8849,7 @@ fn spawn_real_workflow_run(
             Some(settings.github_repo.clone())
         };
 
-        let mut project_env = BTreeMap::new();
-        for ev in &settings.env_vars {
-            if !ev.key.trim().is_empty() {
-                project_env.insert(ev.key.clone(), ev.value.clone());
-            }
-        }
+        let project_env = s.agent_env(Some(&settings));
         let mut inputs = BTreeMap::new();
         inputs.insert("prompt".to_owned(), prompt.to_owned());
         if let Some(issue_no) = issue_number {

@@ -573,6 +573,11 @@ pub struct AdvancedSettings {
     pub verbose_step_logs: bool,
     pub keep_worktrees_on_failure: bool,
     pub log_retention_days: u32,
+    /// SSH agent socket handed to every agent as `SSH_AUTH_SOCK`, for when the one Bruk
+    /// inherits is missing or points at the wrong agent (1Password, Secretive, gpg-agent).
+    /// Empty means agents inherit whatever Bruk detected.
+    #[serde(default)]
+    pub ssh_auth_sock: String,
 }
 
 impl Default for AdvancedSettings {
@@ -581,6 +586,70 @@ impl Default for AdvancedSettings {
             verbose_step_logs: false,
             keep_worktrees_on_failure: true,
             log_retention_days: 30,
+            ssh_auth_sock: String::new(),
+        }
+    }
+}
+
+/// Environment variable SSH clients read to find the agent holding the user's keys.
+pub const SSH_AUTH_SOCK_ENV: &str = "SSH_AUTH_SOCK";
+
+/// A well-known SSH agent and where it puts its socket on macOS.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SshAgentPreset {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Socket path, written with `~` so it reads the same for every user.
+    pub socket_path: &'static str,
+}
+
+impl SshAgentPreset {
+    /// Whether the agent's socket exists on this machine.
+    pub fn is_installed(&self) -> bool {
+        crate::claude_cli::expand_tilde(self.socket_path).exists()
+    }
+}
+
+/// SSH agents offered as quick picks for [`AdvancedSettings::ssh_auth_sock`].
+pub const SSH_AGENT_PRESETS: &[SshAgentPreset] = &[
+    SshAgentPreset {
+        id: "1password",
+        label: "1Password",
+        socket_path: "~/Library/Group Containers/2BUA8C4S2C.com.1password/t/agent.sock",
+    },
+    SshAgentPreset {
+        id: "secretive",
+        label: "Secretive",
+        socket_path: "~/Library/Containers/com.maxgoedjen.Secretive.SecretAgent/Data/socket.ssh",
+    },
+];
+
+/// The SSH agent socket Bruk inherited from its own environment, if any.
+pub fn detected_ssh_auth_sock() -> Option<String> {
+    std::env::var(SSH_AUTH_SOCK_ENV)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+impl AdvancedSettings {
+    /// The configured SSH agent socket with `~` expanded, or `None` to inherit the detected one.
+    pub fn ssh_auth_sock_override(&self) -> Option<String> {
+        match self.ssh_auth_sock.trim() {
+            "" => None,
+            custom => Some(
+                crate::claude_cli::expand_tilde(custom)
+                    .to_string_lossy()
+                    .into_owned(),
+            ),
+        }
+    }
+
+    /// Adds the configured `SSH_AUTH_SOCK` to an agent's environment. A value the project
+    /// already sets is kept, so a per-project socket still wins.
+    pub fn apply_agent_env(&self, env: &mut std::collections::BTreeMap<String, String>) {
+        if let Some(sock) = self.ssh_auth_sock_override() {
+            env.entry(SSH_AUTH_SOCK_ENV.to_owned()).or_insert(sock);
         }
     }
 }
@@ -2233,5 +2302,64 @@ mod tests {
         assert_eq!(parsed.monospace_font_size, 13);
         assert_eq!(parsed.ui_font, FontPreference::Default);
         assert_eq!(parsed.mono_font, FontPreference::Default);
+    }
+
+    #[test]
+    fn ssh_auth_sock_preference_is_added_to_agent_env_without_overriding_projects() {
+        let legacy_json = r#"{"verbose_step_logs":true,"keep_worktrees_on_failure":false,"log_retention_days":14}"#;
+        let parsed: AdvancedSettings = serde_json::from_str(legacy_json).unwrap();
+        assert!(parsed.ssh_auth_sock.is_empty());
+        assert_eq!(parsed.ssh_auth_sock_override(), None);
+
+        let mut env = std::collections::BTreeMap::new();
+        parsed.apply_agent_env(&mut env);
+        assert!(
+            env.is_empty(),
+            "unset preference leaves the inherited socket alone"
+        );
+
+        let settings = AdvancedSettings {
+            ssh_auth_sock: "  /tmp/agent.sock  ".to_owned(),
+            ..AdvancedSettings::default()
+        };
+        settings.apply_agent_env(&mut env);
+        assert_eq!(
+            env.get(SSH_AUTH_SOCK_ENV).map(String::as_str),
+            Some("/tmp/agent.sock")
+        );
+
+        let mut project_env = std::collections::BTreeMap::from([(
+            SSH_AUTH_SOCK_ENV.to_owned(),
+            "/project/agent.sock".to_owned(),
+        )]);
+        settings.apply_agent_env(&mut project_env);
+        assert_eq!(
+            project_env.get(SSH_AUTH_SOCK_ENV).map(String::as_str),
+            Some("/project/agent.sock")
+        );
+
+        let tilde = AdvancedSettings {
+            ssh_auth_sock: "~/.ssh/agent.sock".to_owned(),
+            ..AdvancedSettings::default()
+        };
+        let expanded = tilde.ssh_auth_sock_override().unwrap();
+        assert!(!expanded.starts_with('~'));
+        assert!(expanded.ends_with("/.ssh/agent.sock"));
+    }
+
+    #[test]
+    fn ssh_agent_presets_have_unique_ids_and_home_relative_paths() {
+        let mut ids: Vec<_> = SSH_AGENT_PRESETS.iter().map(|p| p.id).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), SSH_AGENT_PRESETS.len());
+        for preset in SSH_AGENT_PRESETS {
+            assert!(preset.socket_path.starts_with("~/"), "{}", preset.id);
+            let settings = AdvancedSettings {
+                ssh_auth_sock: preset.socket_path.to_owned(),
+                ..AdvancedSettings::default()
+            };
+            assert!(!settings.ssh_auth_sock_override().unwrap().starts_with('~'));
+        }
     }
 }
