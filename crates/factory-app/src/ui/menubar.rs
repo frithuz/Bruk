@@ -19,11 +19,33 @@ use nsh_core::{
 
 use crate::{store, ui::palette};
 
-/// Double-pine template icon rendered in the macOS menu bar (`NSStatusBarButton`).
+/// Builds a menu bar template icon (`NSStatusBarButton`): an inbox status dot
+/// above the app icon's tiered pine, whose strokes are copied as-is from
+/// `assets/Bruk.icon/Assets/tree.svg`.
+///
+/// The square `viewBox` fits the dot and tree into the 18pt tray slot. The dot
+/// is bigger and sits closer to the tree than the app icon's light orb does, so
+/// the empty ring still shows a hole at menu bar size. It shares the tree's
+/// stroke, so it is the same size empty or filled.
 ///
 /// Using black strokes/fills in an SVG lets AppKit treat the image as a template
 /// icon that adapts automatically to light and dark menu bars.
-const TRAY_TREES_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 18" fill="none" stroke="black" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6.4 2.2 2.4 12.6h8L6.4 2.2Z"/><path d="M6.4 12.6v3.2"/><path d="M13.6 2.8 9.9 12.6h7.4L13.6 2.8Z"/><path d="M13.6 12.6v3.2"/></svg>"#;
+macro_rules! tray_icon_svg {
+    ($dot:literal) => {
+        concat!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="86 42 852 852" fill="none" stroke="black" stroke-width="52" stroke-linecap="round" stroke-linejoin="round">"#,
+            $dot,
+            r#"<polyline points="402,421 512,322 622,421"/><polyline points="337,614.5 512,457 687,614.5"/><polyline points="272,808 512,592 752,808"/><line x1="512" y1="736" x2="512" y2="860"/></svg>"#,
+        )
+    };
+}
+
+/// Menu bar icon while the inbox is empty: an open ring above the tree.
+const TRAY_ICON_IDLE_SVG: &str = tray_icon_svg!(r#"<circle cx="512" cy="148" r="72"/>"#);
+
+/// Menu bar icon while anything is waiting on the user: the ring filled in.
+const TRAY_ICON_WAITING_SVG: &str =
+    tray_icon_svg!(r#"<circle cx="512" cy="148" r="72" fill="black"/>"#);
 
 const POPOVER_WIDTH: f32 = 368.0;
 const POPOVER_HEADER_HEIGHT: f32 = 42.0;
@@ -76,6 +98,16 @@ impl TraySnapshot {
         }
     }
 
+    /// The menu bar icon: the dot above the tree fills in while anything is
+    /// waiting on the user.
+    pub(crate) fn icon_svg(&self) -> &'static str {
+        if self.pending_count == 0 {
+            TRAY_ICON_IDLE_SVG
+        } else {
+            TRAY_ICON_WAITING_SVG
+        }
+    }
+
     pub(crate) fn title_runs(&self) -> Vec<TrayTitleRun> {
         if self.pending_count == 0 {
             return Vec::new();
@@ -123,7 +155,7 @@ fn build_tray(snap: &TraySnapshot) -> nsh_core::element::desktop::Tray {
     };
 
     tray()
-        .icon(ImageSrc::svg_markup(TRAY_TREES_SVG))
+        .icon(ImageSrc::svg_markup(snap.icon_svg()))
         .tooltip(snap.tooltip())
         .title(snap.title_runs())
         .title_placement(TrayTitlePlacement::Right)
@@ -602,6 +634,25 @@ mod tests {
         };
         assert!(empty.title_runs().is_empty());
         assert!(empty.tooltip().contains("All caught up"));
+    }
+
+    #[test]
+    fn tray_icon_dot_fills_in_while_anything_is_waiting() {
+        let empty = TraySnapshot {
+            pending_count: 0,
+            any_overdue: false,
+            active_agents: 0,
+            all_agents_paused: false,
+            snoozed_minutes: None,
+        };
+        assert_eq!(empty.icon_svg(), TRAY_ICON_IDLE_SVG);
+
+        let waiting = TraySnapshot {
+            pending_count: 2,
+            ..empty
+        };
+        assert_eq!(waiting.icon_svg(), TRAY_ICON_WAITING_SVG);
+        assert_ne!(TRAY_ICON_IDLE_SVG, TRAY_ICON_WAITING_SVG);
     }
 
     #[test]
