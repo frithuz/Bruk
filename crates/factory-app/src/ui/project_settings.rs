@@ -577,33 +577,85 @@ fn github_source_rows(
                                 token_editor_open.set(false);
                             }
                         };
-                        view()
-                            .pl(px(152.0))
-                            .flex_row()
-                            .items_center()
-                            .gap(px(8.0))
-                            .child(
-                                input()
-                                    .test_id("ps-token-input")
-                                    .flex_1()
-                                    .value(move || draft_token.get())
-                                    .on_change(move |v: &str| draft_token.set(v.to_owned()))
-                                    .placeholder("ghp_...")
-                                    .app_class("font-mono")
-                                    .px(px(10.0))
-                                    .py(px(6.0))
-                                    .rounded(px(7.0))
-                                    .border_1()
-                                    .border_color(palette::border_color())
-                                    .bg(palette::card_inset_bg())
-                                    .text_size(px(12.5))
-                                    .text_color(palette::text_primary()),
-                            )
-                            .child(secondary_button("ps-token-cancel", "Cancel", move || {
-                                store::clear_project_settings_messages();
-                                token_editor_open.set(false);
-                            }))
-                            .child(primary_button("ps-token-save", "Save Token", save_token))
+                        let existing_pats = store::github_pat_secrets();
+                        let current_pat_id = store::active_project_settings().github_pat_id;
+                        let mut editor = view().pl(px(152.0)).gap(px(8.0));
+                        if !existing_pats.is_empty() {
+                            let mut picker = view().flex_row().items_center().gap(px(6.0)).child(
+                                text("Saved tokens:")
+                                    .text_size(px(11.5))
+                                    .text_color(palette::text_muted()),
+                            );
+                            for pat in existing_pats {
+                                let pid = pat.id.clone();
+                                let selected = current_pat_id.as_deref() == Some(pid.as_str());
+                                let label = pat.name.clone();
+                                picker = picker.child(
+                                    button()
+                                        .test_id(&format!("ps-select-pat-{}", pat.name))
+                                        .on_press(move || {
+                                            store::select_project_github_pat(&pid);
+                                            draft_token.set(String::new());
+                                            token_editor_open.set(false);
+                                        })
+                                        .px(px(8.0))
+                                        .py(px(3.5))
+                                        .rounded(px(6.0))
+                                        .border_1()
+                                        .border_color(if selected {
+                                            palette::card_selected_border()
+                                        } else {
+                                            palette::border_color()
+                                        })
+                                        .bg(if selected {
+                                            palette::card_selected_bg()
+                                        } else {
+                                            palette::control_bg()
+                                        })
+                                        .child(
+                                            text(label)
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(if selected {
+                                                    palette::link_blue()
+                                                } else {
+                                                    palette::text_primary()
+                                                }),
+                                        ),
+                                );
+                            }
+                            editor = editor.child(picker);
+                        }
+                        editor.child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    input()
+                                        .test_id("ps-token-input")
+                                        .masked(true)
+                                        .flex_1()
+                                        .value(move || draft_token.get())
+                                        .on_change(move |v: &str| draft_token.set(v.to_owned()))
+                                        .placeholder("ghp_...")
+                                        .app_class("font-mono")
+                                        .px(px(10.0))
+                                        .py(px(6.0))
+                                        .rounded(px(7.0))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::card_inset_bg())
+                                        .text_size(px(12.5))
+                                        .text_color(palette::text_primary()),
+                                )
+                                .child(secondary_button("ps-token-cancel", "Cancel", move || {
+                                    draft_token.set(String::new());
+                                    store::clear_project_settings_messages();
+                                    token_editor_open.set(false);
+                                }))
+                                .child(primary_button("ps-token-save", "Save Token", save_token)),
+                        )
                     },
                 )),
         )
@@ -1902,6 +1954,17 @@ fn environment_tab() -> impl IntoElement {
     let draft_key = signal(String::new());
     let draft_value = signal(String::new());
     let draft_secret = signal(false);
+    let draft_exposure = signal(factory_core::Exposure::McpOnly);
+    let draft_manager = signal("keychain".to_owned());
+    let replacing_secret_id: Signal<Option<String>> = signal(None);
+    let draft_replace_value = signal(String::new());
+
+    let (prefill_name, _prefill_scope) = store::take_secrets_prefill();
+    if let Some(name) = prefill_name {
+        draft_key.set(name);
+        draft_secret.set(true);
+        add_var_open.set(true);
+    }
 
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
@@ -1911,6 +1974,10 @@ fn environment_tab() -> impl IntoElement {
             .gap(px(18.0))
             .child(dynamic(move || {
                 let settings = store::active_project_settings();
+                let project_secrets = store::active_project_env_secrets();
+                let inherited = store::active_project_inherited_app_secrets();
+                let needed_mcp = store::active_project_needed_mcp_vars();
+                let managers = store::available_secret_managers();
                 let show_add = add_var_open.get();
 
                 let mut vars_card = view()
@@ -1936,7 +2003,7 @@ fn environment_tab() -> impl IntoElement {
                             )
                             .child(
                                 view().flex_1().min_w(px(0.0)).child(
-                                    text("Value")
+                                    text("Value / Source")
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(palette::text_muted()),
@@ -1944,7 +2011,9 @@ fn environment_tab() -> impl IntoElement {
                             ),
                     );
 
-                if settings.env_vars.is_empty() {
+                let plain_vars: Vec<_> = settings.env_vars.iter().collect();
+
+                if plain_vars.is_empty() && project_secrets.is_empty() {
                     vars_card = vars_card.child(card_divider()).child(
                         view().px(px(16.0)).py(px(14.0)).child(
                             text("No project environment variables configured.")
@@ -1953,7 +2022,7 @@ fn environment_tab() -> impl IntoElement {
                         ),
                     );
                 } else {
-                    for env_var in &settings.env_vars {
+                    for env_var in plain_vars {
                         let var_id = env_var.id;
                         let remove_id = format!("ps-env-remove-{var_id}");
                         vars_card = vars_card.child(card_divider()).child(
@@ -2003,13 +2072,251 @@ fn environment_tab() -> impl IntoElement {
                                 ),
                         );
                     }
+
+                    for sec in &project_secrets {
+                        let sec_id = sec.id.clone();
+                        let sec_id_exp = sec_id.clone();
+                        let sec_id_rep = sec_id.clone();
+                        let sec_id_del = sec_id.clone();
+                        let is_replacing =
+                            replacing_secret_id.get().as_deref() == Some(sec_id.as_str());
+                        let exposure = match sec.kind {
+                            factory_core::SecretKind::Env { exposure, .. } => exposure,
+                            _ => factory_core::Exposure::McpOnly,
+                        };
+                        let next_exposure = match exposure {
+                            factory_core::Exposure::McpOnly => {
+                                factory_core::Exposure::AgentAndSteps
+                            }
+                            factory_core::Exposure::AgentAndSteps => {
+                                factory_core::Exposure::McpOnly
+                            }
+                        };
+                        let value_text = match &sec.source {
+                            factory_core::SecretSource::Keychain => {
+                                if sec.state == factory_core::SecretState::NeedsValue {
+                                    "Needs value".to_owned()
+                                } else {
+                                    sec.preview
+                                        .clone()
+                                        .unwrap_or_else(|| "••••••••".to_owned())
+                                }
+                            }
+                            factory_core::SecretSource::Manager { reference, .. } => {
+                                reference.clone()
+                            }
+                        };
+
+                        let mut sec_row = view().px(px(16.0)).py(px(10.0)).gap(px(8.0)).child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(12.0))
+                                .child(
+                                    view()
+                                        .w(px(210.0))
+                                        .flex_shrink_0()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            text(sec.name.clone())
+                                                .app_class("font-mono")
+                                                .text_size(px(12.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(palette::text_primary()),
+                                        )
+                                        .child(
+                                            view()
+                                                .px(px(5.5))
+                                                .py(px(1.5))
+                                                .rounded(px(4.0))
+                                                .bg(palette::tag_pill_bg())
+                                                .border_1()
+                                                .border_color(palette::border_color())
+                                                .child(
+                                                    text(sec.source.badge_label())
+                                                        .text_size(px(10.0))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(palette::text_secondary()),
+                                                ),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .gap(px(1.5))
+                                        .child(
+                                            text(value_text)
+                                                .app_class("font-mono")
+                                                .text_size(px(12.0))
+                                                .text_color(
+                                                    if sec.state
+                                                        == factory_core::SecretState::NeedsValue
+                                                    {
+                                                        palette::destructive_text()
+                                                    } else {
+                                                        palette::text_secondary()
+                                                    },
+                                                ),
+                                        )
+                                        .child(
+                                            text(exposure.label())
+                                                .text_size(px(10.5))
+                                                .text_color(palette::text_muted()),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            button()
+                                                .test_id(&format!("ps-secret-exp-{}", sec.name))
+                                                .on_press(move || {
+                                                    store::update_secret_exposure(
+                                                        &sec_id_exp,
+                                                        next_exposure,
+                                                    )
+                                                })
+                                                .px(px(7.5))
+                                                .py(px(3.0))
+                                                .rounded(px(5.0))
+                                                .border_1()
+                                                .border_color(palette::border_color())
+                                                .bg(palette::control_bg())
+                                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                                .child(
+                                                    text(match exposure {
+                                                        factory_core::Exposure::McpOnly => {
+                                                            "MCP Only"
+                                                        }
+                                                        factory_core::Exposure::AgentAndSteps => {
+                                                            "Agent + Steps"
+                                                        }
+                                                    })
+                                                    .text_size(px(11.0))
+                                                    .text_color(palette::text_primary()),
+                                                ),
+                                        )
+                                        .child(when(
+                                            {
+                                                let is_kc = matches!(
+                                                    sec.source,
+                                                    factory_core::SecretSource::Keychain
+                                                );
+                                                move || is_kc
+                                            },
+                                            {
+                                                let name_for_id = sec.name.clone();
+                                                let rep_id = sec_id_rep.clone();
+                                                move || {
+                                                    let rep_id = rep_id.clone();
+                                                    button()
+                                                        .test_id(&format!(
+                                                            "ps-secret-replace-{name_for_id}"
+                                                        ))
+                                                        .on_press(move || {
+                                                            draft_replace_value.set(String::new());
+                                                            replacing_secret_id
+                                                                .set(Some(rep_id.clone()));
+                                                        })
+                                                        .px(px(7.5))
+                                                        .py(px(3.0))
+                                                        .rounded(px(5.0))
+                                                        .border_1()
+                                                        .border_color(palette::border_color())
+                                                        .bg(palette::control_bg())
+                                                        .hover(|s| {
+                                                            s.bg(palette::subtle_surface_bg())
+                                                        })
+                                                        .child(
+                                                            text("Replace…")
+                                                                .text_size(px(11.0))
+                                                                .text_color(palette::text_primary()),
+                                                        )
+                                                }
+                                            },
+                                        ))
+                                        .child(
+                                            button()
+                                                .test_id(&format!("ps-secret-delete-{}", sec.name))
+                                                .on_press(move || {
+                                                    store::delete_secret_by_id(&sec_id_del)
+                                                })
+                                                .px(px(8.0))
+                                                .py(px(3.0))
+                                                .rounded(px(5.0))
+                                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                                .child(
+                                                    text("Remove")
+                                                        .text_size(px(11.5))
+                                                        .text_color(palette::destructive_text()),
+                                                ),
+                                        ),
+                                ),
+                        );
+
+                        if is_replacing {
+                            let save_id = sec_id.clone();
+                            sec_row = sec_row.child(
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        input()
+                                            .test_id("ps-secret-replace-input")
+                                            .masked(true)
+                                            .flex_1()
+                                            .value(move || draft_replace_value.get())
+                                            .on_change(move |v: &str| {
+                                                draft_replace_value.set(v.to_owned())
+                                            })
+                                            .placeholder("New secret value")
+                                            .app_class("font-mono")
+                                            .px(px(10.0))
+                                            .py(px(5.5))
+                                            .rounded(px(6.5))
+                                            .border_1()
+                                            .border_color(palette::border_color())
+                                            .bg(palette::card_inset_bg())
+                                            .text_size(px(12.0))
+                                            .text_color(palette::text_primary()),
+                                    )
+                                    .child(secondary_button(
+                                        "ps-secret-replace-cancel",
+                                        "Cancel",
+                                        move || {
+                                            draft_replace_value.set(String::new());
+                                            replacing_secret_id.set(None);
+                                        },
+                                    ))
+                                    .child(primary_button(
+                                        "ps-secret-replace-save",
+                                        "Save",
+                                        move || {
+                                            let val = draft_replace_value.get_untracked();
+                                            if store::replace_secret_value(&save_id, &val) {
+                                                draft_replace_value.set(String::new());
+                                                replacing_secret_id.set(None);
+                                            }
+                                        },
+                                    )),
+                            );
+                        }
+                        vars_card = vars_card.child(card_divider()).child(sec_row);
+                    }
                 }
 
                 let mut body = view()
                     .gap(px(18.0))
                     .child(section_heading(
-                        "Environment",
-                        "Environment variables passed to agent steps and local test commands. Secrets stay in the macOS Keychain.",
+                        "Environment & Secrets",
+                        "Plain variables and project secrets. Secret values stay in your OS Keychain or secret manager and default to MCP servers only.",
                     ))
                     .child(vars_card)
                     .child(
@@ -2019,43 +2326,88 @@ fn environment_tab() -> impl IntoElement {
                                 draft_key.set(String::new());
                                 draft_value.set(String::new());
                                 draft_secret.set(false);
+                                draft_exposure.set(factory_core::Exposure::McpOnly);
+                                draft_manager.set("keychain".to_owned());
                                 add_var_open.set(!show_add);
                             }),
                         ),
                     );
 
                 if show_add {
+                    let is_secret = draft_secret.get();
+                    let selected_mgr = draft_manager.get();
+                    let is_keychain = selected_mgr == "keychain";
+                    let exposure = draft_exposure.get();
+                    let current_val = draft_value.get();
+                    let ws_warning =
+                        is_secret && is_keychain && factory_core::has_surrounding_whitespace(&current_val);
+
                     let save_var = move || {
                         let key = draft_key.get_untracked();
                         let value = draft_value.get_untracked();
                         let secret = draft_secret.get_untracked();
-                        if store::add_project_env_var(&key, &value, secret) {
+                        let mgr = draft_manager.get_untracked();
+                        let exp = draft_exposure.get_untracked();
+                        let ok = if secret {
+                            if mgr == "keychain" {
+                                store::create_project_keychain_secret(&key, &value, exp)
+                            } else {
+                                store::create_project_manager_secret(&key, &mgr, &value, exp)
+                            }
+                        } else {
+                            store::add_project_env_var(&key, &value, false)
+                        };
+                        if ok {
                             draft_key.set(String::new());
                             draft_value.set(String::new());
                             draft_secret.set(false);
                             add_var_open.set(false);
                         }
                     };
-                    let is_secret = draft_secret.get();
 
-                    body = body.child(
-                        view()
-                            .p(px(14.0))
-                            .rounded(px(10.0))
-                            .border_1()
-                            .border_color(palette::border_color())
-                            .bg(palette::card_bg())
-                            .gap(px(10.0))
-                            .child(
-                                view()
-                                    .flex_row()
-                                    .gap(px(10.0))
-                                    .child(
-                                        view().flex_1().gap(px(4.0)).child(
+                    let mut val_input = input()
+                        .test_id("ps-env-value-input")
+                        .value(move || draft_value.get())
+                        .on_change(move |v: &str| draft_value.set(v.to_owned()))
+                        .placeholder(if is_secret && !is_keychain {
+                            "op://Vault/Item/field or manager ref"
+                        } else {
+                            "value"
+                        })
+                        .app_class("font-mono")
+                        .px(px(10.0))
+                        .py(px(6.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::card_inset_bg())
+                        .text_size(px(12.5))
+                        .text_color(palette::text_primary());
+                    if is_secret && is_keychain {
+                        val_input = val_input.masked(true);
+                    }
+
+                    let mut add_form = view()
+                        .p(px(14.0))
+                        .rounded(px(10.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::card_bg())
+                        .gap(px(10.0))
+                        .child(
+                            view()
+                                .flex_row()
+                                .gap(px(10.0))
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .gap(px(4.0))
+                                        .child(
                                             text("Name")
                                                 .text_size(px(11.5))
                                                 .text_color(palette::text_muted()),
-                                        ).child(
+                                        )
+                                        .child(
                                             input()
                                                 .test_id("ps-env-key-input")
                                                 .value(move || draft_key.get())
@@ -2071,61 +2423,329 @@ fn environment_tab() -> impl IntoElement {
                                                 .text_size(px(12.5))
                                                 .text_color(palette::text_primary()),
                                         ),
-                                    )
-                                    .child(
-                                        view().flex_1().gap(px(4.0)).child(
-                                            text("Value")
-                                                .text_size(px(11.5))
-                                                .text_color(palette::text_muted()),
-                                        ).child(
-                                            input()
-                                                .test_id("ps-env-value-input")
-                                                .value(move || draft_value.get())
-                                                .on_change(move |v: &str| draft_value.set(v.to_owned()))
-                                                .placeholder("value")
-                                                .app_class("font-mono")
-                                                .px(px(10.0))
-                                                .py(px(6.0))
-                                                .rounded(px(7.0))
-                                                .border_1()
-                                                .border_color(palette::border_color())
-                                                .bg(palette::card_inset_bg())
-                                                .text_size(px(12.5))
-                                                .text_color(palette::text_primary()),
-                                        ),
-                                    ),
-                            )
+                                )
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .gap(px(4.0))
+                                        .child(
+                                            text(if is_secret && !is_keychain {
+                                                "Reference"
+                                            } else {
+                                                "Value"
+                                            })
+                                            .text_size(px(11.5))
+                                            .text_color(palette::text_muted()),
+                                        )
+                                        .child(val_input),
+                                ),
+                        );
+
+                    if ws_warning {
+                        add_form = add_form.child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .px(px(10.0))
+                                .py(px(6.0))
+                                .rounded(px(6.0))
+                                .bg(palette::pill_warning_bg())
+                                .child(
+                                    text("Value has leading or trailing whitespace.")
+                                        .text_size(px(11.5))
+                                        .text_color(palette::pill_warning_text()),
+                                )
+                                .child(secondary_button("ps-env-trim-ws", "Trim whitespace", move || {
+                                    draft_value.update(|v| *v = v.trim().to_owned());
+                                })),
+                        );
+                    }
+
+                    if is_secret {
+                        let mut opts_row = view()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(8.0))
                             .child(
                                 view()
                                     .flex_row()
                                     .items_center()
-                                    .justify_between()
-                                    .child(checkbox_line(
-                                        "ps-env-secret-checkbox",
-                                        "Store as masked secret",
-                                        is_secret,
-                                        move || draft_secret.update(|s| *s = !*s),
-                                    ))
+                                    .gap(px(6.0))
                                     .child(
-                                        view()
-                                            .flex_row()
-                                            .gap(px(8.0))
-                                            .child(secondary_button(
-                                                "ps-env-cancel",
-                                                "Cancel",
-                                                move || {
-                                                    store::clear_project_settings_messages();
-                                                    add_var_open.set(false);
-                                                },
-                                            ))
-                                            .child(primary_button(
-                                                "ps-env-save",
-                                                "Save Variable",
-                                                save_var,
-                                            )),
-                                    ),
+                                        text("Exposure:")
+                                            .text_size(px(11.5))
+                                            .text_color(palette::text_muted()),
+                                    )
+                                    .child(segment_button(
+                                        "MCP servers only",
+                                        exposure == factory_core::Exposure::McpOnly,
+                                        move || draft_exposure.set(factory_core::Exposure::McpOnly),
+                                    ))
+                                    .child(segment_button(
+                                        "Agent and steps",
+                                        exposure == factory_core::Exposure::AgentAndSteps,
+                                        move || {
+                                            draft_exposure
+                                                .set(factory_core::Exposure::AgentAndSteps)
+                                        },
+                                    )),
+                            );
+                        if !managers.is_empty() {
+                            let mut src_row = view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .child(segment_button("Keychain", is_keychain, move || {
+                                    draft_manager.set("keychain".to_owned());
+                                }));
+                            for (mid, mlabel) in &managers {
+                                let mid_val = mid.clone();
+                                let active = selected_mgr == mid_val;
+                                let label_owned = mlabel.clone();
+                                src_row = src_row.child(
+                                    button()
+                                        .on_press(move || draft_manager.set(mid_val.clone()))
+                                        .px(px(9.0))
+                                        .py(px(4.5))
+                                        .rounded(px(6.0))
+                                        .bg(if active {
+                                            palette::control_bg()
+                                        } else {
+                                            AdaptiveColor::TRANSPARENT
+                                        })
+                                        .child(
+                                            text(label_owned)
+                                                .text_size(px(11.5))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(if active {
+                                                    palette::text_primary()
+                                                } else {
+                                                    palette::text_muted()
+                                                }),
+                                        ),
+                                );
+                            }
+                            opts_row = opts_row.child(src_row);
+                        }
+                        add_form = add_form.child(opts_row);
+                    }
+
+                    add_form = add_form.child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .child(checkbox_line(
+                                "ps-env-secret-checkbox",
+                                "Store as secret in Keychain",
+                                is_secret,
+                                move || draft_secret.update(|s| *s = !*s),
+                            ))
+                            .child(
+                                view()
+                                    .flex_row()
+                                    .gap(px(8.0))
+                                    .child(secondary_button("ps-env-cancel", "Cancel", move || {
+                                        draft_key.set(String::new());
+                                        draft_value.set(String::new());
+                                        store::clear_project_settings_messages();
+                                        add_var_open.set(false);
+                                    }))
+                                    .child(primary_button("ps-env-save", "Save Variable", save_var)),
                             ),
                     );
+
+                    body = body.child(add_form);
+                }
+
+                // Inherited from app secrets
+                if !inherited.is_empty() {
+                    let mut inh_card = grouped_card("Inherited from App Secrets");
+                    for item in inherited {
+                        let rec = item.record;
+                        let rec_id = rec.id.clone();
+                        let rec_name = rec.name.clone();
+                        let status_label = if item.overridden {
+                            "Overridden by project secret"
+                        } else if item.excluded {
+                            "Excluded in this project"
+                        } else {
+                            match rec.kind {
+                                factory_core::SecretKind::Env { exposure, .. } => exposure.label(),
+                                _ => "",
+                            }
+                        };
+                        inh_card = inh_card.child(card_divider()).child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(10.0))
+                                .px(px(16.0))
+                                .py(px(9.0))
+                                .child(
+                                    view()
+                                        .flex_1()
+                                        .min_w(px(0.0))
+                                        .gap(px(2.0))
+                                        .child(
+                                            view()
+                                                .flex_row()
+                                                .items_center()
+                                                .gap(px(6.0))
+                                                .child(
+                                                    text(rec.name.clone())
+                                                        .app_class("font-mono")
+                                                        .text_size(px(12.5))
+                                                        .font_weight(FontWeight::MEDIUM)
+                                                        .text_color(if item.excluded {
+                                                            palette::text_muted()
+                                                        } else {
+                                                            palette::text_primary()
+                                                        }),
+                                                )
+                                                .child(
+                                                    text(rec.source.badge_label())
+                                                        .text_size(px(10.5))
+                                                        .text_color(palette::text_muted()),
+                                                ),
+                                        )
+                                        .child(
+                                            text(status_label)
+                                                .text_size(px(11.0))
+                                                .text_color(palette::text_muted()),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(secondary_button(
+                                            "ps-inherited-override",
+                                            "Override",
+                                            move || {
+                                                draft_key.set(rec_name.clone());
+                                                draft_value.set(String::new());
+                                                draft_secret.set(true);
+                                                add_var_open.set(true);
+                                            },
+                                        ))
+                                        .child(secondary_button(
+                                            "ps-inherited-exclude",
+                                            if item.excluded {
+                                                "Re-include"
+                                            } else {
+                                                "Exclude"
+                                            },
+                                            move || store::toggle_project_exclude_app_secret(&rec_id),
+                                        )),
+                                ),
+                        );
+                    }
+                    body = body.child(inh_card);
+                }
+
+                // Needed by MCP servers
+                if !needed_mcp.is_empty() {
+                    let mut mcp_card = grouped_card("Needed by MCP Servers");
+                    for item in needed_mcp {
+                        let var_name = item.name.clone();
+                        let servers_list = item.servers.join(", ");
+                        let (status_text, status_color, can_add) = match item.status {
+                            store::NeededMcpVarStatus::ProjectSecret {
+                                source_label,
+                                needs_value,
+                            } => (
+                                if needs_value {
+                                    format!("Project secret ({source_label}) · Needs value")
+                                } else {
+                                    format!("Project secret ({source_label})")
+                                },
+                                if needs_value {
+                                    palette::destructive_text()
+                                } else {
+                                    palette::success_text()
+                                },
+                                false,
+                            ),
+                            store::NeededMcpVarStatus::AppSecret {
+                                source_label,
+                                needs_value,
+                            } => (
+                                if needs_value {
+                                    format!("Inherited app secret ({source_label}) · Needs value")
+                                } else {
+                                    format!("Inherited app secret ({source_label})")
+                                },
+                                if needs_value {
+                                    palette::destructive_text()
+                                } else {
+                                    palette::success_text()
+                                },
+                                false,
+                            ),
+                            store::NeededMcpVarStatus::PlainVar => (
+                                "Plain project variable".to_owned(),
+                                palette::text_secondary(),
+                                false,
+                            ),
+                            store::NeededMcpVarStatus::ExcludedAppSecret => (
+                                "Excluded from app secrets".to_owned(),
+                                palette::pill_warning_text(),
+                                true,
+                            ),
+                            store::NeededMcpVarStatus::Missing => (
+                                "Missing".to_owned(),
+                                palette::destructive_text(),
+                                true,
+                            ),
+                        };
+                        let mut row = view()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(10.0))
+                            .px(px(16.0))
+                            .py(px(9.0))
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap(px(2.0))
+                                    .child(
+                                        text(item.name)
+                                            .app_class("font-mono")
+                                            .text_size(px(12.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::text_primary()),
+                                    )
+                                    .child(
+                                        text(format!("Used by: {servers_list}"))
+                                            .text_size(px(11.0))
+                                            .text_color(palette::text_muted()),
+                                    ),
+                            )
+                            .child(
+                                text(status_text)
+                                    .text_size(px(11.5))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(status_color),
+                            );
+                        if can_add {
+                            row = row.child(secondary_button("ps-mcp-needed-add", "Add", move || {
+                                draft_key.set(var_name.clone());
+                                draft_value.set(String::new());
+                                draft_secret.set(true);
+                                draft_exposure.set(factory_core::Exposure::McpOnly);
+                                add_var_open.set(true);
+                            }));
+                        }
+                        mcp_card = mcp_card.child(card_divider()).child(row);
+                    }
+                    body = body.child(mcp_card);
                 }
 
                 body.child(

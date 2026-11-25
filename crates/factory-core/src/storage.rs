@@ -1,19 +1,31 @@
 //! SQLite persistence for tracked projects, stored as `bruk.db` in the Bruk folder.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
 use rusqlite::{Connection, ErrorCode, OpenFlags, OptionalExtension, params};
+use secrecy::{ExposeSecret, SecretString};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::{
     bruk_home::{BrukHome, HomeError},
     chat::{ChatSession, ChatUsageDelta},
+    github_intake::current_unix_seconds,
     model::{Project, ProjectId},
     preferences::{AppPreferences, ProviderKind},
     project_settings::ProjectSettings,
+    secrets::{
+        EnvScope, SecretId, SecretKind, SecretRecord, SecretSource, SecretState,
+        SecretsMetadataSnapshot, Sharing, compute_preview, keychain_account_key,
+        keychain_item_label, new_db_instance_id,
+        redactor::SecretRedactor,
+        store::{SecretStore, write_and_verify},
+        validate_secret_value,
+    },
     work_queue::ProjectWorkQueue,
     workflow_run::{RunExecutionState, WorkflowRunViewData},
 };
@@ -41,6 +53,8 @@ pub struct PersistedWorkflowRun {
 }
 
 const PREFERENCES_KEY: &str = "app_preferences";
+const SECRET_STORE_INSTANCE_ID_KEY: &str = "secret_store_instance_id";
+const SECRET_STORE_LAST_PATH_KEY: &str = "secret_store_last_path";
 
 /// Errors returned when opening or mutating the local SQLite project database.
 #[derive(Debug, Error)]
@@ -51,6 +65,8 @@ pub enum StorageError {
     EmptyProjectPath,
     #[error("a project is already registered for repository path '{0}'")]
     DuplicateRepositoryPath(PathBuf),
+    #[error("{0}")]
+    Secret(String),
     #[error("{0}")]
     Home(#[from] HomeError),
     #[error("failed to create database directory '{path}': {source}")]
@@ -97,6 +113,19 @@ impl ProjectDatabase {
             "VACUUM INTO ?1",
             params![destination.to_string_lossy().into_owned()],
         )?;
+        // Clear secret_store_instance_id, secret_store_last_path, and secret_tombstones in the
+        // copied database so a cloned DB cannot mutate or delete the original DB's Keychain items.
+        if let Ok(dest_conn) = Connection::open(destination) {
+            let _ = dest_conn.execute(
+                "DELETE FROM app_settings WHERE key IN (?1, ?2)",
+                params![SECRET_STORE_INSTANCE_ID_KEY, SECRET_STORE_LAST_PATH_KEY],
+            );
+            let _ = dest_conn.execute("DELETE FROM secret_tombstones", []);
+            let _ = dest_conn.execute(
+                "UPDATE secrets SET state = 'needs_value' WHERE detail_json LIKE '%\"source\":\"keychain\"%'",
+                [],
+            );
+        }
         Ok(())
     }
 
@@ -136,6 +165,7 @@ impl ProjectDatabase {
     fn init_schema(&self) -> Result<(), StorageError> {
         self.conn.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA secure_delete = ON;
              PRAGMA foreign_keys = ON;
              CREATE TABLE IF NOT EXISTS projects (
                  id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -155,17 +185,31 @@ impl ProjectDatabase {
                  value_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
              );
-             CREATE TABLE IF NOT EXISTS project_secrets (
-                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-                 key        TEXT NOT NULL,
-                 value      TEXT NOT NULL,
-                 updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
-                 PRIMARY KEY (project_id, key)
-             );
              CREATE TABLE IF NOT EXISTS project_work_queues (
                  project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
                  value_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS secrets (
+                 id           TEXT PRIMARY KEY,
+                 project_id   INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+                 name         TEXT NOT NULL,
+                 kind         TEXT NOT NULL,
+                 state        TEXT NOT NULL,
+                 detail_json  TEXT NOT NULL,
+                 created_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+                 updated_at   INTEGER NOT NULL DEFAULT (unixepoch()),
+                 last_used_at INTEGER
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS secrets_app_env_name
+                 ON secrets (name COLLATE NOCASE)
+                 WHERE kind = 'env' AND project_id IS NULL;
+             CREATE UNIQUE INDEX IF NOT EXISTS secrets_project_env_name
+                 ON secrets (project_id, name COLLATE NOCASE)
+                 WHERE kind = 'env' AND project_id IS NOT NULL;
+             CREATE TABLE IF NOT EXISTS secret_tombstones (
+                 id          TEXT PRIMARY KEY,
+                 account_key TEXT NOT NULL
              );
              CREATE TABLE IF NOT EXISTS workflow_runs (
                  id               TEXT PRIMARY KEY,
@@ -295,11 +339,91 @@ impl ProjectDatabase {
     }
 
     /// Removes a tracked project by id. Returns `true` if a row was deleted.
+    ///
+    /// Runs in one transaction that:
+    /// 1. Inserts tombstones for every Project-scoped Keychain secret belonging to `id` (regardless of `state`),
+    /// 2. Strips `id` from every App secret's `Sharing::Projects(...)` in `detail_json`,
+    /// 3. Deletes the `projects` row (cascading `secrets`).
     pub fn delete_project(&self, id: ProjectId) -> Result<bool, StorageError> {
-        let affected = self
-            .conn
-            .execute("DELETE FROM projects WHERE id = ?1", params![id as i64])?;
-        Ok(affected > 0)
+        let instance_id = self.ensure_db_instance_id()?;
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let outcome = (|| -> Result<bool, StorageError> {
+            // 1. Insert tombstones for every Project-scoped Keychain secret belonging to `id`.
+            let project_secrets = {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, project_id, name, kind, state, detail_json, created_at, updated_at, last_used_at
+                     FROM secrets WHERE project_id = ?1",
+                )?;
+                let rows = stmt.query_map(params![id as i64], map_secret_row)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                out
+            };
+            for rec in project_secrets {
+                if matches!(rec.source, SecretSource::Keychain) {
+                    let account_key = keychain_account_key(&instance_id, &rec.id);
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO secret_tombstones (id, account_key) VALUES (?1, ?2)",
+                        params![rec.id, account_key],
+                    )?;
+                }
+            }
+
+            // 2. Strip `id` from every App secret's `Sharing::Projects(...)` in `detail_json`.
+            let app_secrets = {
+                let mut stmt = self.conn.prepare(
+                    "SELECT id, project_id, name, kind, state, detail_json, created_at, updated_at, last_used_at
+                     FROM secrets WHERE kind = 'env' AND project_id IS NULL",
+                )?;
+                let rows = stmt.query_map([], map_secret_row)?;
+                let mut out = Vec::new();
+                for r in rows {
+                    out.push(r?);
+                }
+                out
+            };
+            for mut rec in app_secrets {
+                let mut changed = false;
+                if let SecretKind::Env {
+                    scope:
+                        EnvScope::App {
+                            shared_with: Sharing::Projects(ref mut set),
+                        },
+                    ..
+                } = rec.kind
+                    && set.remove(&id)
+                {
+                    changed = true;
+                }
+                if changed {
+                    let detail = SecretDetailJson::from_record(&rec);
+                    let detail_json = serde_json::to_string(&detail)?;
+                    self.conn.execute(
+                        "UPDATE secrets SET detail_json = ?1, updated_at = unixepoch() WHERE id = ?2",
+                        params![detail_json, rec.id],
+                    )?;
+                }
+            }
+
+            // 3. Delete the project row (cascading project-scoped `secrets`).
+            let affected = self
+                .conn
+                .execute("DELETE FROM projects WHERE id = ?1", params![id as i64])?;
+            Ok(affected > 0)
+        })();
+
+        match outcome {
+            Ok(deleted) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(deleted)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
     }
 
     /// Loads persisted application preferences from SQLite, if saved previously.
@@ -376,12 +500,16 @@ impl ProjectDatabase {
         Ok(())
     }
 
-    /// Loads a secret value associated with a project (for example `"github_pat"`).
+    /// Loads a secret value associated with a project from the legacy `project_secrets` table,
+    /// if that table still exists (pre-migration databases and tests).
     pub fn load_project_secret(
         &self,
         project_id: ProjectId,
         key: &str,
     ) -> Result<Option<String>, StorageError> {
+        if !self.has_legacy_project_secrets_table()? {
+            return Ok(None);
+        }
         let value: Option<String> = self
             .conn
             .query_row(
@@ -393,13 +521,24 @@ impl ProjectDatabase {
         Ok(value)
     }
 
-    /// Stores or updates a secret value associated with a project.
+    /// Stores or updates a secret value in the legacy `project_secrets` table (kept for legacy
+    /// migration tests; production code writes to `SecretStore` + `secrets` metadata table).
     pub fn save_project_secret(
         &self,
         project_id: ProjectId,
         key: &str,
         value: &str,
     ) -> Result<(), StorageError> {
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS project_secrets (
+                 project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                 key        TEXT NOT NULL,
+                 value      TEXT NOT NULL,
+                 updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+                 PRIMARY KEY (project_id, key)
+             )",
+            [],
+        )?;
         self.conn.execute(
             "INSERT INTO project_secrets (project_id, key, value, updated_at)
              VALUES (?1, ?2, ?3, unixepoch())
@@ -411,12 +550,15 @@ impl ProjectDatabase {
         Ok(())
     }
 
-    /// Deletes a secret value associated with a project.
+    /// Deletes a secret value from the legacy `project_secrets` table, if it exists.
     pub fn delete_project_secret(
         &self,
         project_id: ProjectId,
         key: &str,
     ) -> Result<bool, StorageError> {
+        if !self.has_legacy_project_secrets_table()? {
+            return Ok(false);
+        }
         let affected = self.conn.execute(
             "DELETE FROM project_secrets WHERE project_id = ?1 AND key = ?2",
             params![project_id as i64, key],
@@ -675,6 +817,790 @@ impl ProjectDatabase {
         }
         Ok(out)
     }
+
+    // -----------------------------------------------------------------------------------------
+    // Secrets metadata, db_instance_id, path-change guard, two-store consistency & migration
+    // -----------------------------------------------------------------------------------------
+
+    /// Reads an arbitrary string value stored in `app_settings` by key.
+    pub fn get_app_setting_raw(&self, key: &str) -> Result<Option<String>, StorageError> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT value_json FROM app_settings WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(raw)
+    }
+
+    /// Writes an arbitrary string value into `app_settings` by key.
+    pub fn set_app_setting_raw(&self, key: &str, value: &str) -> Result<(), StorageError> {
+        self.conn.execute(
+            "INSERT INTO app_settings (key, value_json, updated_at)
+             VALUES (?1, ?2, unixepoch())
+             ON CONFLICT(key) DO UPDATE SET
+                 value_json = excluded.value_json,
+                 updated_at = unixepoch()",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Returns this database's unique Keychain namespace UUID (`secret_store_instance_id`),
+    /// minting and persisting a new UUID v4 on first access.
+    pub fn ensure_db_instance_id(&self) -> Result<String, StorageError> {
+        if let Some(existing) = self.get_app_setting_raw(SECRET_STORE_INSTANCE_ID_KEY)?
+            && !existing.trim().is_empty()
+        {
+            return Ok(existing);
+        }
+        let id = new_db_instance_id();
+        self.set_app_setting_raw(SECRET_STORE_INSTANCE_ID_KEY, &id)?;
+        if let Some(path) = self.path() {
+            let _ = self.set_app_setting_raw(SECRET_STORE_LAST_PATH_KEY, &path.to_string_lossy());
+        }
+        Ok(id)
+    }
+
+    /// Checks whether a file-backed database was opened at a different path than `secret_store_last_path`.
+    /// Returns `Ok(Some((previous_path, current_path)))` if a manual copy/move is detected.
+    pub fn check_database_path_change(&self) -> Result<Option<(PathBuf, PathBuf)>, StorageError> {
+        let Some(current) = self.path() else {
+            return Ok(None);
+        };
+        let current_str = current.to_string_lossy().into_owned();
+        match self.get_app_setting_raw(SECRET_STORE_LAST_PATH_KEY)? {
+            None => {
+                self.set_app_setting_raw(SECRET_STORE_LAST_PATH_KEY, &current_str)?;
+                Ok(None)
+            }
+            Some(prev) if prev == current_str => Ok(None),
+            Some(prev) => Ok(Some((PathBuf::from(prev), current.to_path_buf()))),
+        }
+    }
+
+    /// User confirmed this Bruk folder was **moved** (keep Keychain namespace & update path).
+    pub fn confirm_database_moved(&self) -> Result<(), StorageError> {
+        if let Some(current) = self.path() {
+            self.set_app_setting_raw(SECRET_STORE_LAST_PATH_KEY, &current.to_string_lossy())?;
+        }
+        Ok(())
+    }
+
+    /// User confirmed this Bruk folder was **cloned** (mint new `db_instance_id`, clear tombstones,
+    /// mark Keychain secrets `needs_value` so the original folder's Keychain items stay untouched).
+    pub fn confirm_database_cloned(&self) -> Result<String, StorageError> {
+        let new_id = new_db_instance_id();
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let res = (|| -> Result<(), StorageError> {
+            self.set_app_setting_raw(SECRET_STORE_INSTANCE_ID_KEY, &new_id)?;
+            if let Some(current) = self.path() {
+                self.set_app_setting_raw(SECRET_STORE_LAST_PATH_KEY, &current.to_string_lossy())?;
+            }
+            self.conn.execute("DELETE FROM secret_tombstones", [])?;
+            self.conn.execute(
+                "UPDATE secrets SET state = 'needs_value', updated_at = unixepoch()
+                 WHERE detail_json LIKE '%\"source\":\"keychain\"%'",
+                [],
+            )?;
+            Ok(())
+        })();
+        match res {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(new_id)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// Lists all persisted secret metadata records ordered by kind, name.
+    pub fn list_secrets(&self) -> Result<Vec<SecretRecord>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, name, kind, state, detail_json, created_at, updated_at, last_used_at
+             FROM secrets
+             ORDER BY kind ASC, name COLLATE NOCASE ASC",
+        )?;
+        let rows = stmt.query_map([], map_secret_row)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Reads one secret metadata record by id.
+    pub fn get_secret(&self, id: &str) -> Result<Option<SecretRecord>, StorageError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, project_id, name, kind, state, detail_json, created_at, updated_at, last_used_at
+             FROM secrets WHERE id = ?1",
+        )?;
+        let row = stmt.query_row(params![id], map_secret_row).optional()?;
+        Ok(row)
+    }
+
+    /// Low-level insert of a `SecretRecord` row (enforces cross-store uniqueness with `project_settings.env_vars`).
+    pub fn insert_secret_row(&self, record: &SecretRecord) -> Result<(), StorageError> {
+        record.validate().map_err(StorageError::Secret)?;
+        self.check_cross_store_env_uniqueness(record, None)?;
+        let detail_json = serde_json::to_string(&SecretDetailJson::from_record(record))?;
+        let kind_str = if record.is_internal() {
+            "internal"
+        } else {
+            "env"
+        };
+        let state_str = match record.state {
+            SecretState::Ready => "ready",
+            SecretState::NeedsValue => "needs_value",
+        };
+        let res = self.conn.execute(
+            "INSERT INTO secrets (id, project_id, name, kind, state, detail_json, created_at, updated_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                record.id,
+                record.project_id().map(|p| p as i64),
+                record.name,
+                kind_str,
+                state_str,
+                detail_json,
+                record.created_at,
+                record.updated_at,
+                record.last_used_at,
+            ],
+        );
+        match res {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == ErrorCode::ConstraintViolation =>
+            {
+                Err(StorageError::Secret(format!(
+                    "a secret named '{}' already exists in this scope",
+                    record.name
+                )))
+            }
+            Err(err) => Err(StorageError::Sqlite(err)),
+        }
+    }
+
+    /// Low-level update of an existing `SecretRecord` row.
+    pub fn update_secret_row(&self, record: &SecretRecord) -> Result<(), StorageError> {
+        record.validate().map_err(StorageError::Secret)?;
+        self.check_cross_store_env_uniqueness(record, Some(&record.id))?;
+        let detail_json = serde_json::to_string(&SecretDetailJson::from_record(record))?;
+        let kind_str = if record.is_internal() {
+            "internal"
+        } else {
+            "env"
+        };
+        let state_str = match record.state {
+            SecretState::Ready => "ready",
+            SecretState::NeedsValue => "needs_value",
+        };
+        let res = self.conn.execute(
+            "UPDATE secrets
+             SET project_id = ?2, name = ?3, kind = ?4, state = ?5, detail_json = ?6,
+                 updated_at = ?7, last_used_at = ?8
+             WHERE id = ?1",
+            params![
+                record.id,
+                record.project_id().map(|p| p as i64),
+                record.name,
+                kind_str,
+                state_str,
+                detail_json,
+                record.updated_at,
+                record.last_used_at,
+            ],
+        );
+        match res {
+            Ok(_) => Ok(()),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == ErrorCode::ConstraintViolation =>
+            {
+                Err(StorageError::Secret(format!(
+                    "a secret named '{}' already exists in this scope",
+                    record.name
+                )))
+            }
+            Err(err) => Err(StorageError::Sqlite(err)),
+        }
+    }
+
+    /// Deletes only the SQLite row (used when rolling back a failed Keychain create).
+    pub fn delete_secret_row_only(&self, id: &str) -> Result<bool, StorageError> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM secrets WHERE id = ?1", params![id])?;
+        Ok(affected > 0)
+    }
+
+    /// Two-store consistent **Create** for a Keychain-backed secret (§5):
+    /// 1. Insert SQLite row as `needs_value` (verifying cross-store uniqueness)
+    /// 2. Write Keychain item + read back & verify exact byte equality
+    /// 3. Mark SQLite row `ready` (+ `preview` if char len >= 12)
+    ///
+    /// On Keychain error, rolls back the `needs_value` row.
+    pub fn create_keychain_secret(
+        &self,
+        store: &dyn SecretStore,
+        mut record: SecretRecord,
+        value: &SecretString,
+        project_name: Option<&str>,
+    ) -> Result<SecretRecord, StorageError> {
+        validate_secret_value(value.expose_secret()).map_err(StorageError::Secret)?;
+        record.source = SecretSource::Keychain;
+        record.state = SecretState::NeedsValue;
+        record.preview = None;
+        record.validate().map_err(StorageError::Secret)?;
+
+        let instance_id = self.ensure_db_instance_id()?;
+        self.insert_secret_row(&record)?;
+
+        let account_key = keychain_account_key(&instance_id, &record.id);
+        let label = keychain_item_label(&record, project_name);
+        if let Err(err) = write_and_verify(store, &account_key, &label, value) {
+            let _ = self.delete_secret_row_only(&record.id);
+            return Err(StorageError::Secret(err.to_string()));
+        }
+
+        record.state = SecretState::Ready;
+        record.preview = compute_preview(value.expose_secret());
+        record.updated_at = current_unix_seconds();
+        self.update_secret_row(&record)?;
+        Ok(record)
+    }
+
+    /// Creates a manager-backed secret (1Password or generic Command Manager).
+    pub fn create_manager_secret(
+        &self,
+        mut record: SecretRecord,
+    ) -> Result<SecretRecord, StorageError> {
+        record.state = SecretState::Ready;
+        record.preview = None;
+        record.validate().map_err(StorageError::Secret)?;
+        self.insert_secret_row(&record)?;
+        Ok(record)
+    }
+
+    /// Two-store consistent **Replace** for an existing Keychain secret (§5):
+    /// Writes and verifies the Keychain item FIRST without flipping a working `ready` secret to
+    /// `needs_value`. If the user cancels or Keychain fails, the existing secret stays intact.
+    pub fn replace_keychain_secret(
+        &self,
+        store: &dyn SecretStore,
+        id: &str,
+        new_value: &SecretString,
+        project_name: Option<&str>,
+    ) -> Result<SecretRecord, StorageError> {
+        validate_secret_value(new_value.expose_secret()).map_err(StorageError::Secret)?;
+        let mut record = self
+            .get_secret(id)?
+            .ok_or_else(|| StorageError::Secret(format!("secret '{id}' not found")))?;
+        let instance_id = self.ensure_db_instance_id()?;
+        let account_key = keychain_account_key(&instance_id, &record.id);
+        let label = keychain_item_label(&record, project_name);
+
+        // Write & verify Keychain FIRST; SQLite row remains untouched on failure!
+        write_and_verify(store, &account_key, &label, new_value)
+            .map_err(|err| StorageError::Secret(err.to_string()))?;
+
+        record.source = SecretSource::Keychain;
+        record.state = SecretState::Ready;
+        record.preview = compute_preview(new_value.expose_secret());
+        record.updated_at = current_unix_seconds();
+        self.update_secret_row(&record)?;
+        Ok(record)
+    }
+
+    /// Updates metadata (name, sharing, exposure, description, manager source) and best-effort
+    /// updates the Keychain `kSecAttrLabel` if Keychain-backed.
+    pub fn update_secret_metadata(
+        &self,
+        store: &dyn SecretStore,
+        mut record: SecretRecord,
+        project_name: Option<&str>,
+    ) -> Result<SecretRecord, StorageError> {
+        record.updated_at = current_unix_seconds();
+        self.update_secret_row(&record)?;
+        if matches!(record.source, SecretSource::Keychain) {
+            let instance_id = self.ensure_db_instance_id()?;
+            let account_key = keychain_account_key(&instance_id, &record.id);
+            let label = keychain_item_label(&record, project_name);
+            let _ = store.update_label(&account_key, &label);
+        }
+        Ok(record)
+    }
+
+    /// Two-store consistent **Delete** (§5):
+    /// In one SQLite transaction, deletes the `secrets` row and inserts `(id, account_key)` into
+    /// `secret_tombstones` (even when `state == 'needs_value'`), then deletes the Keychain item
+    /// and clears the tombstone.
+    pub fn delete_secret(&self, store: &dyn SecretStore, id: &str) -> Result<bool, StorageError> {
+        let Some(record) = self.get_secret(id)? else {
+            return Ok(false);
+        };
+        let instance_id = self.ensure_db_instance_id()?;
+        let needs_tombstone = matches!(record.source, SecretSource::Keychain);
+        let account_key = keychain_account_key(&instance_id, &record.id);
+
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let tx_res = (|| -> Result<bool, StorageError> {
+            let affected = self
+                .conn
+                .execute("DELETE FROM secrets WHERE id = ?1", params![id])?;
+            if affected > 0 && needs_tombstone {
+                self.conn.execute(
+                    "INSERT OR REPLACE INTO secret_tombstones (id, account_key) VALUES (?1, ?2)",
+                    params![id, account_key],
+                )?;
+            }
+            Ok(affected > 0)
+        })();
+
+        let deleted = match tx_res {
+            Ok(d) => {
+                self.conn.execute_batch("COMMIT")?;
+                d
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                return Err(err);
+            }
+        };
+
+        if deleted && needs_tombstone && store.delete(&account_key).is_ok() {
+            let _ = self.delete_tombstone(id);
+        }
+
+        Ok(deleted)
+    }
+
+    /// Lists outstanding Keychain deletion tombstones `(secret_id, account_key)`.
+    pub fn list_tombstones(&self) -> Result<Vec<(String, String)>, StorageError> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, account_key FROM secret_tombstones")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Removes a cleared tombstone row.
+    pub fn delete_tombstone(&self, id: &str) -> Result<(), StorageError> {
+        self.conn
+            .execute("DELETE FROM secret_tombstones WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// Launch sweep retrying outstanding tombstones (§5).
+    /// Skips when store is unavailable/locked, when `store.is_memory()` (unless `allow_memory`),
+    /// or when a database path change has not yet been confirmed.
+    pub fn sweep_secret_tombstones(
+        &self,
+        store: &dyn SecretStore,
+        allow_memory: bool,
+    ) -> Result<usize, StorageError> {
+        if !store.status().is_available() || (!allow_memory && store.is_memory()) {
+            return Ok(0);
+        }
+        if self.check_database_path_change()?.is_some() {
+            return Ok(0);
+        }
+        let mut swept = 0usize;
+        for (id, account_key) in self.list_tombstones()? {
+            if store.delete(&account_key).is_ok() {
+                self.delete_tombstone(&id)?;
+                swept += 1;
+            }
+        }
+        Ok(swept)
+    }
+
+    /// Flushes batched `last_used_at` timestamp updates into SQLite.
+    pub fn flush_secret_last_used(
+        &self,
+        updates: &BTreeMap<SecretId, i64>,
+    ) -> Result<(), StorageError> {
+        if updates.is_empty() {
+            return Ok(());
+        }
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let res = (|| -> Result<(), StorageError> {
+            let mut stmt = self
+                .conn
+                .prepare("UPDATE secrets SET last_used_at = ?2 WHERE id = ?1")?;
+            for (id, ts) in updates {
+                stmt.execute(params![id, ts])?;
+            }
+            Ok(())
+        })();
+        match res {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// Marks missing Keychain secrets as `needs_value` in SQLite.
+    pub fn mark_secrets_needs_value(&self, ids: &[SecretId]) -> Result<(), StorageError> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let res = (|| -> Result<(), StorageError> {
+            let mut stmt = self.conn.prepare(
+                "UPDATE secrets SET state = 'needs_value', updated_at = unixepoch() WHERE id = ?1",
+            )?;
+            for id in ids {
+                stmt.execute(params![id])?;
+            }
+            Ok(())
+        })();
+        match res {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// Checks cross-store case-insensitive uniqueness between `secrets` and `project_settings.env_vars`.
+    fn check_cross_store_env_uniqueness(
+        &self,
+        record: &SecretRecord,
+        exclude_id: Option<&str>,
+    ) -> Result<(), StorageError> {
+        let SecretKind::Env { scope, .. } = &record.kind else {
+            return Ok(());
+        };
+        if let EnvScope::Project(pid) = scope
+            && let Some(ps) = self.load_project_settings(*pid)?
+            && ps
+                .env_vars
+                .iter()
+                .any(|v| !v.is_secret && v.key.eq_ignore_ascii_case(&record.name))
+        {
+            return Err(StorageError::Secret(format!(
+                "a plain environment variable named '{}' already exists in this project",
+                record.name
+            )));
+        }
+        // Check secrets table uniqueness explicitly for clean error messages.
+        let conflict: Option<String> = match scope {
+            EnvScope::App { .. } => self
+                .conn
+                .query_row(
+                    "SELECT id FROM secrets WHERE kind = 'env' AND project_id IS NULL AND name = ?1 COLLATE NOCASE",
+                    params![record.name],
+                    |row| row.get(0),
+                )
+                .optional()?,
+            EnvScope::Project(pid) => self
+                .conn
+                .query_row(
+                    "SELECT id FROM secrets WHERE kind = 'env' AND project_id = ?1 AND name = ?2 COLLATE NOCASE",
+                    params![*pid as i64, record.name],
+                    |row| row.get(0),
+                )
+                .optional()?,
+        };
+        if let Some(existing_id) = conflict
+            && exclude_id != Some(existing_id.as_str())
+        {
+            return Err(StorageError::Secret(format!(
+                "a secret named '{}' already exists in this scope",
+                record.name
+            )));
+        }
+        Ok(())
+    }
+
+    /// Saves `ProjectSettings` inside one transaction after checking that no plain `env_vars`
+    /// collide case-insensitively with a Project Env `SecretRecord`.
+    pub fn save_project_settings_checked(
+        &self,
+        project_id: ProjectId,
+        settings: &ProjectSettings,
+    ) -> Result<(), StorageError> {
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let res = (|| -> Result<(), StorageError> {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT name FROM secrets WHERE kind = 'env' AND project_id = ?1")?;
+            let secret_names: Vec<String> = stmt
+                .query_map(params![project_id as i64], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            for ev in &settings.env_vars {
+                if !ev.is_secret && secret_names.iter().any(|s| s.eq_ignore_ascii_case(&ev.key)) {
+                    return Err(StorageError::Secret(format!(
+                        "a secret named '{}' already exists in this project",
+                        ev.key
+                    )));
+                }
+            }
+            self.save_project_settings(project_id, settings)
+        })();
+        match res {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// Builds an immutable [`SecretsMetadataSnapshot`] for [`crate::secrets::SecretResolver`].
+    pub fn build_secrets_metadata_snapshot(
+        &self,
+        preferences: &AppPreferences,
+    ) -> Result<SecretsMetadataSnapshot, StorageError> {
+        let db_instance_id = self.ensure_db_instance_id()?;
+        let records = self.list_secrets()?;
+        let projects = self.list_projects()?;
+        let mut project_plain_env: BTreeMap<ProjectId, BTreeMap<String, String>> = BTreeMap::new();
+        let mut project_excluded_app_secrets: BTreeMap<ProjectId, BTreeSet<SecretId>> =
+            BTreeMap::new();
+
+        for p in projects {
+            if let Some(ps) = self.load_project_settings(p.id)? {
+                let mut plain = BTreeMap::new();
+                for ev in &ps.env_vars {
+                    if !ev.is_secret {
+                        plain.insert(ev.key.clone(), ev.value.clone());
+                    }
+                }
+                preferences.advanced.apply_agent_env(&mut plain);
+                project_plain_env.insert(p.id, plain);
+                if !ps.excluded_app_secrets.is_empty() {
+                    project_excluded_app_secrets.insert(p.id, ps.excluded_app_secrets);
+                }
+            }
+        }
+
+        Ok(SecretsMetadataSnapshot {
+            db_instance_id,
+            records,
+            project_plain_env,
+            project_excluded_app_secrets,
+            settings: preferences.secrets.clone(),
+        })
+    }
+
+    /// Whether the legacy `project_secrets` table still exists in this database.
+    pub fn has_legacy_project_secrets_table(&self) -> Result<bool, StorageError> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'project_secrets'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(exists.is_some())
+    }
+
+    /// Lists all rows in the legacy `project_secrets` table for migration.
+    pub fn list_all_legacy_project_secrets(
+        &self,
+    ) -> Result<Vec<(ProjectId, String, String)>, StorageError> {
+        if !self.has_legacy_project_secrets_table()? {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT project_id, key, value FROM project_secrets")?;
+        let rows = stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)? as ProjectId,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row?);
+        }
+        Ok(out)
+    }
+
+    /// Step 6 of migration: structured JSON scrubbing of `workflow_runs`, `chat_sessions`, and
+    /// `chat_usage` preserving valid JSON so `list_chat_sessions` never drops chats.
+    pub fn scrub_persisted_transcripts(
+        &self,
+        redactor: &SecretRedactor,
+    ) -> Result<usize, StorageError> {
+        if redactor.is_empty() {
+            return Ok(0);
+        }
+        let mut scrubbed = 0usize;
+        self.conn.execute_batch("BEGIN IMMEDIATE")?;
+        let res = (|| -> Result<(), StorageError> {
+            // 1. workflow_runs
+            let runs: Vec<(String, String, String)> = {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id, summary, view_json FROM workflow_runs")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for (id, summary, view_json) in runs {
+                let new_summary = redactor.redact(&summary);
+                let new_view_json = match serde_json::from_str::<serde_json::Value>(&view_json) {
+                    Ok(mut val) => {
+                        redactor.redact_json_value(&mut val);
+                        serde_json::to_string(&val)?
+                    }
+                    Err(_) => view_json.clone(),
+                };
+                if new_summary != summary || new_view_json != view_json {
+                    self.conn.execute(
+                        "UPDATE workflow_runs SET summary = ?2, view_json = ?3 WHERE id = ?1",
+                        params![id, new_summary, new_view_json],
+                    )?;
+                    scrubbed += 1;
+                }
+            }
+
+            // 2. chat_sessions
+            let chats: Vec<(String, String, String)> = {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT id, title, value_json FROM chat_sessions")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for (id, title, value_json) in chats {
+                let new_title = redactor.redact(&title);
+                let new_value_json = match serde_json::from_str::<serde_json::Value>(&value_json) {
+                    Ok(mut val) => {
+                        redactor.redact_json_value(&mut val);
+                        serde_json::to_string(&val)?
+                    }
+                    Err(_) => value_json.clone(),
+                };
+                if new_title != title || new_value_json != value_json {
+                    self.conn.execute(
+                        "UPDATE chat_sessions SET title = ?2, value_json = ?3 WHERE id = ?1",
+                        params![id, new_title, new_value_json],
+                    )?;
+                    scrubbed += 1;
+                }
+            }
+
+            // 3. chat_usage.chat_title
+            let usage_rows: Vec<(i64, String)> = {
+                let mut stmt = self.conn.prepare("SELECT id, chat_title FROM chat_usage")?;
+                let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                rows.collect::<Result<_, _>>()?
+            };
+            for (id, chat_title) in usage_rows {
+                let new_title = redactor.redact(&chat_title);
+                if new_title != chat_title {
+                    self.conn.execute(
+                        "UPDATE chat_usage SET chat_title = ?2 WHERE id = ?1",
+                        params![id, new_title],
+                    )?;
+                    scrubbed += 1;
+                }
+            }
+            Ok(())
+        })();
+
+        match res {
+            Ok(()) => {
+                self.conn.execute_batch("COMMIT")?;
+                Ok(scrubbed)
+            }
+            Err(err) => {
+                let _ = self.conn.execute_batch("ROLLBACK");
+                Err(err)
+            }
+        }
+    }
+
+    /// Step 7 of migration: drops `project_secrets`, checkpoints WAL (`TRUNCATE`), and runs `VACUUM`.
+    pub fn drop_legacy_project_secrets_and_vacuum(&self) -> Result<(), StorageError> {
+        self.conn.execute_batch(
+            "DROP TABLE IF EXISTS project_secrets;
+             PRAGMA wal_checkpoint(TRUNCATE);
+             VACUUM;",
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SecretDetailJson {
+    kind: SecretKind,
+    source: SecretSource,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    preview: Option<String>,
+}
+
+impl SecretDetailJson {
+    fn from_record(record: &SecretRecord) -> Self {
+        Self {
+            kind: record.kind.clone(),
+            source: record.source.clone(),
+            description: record.description.clone(),
+            preview: record.preview.clone(),
+        }
+    }
+}
+
+fn map_secret_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SecretRecord> {
+    let id: String = row.get(0)?;
+    let _project_id: Option<i64> = row.get(1)?;
+    let name: String = row.get(2)?;
+    let _kind_col: String = row.get(3)?;
+    let state_col: String = row.get(4)?;
+    let detail_raw: String = row.get(5)?;
+    let created_at: i64 = row.get(6)?;
+    let updated_at: i64 = row.get(7)?;
+    let last_used_at: Option<i64> = row.get(8)?;
+
+    let detail: SecretDetailJson = serde_json::from_str(&detail_raw).map_err(|err| {
+        rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, Box::new(err))
+    })?;
+    let state = match state_col.as_str() {
+        "ready" => SecretState::Ready,
+        _ => SecretState::NeedsValue,
+    };
+
+    Ok(SecretRecord {
+        id,
+        name,
+        kind: detail.kind,
+        source: detail.source,
+        state,
+        description: detail.description,
+        preview: detail.preview,
+        created_at,
+        updated_at,
+        last_used_at,
+    })
 }
 
 /// What one chat's turns used, summed from its usage records.

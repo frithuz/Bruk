@@ -1,6 +1,6 @@
 {
   "name": "Bruk",
-  "id": "com.softwarefactory.app",
+  "id": "dev.frithuz.bruk",
   "version": "0.1.0",
   "build": 1,
   "icon": "assets/icon.png",

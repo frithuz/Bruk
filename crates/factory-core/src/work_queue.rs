@@ -35,6 +35,8 @@ pub enum WorkQueueStage {
     ReadyForAgents,
     InProgress,
     NeedsYou,
+    /// Unattended run paused before step 1 because a required secret or manager needs setup/unlock.
+    NeedsSetup,
     DoneThisWeek,
 }
 
@@ -43,6 +45,7 @@ impl WorkQueueStage {
         Self::ReadyForAgents,
         Self::InProgress,
         Self::NeedsYou,
+        Self::NeedsSetup,
         Self::DoneThisWeek,
     ];
 
@@ -51,6 +54,7 @@ impl WorkQueueStage {
             Self::ReadyForAgents => "Ready for agents",
             Self::InProgress => "In progress",
             Self::NeedsYou => "Needs you",
+            Self::NeedsSetup => "Needs setup",
             Self::DoneThisWeek => "Done this week",
         }
     }
@@ -1308,6 +1312,35 @@ impl ProjectWorkQueue {
                 self.fallback_workflow
             )
         }
+    }
+
+    /// Puts a queued issue into the `NeedsSetup` hold state when preflight fails (e.g. a locked
+    /// secret manager or missing value), preventing retry storms on subsequent GitHub syncs while
+    /// retaining its queue entry and GitHub labels.
+    pub fn hold_item_for_setup(&mut self, issue_number: u32, reason: &str) -> bool {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.issue_number == issue_number)
+        else {
+            return false;
+        };
+        item.stage = WorkQueueStage::NeedsSetup;
+        item.status_text = format!("Needs setup: {reason}");
+        true
+    }
+
+    /// Moves all `NeedsSetup` held items back to `ReadyForAgents` and returns their issue numbers.
+    pub fn resume_setup_held_items(&mut self) -> Vec<u32> {
+        let mut resumed = Vec::new();
+        for item in &mut self.items {
+            if item.stage == WorkQueueStage::NeedsSetup {
+                item.stage = WorkQueueStage::ReadyForAgents;
+                item.status_text = "Queued".to_owned();
+                resumed.push(item.issue_number);
+            }
+        }
+        resumed
     }
 
     /// Starts a `ReadyForAgents` issue immediately, assigning a new run number.

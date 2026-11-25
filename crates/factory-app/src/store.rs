@@ -14,35 +14,40 @@ use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
     AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
     AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
-    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSession,
-    ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown, ChatTurnControl, ChatTurnRequest,
-    ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe,
-    ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, CodexCliProbe,
-    CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CompositeDef,
-    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
-    DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection,
-    ExitField, ExitOperator, FactoryState, FontPreference, GateDecision, GitHubAuth,
-    GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter, InboxState,
-    IntakeRule, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
-    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
-    NewMachineDraft, PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase, ProjectId,
-    ProjectSandboxMode, ProjectSettings, ProjectSettingsTab, ProjectWorkQueue,
-    ProjectWorkflowsOverview, ProviderKind, RecentRunStatus, ReviewDetail, RunControlHandle,
-    RunDetailTab, RunExecutionState, RunId, RunOutcomeDot, RunStatus, RunnerEvent, SkillDef,
-    StepTypeKind, StorageError, ValidationReport, WorkQueueViewMode, Workflow, WorkflowDef,
+    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSecretsCache,
+    ChatSession, ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown, ChatTurnControl,
+    ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
+    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
+    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
+    CommandManagerConfig, CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
+    DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry,
+    DryRunExecutor, EditorSelection, EnvScope, ExitField, ExitOperator, Exposure, FactoryState,
+    FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError,
+    HomeResolution, InboxFilter, InboxState, IntakeRule, InternalPurpose, IssueSourceAuthMode,
+    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
+    MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore, NewMachineDraft,
+    ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager, PersistedWorkflowRun,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
+    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
+    RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager, SecretProblem,
+    SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState, SecretStore,
+    SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError, StoreStatus,
+    ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
     WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
     WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
-    chat_worktree_branch, clone_repository, current_unix_seconds, detect_git_remote_info,
-    display_with_tilde, fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
+    chat_worktree_branch, clone_repository, contains_env_reference, current_unix_seconds,
+    default_secret_store, delete_legacy_database_files, detect_git_remote_info, display_with_tilde,
+    fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
     fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
-    query_chat_context, remove_chat_worktree, remove_github_issue_label,
-    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary, run_antigravity_login,
-    run_claude_auth_login, run_codex_login, spawn_chat_turn, spawn_workflow_run,
+    find_legacy_database_files, migrate_plaintext_secrets, parse_clone_source,
+    probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name, query_chat_context,
+    remove_chat_worktree, remove_github_issue_label, resolve_antigravity_binary,
+    resolve_claude_binary, resolve_codex_binary, run_antigravity_login, run_claude_auth_login,
+    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
 };
-
-const GITHUB_PAT_SECRET_KEY: &str = "github_pat";
+use secrecy::{ExposeSecret, SecretString};
 
 #[derive(Default)]
 struct RunnerRegistry {
@@ -256,6 +261,20 @@ struct AppState {
     chat_context_loading: BTreeSet<String>,
     /// Why reading a chat's context window failed.
     chat_context_errors: BTreeMap<String, String>,
+    secret_store: Arc<dyn SecretStore>,
+    secret_resolver: Arc<SecretResolver>,
+    secrets: Vec<SecretRecord>,
+    chat_secrets_caches: BTreeMap<String, Arc<Mutex<ChatSecretsCache>>>,
+    secrets_store_status: StoreStatus,
+    db_path_change_pending: Option<(std::path::PathBuf, std::path::PathBuf)>,
+    legacy_db_files_found: Vec<std::path::PathBuf>,
+    legacy_database_paths: Vec<std::path::PathBuf>,
+    secrets_feedback: Option<String>,
+    secrets_error: Option<String>,
+    secrets_test_in_progress: bool,
+    secrets_test_result: Option<Result<String, String>>,
+    secrets_prefill_name: Option<String>,
+    secrets_prefill_scope: Option<EnvScope>,
     sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
@@ -263,7 +282,11 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::from_environment(HomeEnvironment::system(), ClaudePathLookup::SystemPath)
+        Self::from_environment(
+            HomeEnvironment::system(),
+            ClaudePathLookup::SystemPath,
+            default_secret_store(),
+        )
     }
 }
 
@@ -281,32 +304,56 @@ impl AppState {
     fn from_environment(
         environment: Result<HomeEnvironment, HomeError>,
         claude_path_lookup: ClaudePathLookup,
+        secret_store: Arc<dyn SecretStore>,
     ) -> Self {
         match environment {
-            Ok(environment) => match environment.resolve() {
-                HomeResolution::Ready(home) => Self::from_home(home, claude_path_lookup),
-                HomeResolution::NeedsSetup { suggested_root } => {
-                    Self::awaiting_home_setup(environment, &suggested_root, claude_path_lookup)
+            Ok(environment) => {
+                let legacy_paths = environment.legacy_database_paths.clone();
+                match environment.resolve() {
+                    HomeResolution::Ready(home) => {
+                        Self::from_home(home, claude_path_lookup, secret_store, legacy_paths)
+                    }
+                    HomeResolution::NeedsSetup { suggested_root } => Self::awaiting_home_setup(
+                        environment,
+                        &suggested_root,
+                        claude_path_lookup,
+                        secret_store,
+                    ),
                 }
-            },
+            }
             Err(err) => Self::from_database_result_with_path(
                 Err(StorageError::Home(err)),
                 None,
                 claude_path_lookup,
+                secret_store,
+                Vec::new(),
             ),
         }
     }
 
-    fn from_home(home: BrukHome, claude_path_lookup: ClaudePathLookup) -> Self {
+    fn from_home(
+        home: BrukHome,
+        claude_path_lookup: ClaudePathLookup,
+        secret_store: Arc<dyn SecretStore>,
+        legacy_database_paths: Vec<std::path::PathBuf>,
+    ) -> Self {
         let result = ProjectDatabase::open_home(&home);
-        Self::from_database_result_with_path(result, Some(home), claude_path_lookup)
+        Self::from_database_result_with_path(
+            result,
+            Some(home),
+            claude_path_lookup,
+            secret_store,
+            legacy_database_paths,
+        )
     }
 
     fn awaiting_home_setup(
         environment: HomeEnvironment,
         suggested_root: &Path,
         claude_path_lookup: ClaudePathLookup,
+        secret_store: Arc<dyn SecretStore>,
     ) -> Self {
+        let legacy_paths = environment.legacy_database_paths.clone();
         let mut state = Self::build_for_mode(
             None,
             "Not set up yet".to_owned(),
@@ -317,6 +364,8 @@ impl AppState {
             None,
             claude_path_lookup,
             None,
+            secret_store,
+            legacy_paths,
         );
         let legacy_database = environment.legacy_database();
         state.home_setup = Some(HomeSetupDraft {
@@ -333,6 +382,8 @@ impl AppState {
         result: Result<ProjectDatabase, factory_core::StorageError>,
         home: Option<BrukHome>,
         claude_path_lookup: ClaudePathLookup,
+        secret_store: Arc<dyn SecretStore>,
+        legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
         let (db, db_path_display, persisted_projects, persisted_prefs, status_message, reg_error) =
             match result {
@@ -385,6 +436,8 @@ impl AppState {
             reg_error,
             claude_path_lookup,
             home,
+            secret_store,
+            legacy_database_paths,
         )
     }
 
@@ -393,13 +446,116 @@ impl AppState {
         db: Option<Arc<Mutex<ProjectDatabase>>>,
         db_path_display: String,
         persisted_projects: Vec<Project>,
-        persisted_prefs: AppPreferences,
+        mut persisted_prefs: AppPreferences,
         demo_mode: bool,
         status_message: Option<String>,
         registration_error: Option<String>,
         claude_path_lookup: ClaudePathLookup,
         home: Option<BrukHome>,
+        secret_store: Arc<dyn SecretStore>,
+        legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
+        let secrets_store_status = secret_store.status();
+        let mut db_path_change_pending = None;
+        let mut startup_secret_problems: Vec<(String, SecretProblem)> = Vec::new();
+        let mut secrets_error = None;
+        let mut legacy_db_files_found = Vec::new();
+
+        if !demo_mode
+            && let Some(db_arc) = db.as_ref()
+            && let Ok(guard) = db_arc.lock()
+        {
+            match guard.check_database_path_change() {
+                Ok(Some((old_path, new_path))) => {
+                    db_path_change_pending = Some((old_path.clone(), new_path.clone()));
+                    startup_secret_problems.push((
+                        "App".to_owned(),
+                        SecretProblem {
+                            project_id: None,
+                            secret_id: None,
+                            secret_name: None,
+                            manager_id: Some("keychain".to_owned()),
+                            reason: format!(
+                                "Database moved or cloned ({} → {}). Open Secrets Settings to confirm whether this database was moved or cloned before Keychain cleanup runs.",
+                                display_with_tilde(&old_path),
+                                display_with_tilde(&new_path)
+                            ),
+                            fix: SecretFix::OpenSecretsSettings,
+                            blocking: false,
+                        },
+                    ));
+                }
+                Ok(None) => {
+                    match migrate_plaintext_secrets(&guard, secret_store.as_ref(), false, false) {
+                        Ok(report) => {
+                            if report.has_user_notice() {
+                                startup_secret_problems.push((
+                                    "App".to_owned(),
+                                    SecretProblem {
+                                        project_id: None,
+                                        secret_id: None,
+                                        secret_name: None,
+                                        manager_id: Some("keychain".to_owned()),
+                                        reason: report.rotation_notice_body(),
+                                        fix: SecretFix::OpenSecretsSettings,
+                                        blocking: false,
+                                    },
+                                ));
+                            }
+                            if let Ok(Some(reloaded)) = guard.load_preferences() {
+                                persisted_prefs = reloaded;
+                            }
+                        }
+                        Err(err) => {
+                            let msg = format!("Plaintext secrets migration paused: {err}");
+                            secrets_error = Some(msg.clone());
+                            startup_secret_problems.push((
+                                "App".to_owned(),
+                                SecretProblem {
+                                    project_id: None,
+                                    secret_id: None,
+                                    secret_name: None,
+                                    manager_id: Some("keychain".to_owned()),
+                                    reason: msg,
+                                    fix: SecretFix::OpenSecretsSettings,
+                                    blocking: true,
+                                },
+                            ));
+                        }
+                    }
+                    let _ = guard.sweep_secret_tombstones(secret_store.as_ref(), false);
+                }
+                Err(err) => {
+                    secrets_error = Some(format!("Database path check failed: {err}"));
+                }
+            }
+
+            let legacy_found = find_legacy_database_files(&legacy_database_paths);
+            if !legacy_found.is_empty() {
+                let paths_list = legacy_found
+                    .iter()
+                    .map(|p| display_with_tilde(p))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                startup_secret_problems.push((
+                    "App".to_owned(),
+                    SecretProblem {
+                        project_id: None,
+                        secret_id: None,
+                        secret_name: None,
+                        manager_id: None,
+                        reason: format!(
+                            "Old Bruk database files remain on disk ({paths_list}) and may still contain unmigrated plaintext credentials."
+                        ),
+                        fix: SecretFix::DeleteLegacyDatabases {
+                            paths: legacy_found.clone(),
+                        },
+                        blocking: false,
+                    },
+                ));
+                legacy_db_files_found = legacy_found;
+            }
+        }
         let (preferences, saved_real_preferences) = if demo_mode {
             let mut real_copy = persisted_prefs.clone();
             real_copy.demo_mode = false;
@@ -635,12 +791,30 @@ impl AppState {
             load_chat_sessions(db.as_ref())
         };
 
+        let (secrets, secrets_snapshot) = if demo_mode {
+            (Vec::new(), SecretsMetadataSnapshot::default())
+        } else if let Some(db_arc) = db.as_ref()
+            && let Ok(guard) = db_arc.lock()
+        {
+            let records = guard.list_secrets().unwrap_or_default();
+            let snapshot = guard
+                .build_secrets_metadata_snapshot(&preferences)
+                .unwrap_or_default();
+            (records, snapshot)
+        } else {
+            (Vec::new(), SecretsMetadataSnapshot::default())
+        };
+        let secret_resolver = Arc::new(SecretResolver::new(
+            Arc::clone(&secret_store),
+            secrets_snapshot,
+        ));
+
         let inbox_selected_id = inbox.default_selected_id();
         let (inbox_edited_command, inbox_always_allow_pattern, inbox_question_choice) =
             draft_defaults_for_selection(&inbox, inbox_selected_id.as_deref());
         let selected_machine_id = machines_fleet.default_selected_id();
 
-        Self {
+        let mut app = Self {
             factory,
             db,
             db_path_display,
@@ -745,10 +919,37 @@ impl AppState {
             chat_context_open: false,
             chat_context_loading: BTreeSet::new(),
             chat_context_errors: BTreeMap::new(),
+            secret_store,
+            secret_resolver,
+            secrets,
+            chat_secrets_caches: BTreeMap::new(),
+            secrets_store_status,
+            db_path_change_pending,
+            legacy_db_files_found,
+            legacy_database_paths,
+            secrets_feedback: None,
+            secrets_error,
+            secrets_test_in_progress: false,
+            secrets_test_result: None,
+            secrets_prefill_name: None,
+            secrets_prefill_scope: None,
             sidebar_visible: true,
             status_message,
             registration_error,
+        };
+        for (project_name, problem) in startup_secret_problems {
+            let _ = app.file_secret_problem(
+                McpProblemContext {
+                    project_name: &project_name,
+                    context_label: "Secrets".to_owned(),
+                    where_label: "Startup check".to_owned(),
+                    run_number: 0,
+                    provider: ProviderKind::Claude,
+                },
+                &problem,
+            );
         }
+        app
     }
 
     /// Where new projects are cloned: the custom directory from preferences, or the Bruk
@@ -988,51 +1189,53 @@ impl AppState {
         self.persist_work_queue_by_name(&name);
     }
 
-    fn save_github_pat_for_active_project(&mut self, token: &str) {
-        let name = self.selected_project_name();
-        let Some(project_id) = self.project_id_by_name(&name) else {
+    fn flush_secret_resolver_updates(&mut self) {
+        let last_used = self.secret_resolver.drain_last_used_updates();
+        let needs_value = self.secret_resolver.drain_needs_value_downgrades();
+        if last_used.is_empty() && needs_value.is_empty() {
             return;
-        };
-        if let Some(db_arc) = self.db.as_ref()
+        }
+        if !self.demo_mode
+            && let Some(db_arc) = self.db.as_ref()
             && let Ok(db) = db_arc.lock()
-            && let Err(err) =
-                db.save_project_secret(project_id, GITHUB_PAT_SECRET_KEY, token.trim())
         {
-            self.project_settings_error = Some(format!("Could not save GitHub token: {err}"));
+            let _ = db.flush_secret_last_used(&last_used);
+            let _ = db.mark_secrets_needs_value(&needs_value);
+            if let Ok(records) = db.list_secrets() {
+                self.secrets = records;
+            }
+            if let Ok(snapshot) = db.build_secrets_metadata_snapshot(&self.preferences) {
+                self.secret_resolver.update_snapshot(snapshot);
+            }
         }
     }
 
-    fn resolve_github_auth_for_project(&self, project_name: &str) -> Result<GitHubAuth, String> {
-        let settings = self
-            .project_settings
-            .get(project_name)
-            .cloned()
-            .unwrap_or_else(|| self.active_project_settings_clone());
-        match settings.github_auth_mode {
-            IssueSourceAuthMode::GitHubCli => Ok(GitHubAuth::GitHubCli),
-            IssueSourceAuthMode::PersonalToken => {
-                let Some(project_id) = self.project_id_by_name(project_name) else {
-                    return Err("Project is not persisted in SQLite.".to_owned());
-                };
-                let token = self
-                    .db
-                    .as_ref()
-                    .and_then(|arc| arc.lock().ok())
-                    .and_then(|db| {
-                        db.load_project_secret(project_id, GITHUB_PAT_SECRET_KEY)
-                            .ok()
-                    })
-                    .flatten()
-                    .filter(|t| !t.trim().is_empty());
-                match token {
-                    Some(tok) => Ok(GitHubAuth::PersonalToken(tok)),
-                    None => Err(
-                        "No personal access token is saved for this project. Add a token or switch to GitHub CLI."
-                            .to_owned(),
-                    ),
-                }
+    fn refresh_secrets_state(&mut self) {
+        self.secrets_store_status = self.secret_store.status();
+        if self.demo_mode {
+            return;
+        }
+        let last_used = self.secret_resolver.drain_last_used_updates();
+        let needs_value = self.secret_resolver.drain_needs_value_downgrades();
+        if let Some(db_arc) = self.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.flush_secret_last_used(&last_used);
+            let _ = db.mark_secrets_needs_value(&needs_value);
+            if let Ok(records) = db.list_secrets() {
+                self.secrets = records;
+            }
+            if let Ok(snapshot) = db.build_secrets_metadata_snapshot(&self.preferences) {
+                self.secret_resolver.update_snapshot(snapshot);
             }
         }
+    }
+
+    fn ensure_chat_secrets_cache(&mut self, chat_id: &str) -> Arc<Mutex<ChatSecretsCache>> {
+        self.chat_secrets_caches
+            .entry(chat_id.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(ChatSecretsCache::new())))
+            .clone()
     }
 
     fn ensure_workflow_run_mut(
@@ -1137,6 +1340,7 @@ impl AppState {
             real.codex_spawn_settings = self.preferences.codex_spawn_settings.clone();
             real.machines = self.preferences.machines.clone();
             real.advanced = self.preferences.advanced.clone();
+            real.secrets = self.preferences.secrets.clone();
             real.demo_mode = false;
             let mut persisted = real.clone();
             persisted.demo_mode = true;
@@ -1151,6 +1355,7 @@ impl AppState {
         {
             self.preferences_error = Some(format!("Could not save preferences: {err}"));
         }
+        self.refresh_secrets_state();
     }
 
     fn refresh_claude_status(&mut self, explicit_test: bool) -> ClaudeCliProbe {
@@ -1260,6 +1465,7 @@ pub(crate) fn init_with_database_path(path: &Path) {
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path and Claude `PATH` lookup.
+/// Uses an isolated in-memory secret store so tests and custom DB paths never touch the OS keychain.
 pub(crate) fn init_with_database_path_and_claude_path(
     path: &Path,
     claude_path_lookup: ClaudePathLookup,
@@ -1268,6 +1474,8 @@ pub(crate) fn init_with_database_path_and_claude_path(
         ProjectDatabase::open(path),
         Some(BrukHome::with_database_path(path)),
         claude_path_lookup,
+        Arc::new(MemoryStore::new()),
+        Vec::new(),
     );
     install_state(loaded);
 }
@@ -1281,6 +1489,7 @@ pub(crate) fn init_with_home_environment(
     install_state(AppState::from_environment(
         Ok(environment),
         claude_path_lookup,
+        Arc::new(MemoryStore::new()),
     ));
 }
 
@@ -1355,20 +1564,26 @@ pub(crate) fn home_setup_error() -> Option<String> {
 
 /// Creates (or adopts) the chosen Bruk folder, then loads the app from it.
 pub(crate) fn complete_home_setup() {
-    let Some((draft, claude_path_lookup)) = state().with_untracked(|s| {
-        s.home_setup
-            .clone()
-            .map(|draft| (draft, s.claude_path_lookup.clone()))
+    let Some((draft, claude_path_lookup, secret_store)) = state().with_untracked(|s| {
+        s.home_setup.clone().map(|draft| {
+            (
+                draft,
+                s.claude_path_lookup.clone(),
+                Arc::clone(&s.secret_store),
+            )
+        })
     }) else {
         return;
     };
+    let legacy_paths = draft.environment.legacy_database_paths.clone();
     match draft
         .environment
         .set_up(&draft.root_input, draft.import_legacy)
     {
         Ok(setup) => {
             let root_display = display_with_tilde(setup.home.root());
-            let mut loaded = AppState::from_home(setup.home, claude_path_lookup);
+            let mut loaded =
+                AppState::from_home(setup.home, claude_path_lookup, secret_store, legacy_paths);
             if loaded.status_message.is_none() {
                 loaded.status_message = Some(
                     match (&setup.imported_from, setup.adopted_existing) {
@@ -1572,6 +1787,8 @@ pub(crate) fn set_demo_mode(enabled: bool) {
         let prev_prefs_open = s.preferences_open;
         let prev_prefs_tab = s.preferences_tab;
         let claude_path_lookup = s.claude_path_lookup.clone();
+        let secret_store = Arc::clone(&s.secret_store);
+        let legacy_database_paths = s.legacy_database_paths.clone();
 
         let persisted_projects = db
             .as_ref()
@@ -1590,6 +1807,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
                 .unwrap_or_else(AppPreferences::empty);
             real.general = s.preferences.general.clone();
             real.appearance = s.preferences.appearance.clone();
+            real.secrets = s.preferences.secrets.clone();
             real.demo_mode = false;
             real
         };
@@ -1610,6 +1828,8 @@ pub(crate) fn set_demo_mode(enabled: bool) {
             None,
             claude_path_lookup,
             home,
+            secret_store,
+            legacy_database_paths,
         );
         next.sidebar_visible = prev_sidebar_visible;
         next.preferences_open = prev_prefs_open;
@@ -2259,13 +2479,18 @@ pub(crate) fn remove_project(id: ProjectId) {
         if !s.using_sample_projects
             && let Some(db_arc) = s.db.as_ref()
             && let Ok(db) = db_arc.lock()
-            && let Err(err) = db.delete_project(id)
         {
-            let message = format!("Failed to remove project: {err}");
-            s.registration_error = Some(message.clone());
-            s.status_message = Some(message);
-            return;
+            if let Err(err) = db.delete_project(id) {
+                let message = format!("Failed to remove project: {err}");
+                s.registration_error = Some(message.clone());
+                s.status_message = Some(message);
+                return;
+            }
+            if s.db_path_change_pending.is_none() {
+                let _ = db.sweep_secret_tombstones(s.secret_store.as_ref(), false);
+            }
         }
+        s.refresh_secrets_state();
 
         s.factory.remove_project(id);
         let removed_chats: Vec<String> = s
@@ -2412,7 +2637,7 @@ impl AppState {
                 settings
                     .env_vars
                     .iter()
-                    .filter(|var| !var.key.trim().is_empty())
+                    .filter(|var| !var.is_secret && !var.key.trim().is_empty())
                     .map(|var| (var.key.clone(), var.value.clone()))
                     .collect()
             })
@@ -2671,10 +2896,15 @@ impl AppState {
 
     /// What a chat's next turn (or a reading of its context window) runs with, resolved from
     /// the chat, its project and preferences.
-    fn chat_turn_request(&self, chat_id: &str, prompt: &str) -> Result<ChatTurnRequest, String> {
+    fn chat_turn_request(
+        &mut self,
+        chat_id: &str,
+        prompt: &str,
+    ) -> Result<ChatTurnRequest, String> {
         let session = self
             .chat_sessions
             .get(chat_id)
+            .cloned()
             .ok_or_else(|| "That chat no longer exists".to_owned())?;
         let project = self
             .factory
@@ -2686,9 +2916,16 @@ impl AppState {
             .get(&project.name)
             .cloned()
             .unwrap_or_else(|| load_catalog(self.home.as_ref(), &project.root_path));
-        let settings = self.project_settings.get(&project.name);
+        let settings = self.project_settings.get(&project.name).cloned();
         let launch = self.provider_launch();
-        let project_env = self.agent_env(settings);
+        let project_env = self.agent_env(settings.as_ref());
+        let mcp = self.mcp_sources(&project.root_path, settings.as_ref());
+        let secrets_cache = self.ensure_chat_secrets_cache(chat_id);
+        let secret_resolver = if self.demo_mode {
+            None
+        } else {
+            Some(Arc::clone(&self.secret_resolver))
+        };
         let worktree = match (session.workspace, session.worktree.as_ref()) {
             (ChatWorkspace::Worktree, Some(worktree)) => Some(ChatWorktreeSetup {
                 project_root: project.root_path.clone(),
@@ -2704,6 +2941,7 @@ impl AppState {
 
         Ok(ChatTurnRequest {
             session_id: chat_id.to_owned(),
+            project_id: project.id,
             provider: session.provider,
             agent: session.agent.clone(),
             model: session.model.clone(),
@@ -2716,10 +2954,11 @@ impl AppState {
             runtime_dir: self.chat_runtime_dir(chat_id),
             catalog,
             project_model_override: settings
+                .as_ref()
                 .map(|s| s.model_override.trim().to_owned())
                 .filter(|m| !m.is_empty()),
             project_env,
-            mcp: self.mcp_sources(&project.root_path, settings),
+            mcp,
             claude_binary: launch.claude_binary,
             claude_default_model: Some(self.preferences.claude.default_model.clone()),
             claude_settings: self.preferences.claude_spawn_settings.clone(),
@@ -2737,6 +2976,8 @@ impl AppState {
                 .antigravity
                 .as_ref()
                 .map(|ag| ag.default_model.clone()),
+            secret_resolver,
+            secrets_cache: Some(secrets_cache),
         })
     }
 }
@@ -3166,8 +3407,25 @@ fn start_chat_turn(chat_id: String, request: ChatTurnRequest) {
                                 mcp_cleared
                                     .extend(s.clear_ready_mcp_servers(&project_name, servers));
                             }
+                            ChatEvent::SecretProblem(problem) => {
+                                if let Some(n) = s.file_secret_problem(
+                                    McpProblemContext {
+                                        project_name: &project_name,
+                                        context_label: format!("Chat · {title}"),
+                                        where_label: format!("Chat '{title}'"),
+                                        run_number: 0,
+                                        provider,
+                                    },
+                                    problem,
+                                ) {
+                                    mcp_notifications.push(n);
+                                }
+                            }
                             _ => {}
                         }
+                    }
+                    if finished {
+                        s.flush_secret_resolver_updates();
                     }
                 });
                 post_mcp_notifications(mcp_notifications);
@@ -3396,6 +3654,7 @@ pub(crate) fn delete_chat(id: &str) {
         }
         s.chat_context_loading.remove(id);
         s.chat_context_errors.remove(id);
+        s.chat_secrets_caches.remove(id);
         s.status_message = Some(match chat.worktree.as_ref() {
             Some(worktree) if chat.workspace == ChatWorkspace::Worktree => format!(
                 "Deleted chat '{}' and its worktree. Branch {} is kept.",
@@ -3499,6 +3758,37 @@ pub(crate) fn toggle_work_queue_unmatched_expanded() {
     });
 }
 
+fn resolve_github_auth_off_thread(
+    mode: IssueSourceAuthMode,
+    pat_secret_id: Option<&SecretId>,
+    resolver: &SecretResolver,
+) -> Result<(GitHubAuth, SecretRedactor), String> {
+    match mode {
+        IssueSourceAuthMode::GitHubCli => Ok((GitHubAuth::GitHubCli, SecretRedactor::empty())),
+        IssueSourceAuthMode::PersonalToken => {
+            let Some(secret_id) = pat_secret_id else {
+                return Err(
+                    "No personal access token is selected for this project. Select or add a token in Project Settings, or switch to GitHub CLI."
+                        .to_owned(),
+                );
+            };
+            let cancel = factory_core::CancellationToken::new();
+            let secret = resolver
+                .resolve_internal(secret_id, &cancel)
+                .map_err(|failure| failure.to_problem(None).reason)?;
+            let raw = secret.expose_secret().to_owned();
+            if raw.trim().is_empty() {
+                return Err(
+                    "The selected GitHub personal access token is empty. Replace it in Secrets Settings."
+                        .to_owned(),
+                );
+            }
+            let redactor = SecretRedactor::from_secrets([("internal", &secret)]);
+            Ok((GitHubAuth::PersonalToken(raw), redactor))
+        }
+    }
+}
+
 fn spawn_github_working_label_update(issue_number: u32, add: bool) {
     let job = state().with_untracked(|s| {
         if s.demo_mode {
@@ -3512,18 +3802,23 @@ fn spawn_github_working_label_update(issue_number: u32, add: bool) {
         {
             return None;
         }
-        let auth = s
-            .resolve_github_auth_for_project(&settings.project_name)
-            .ok()?;
         let path_env = s.claude_path_lookup.resolve_path_env();
-        Some((settings.github_repo, auth, path_env))
+        Some((
+            settings.github_repo,
+            settings.github_auth_mode,
+            settings.github_pat_id,
+            Arc::clone(&s.secret_resolver),
+            path_env,
+        ))
     });
 
-    if let Some((repo, auth, path_env)) = job {
+    if let Some((repo, auth_mode, pat_id, resolver, path_env)) = job {
         Owner::detached().run(|| {
             spawn(async move {
                 let result = spawn_blocking_task(move || {
-                    if add {
+                    let (auth, redactor) =
+                        resolve_github_auth_off_thread(auth_mode, pat_id.as_ref(), &resolver)?;
+                    let res = if add {
                         add_github_issue_label(
                             &repo,
                             issue_number,
@@ -3539,17 +3834,19 @@ fn spawn_github_working_label_update(issue_number: u32, add: bool) {
                             &auth,
                             path_env.as_deref(),
                         )
-                    }
+                    };
+                    res.map_err(|err| redactor.redact(&err.to_string()))
                 })
                 .await;
-                if let Err(err) = result {
-                    state().update(|s| {
+                state().update(|s| {
+                    s.flush_secret_resolver_updates();
+                    if let Err(err) = result {
                         let verb = if add { "add" } else { "remove" };
                         s.status_message = Some(format!(
                             "Could not {verb} '{AGENT_WORKING_LABEL}' label on #{issue_number}: {err}"
                         ));
-                    });
-                }
+                    }
+                });
             });
         });
     }
@@ -3783,7 +4080,9 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
         project_name: String,
         raw_repo: String,
         filter_clauses: Vec<GitHubFilterClause>,
-        auth: GitHubAuth,
+        auth_mode: IssueSourceAuthMode,
+        pat_id: Option<SecretId>,
+        resolver: Arc<SecretResolver>,
         path_env: Option<OsString>,
     }
 
@@ -3858,21 +4157,6 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
             return;
         }
 
-        let auth = match s.resolve_github_auth_for_project(&settings.project_name) {
-            Ok(auth) => auth,
-            Err(err) => {
-                s.ensure_project_settings_mut()
-                    .apply_github_sync_error(&err);
-                s.persist_active_project_settings();
-                s.status_message = Some(err.clone());
-                if from_settings {
-                    s.project_settings_feedback = None;
-                    s.project_settings_error = Some(err);
-                }
-                return;
-            }
-        };
-
         let filter_clauses = settings.effective_intake_filter_clauses();
         let path_env = s.claude_path_lookup.resolve_path_env();
         s.work_queue_syncing = true;
@@ -3887,7 +4171,9 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
             project_name: settings.project_name,
             raw_repo,
             filter_clauses,
-            auth,
+            auth_mode: settings.github_auth_mode,
+            pat_id: settings.github_pat_id,
+            resolver: Arc::clone(&s.secret_resolver),
             path_env,
         });
     });
@@ -3896,25 +4182,31 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
         project_name,
         raw_repo,
         filter_clauses,
-        auth,
+        auth_mode,
+        pat_id,
+        resolver,
         path_env,
     }) = background_job
     {
         Owner::detached().run(|| {
             spawn(async move {
                 let result = spawn_blocking_task(move || {
+                    let (auth, redactor) =
+                        resolve_github_auth_off_thread(auth_mode, pat_id.as_ref(), &resolver)?;
                     fetch_github_open_issues_with_filter(
                         &raw_repo,
                         &filter_clauses,
                         &auth,
                         path_env.as_deref(),
                     )
+                    .map_err(|err| redactor.redact(&err.to_string()))
                 })
                 .await;
 
                 let mut auto_started_issues = Vec::new();
                 state().update(|s| {
                     s.work_queue_syncing = false;
+                    s.flush_secret_resolver_updates();
                     if s.demo_mode {
                         return;
                     }
@@ -3978,8 +4270,7 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
                             s.project_settings_error = None;
                             s.project_settings_feedback = Some(summary);
                         }
-                        Err(err) => {
-                            let message = err.to_string();
+                        Err(message) => {
                             if let Some(settings) = s.project_settings.get_mut(&project_name) {
                                 settings.apply_github_sync_error(&message);
                             }
@@ -5255,11 +5546,45 @@ pub(crate) fn add_openrouter_key(
 ) -> bool {
     let mut added = false;
     state().update(|s| {
+        let mut created_secret_id = None;
+        if !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let trimmed_name = name.trim();
+            if !trimmed_name.is_empty() && !raw_api_key.trim().is_empty() {
+                let record = SecretRecord::new_keychain(
+                    trimmed_name,
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::OpenRouterKey,
+                    },
+                    current_unix_seconds(),
+                );
+                let secret = SecretString::from(raw_api_key.to_owned());
+                match db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None) {
+                    Ok(saved) => created_secret_id = Some(saved.id),
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not store API key in Keychain: {err}"));
+                        return;
+                    }
+                }
+            }
+        }
         match s
             .preferences
             .add_openrouter_key(name, raw_api_key, monthly_cap, default_model)
         {
             Ok(new_id) => {
+                if let Some(secret_id) = created_secret_id
+                    && let Some(key) = s
+                        .preferences
+                        .openrouter_keys
+                        .iter_mut()
+                        .find(|k| k.id == new_id)
+                {
+                    key.secret_id = Some(secret_id);
+                }
                 s.selected_provider_id = new_id;
                 s.preferences_error = None;
                 s.preferences_feedback = Some(format!("Added OpenRouter key '{}'.", name.trim()));
@@ -5267,6 +5592,12 @@ pub(crate) fn add_openrouter_key(
                 added = true;
             }
             Err(err) => {
+                if let Some(secret_id) = created_secret_id
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.delete_secret(s.secret_store.as_ref(), &secret_id);
+                }
                 s.preferences_error = Some(err.to_string());
             }
         }
@@ -5278,6 +5609,47 @@ pub(crate) fn replace_selected_openrouter_key(raw_api_key: &str) -> bool {
     let mut updated = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
+        if !s.demo_mode
+            && let Some(key) = s.preferences.openrouter_key(&id).cloned()
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let secret = SecretString::from(raw_api_key.to_owned());
+            if let Some(secret_id) = key.secret_id.as_deref() {
+                if let Err(err) =
+                    db.replace_keychain_secret(s.secret_store.as_ref(), secret_id, &secret, None)
+                {
+                    s.preferences_error =
+                        Some(format!("Could not update API key in Keychain: {err}"));
+                    return;
+                }
+            } else {
+                let record = SecretRecord::new_keychain(
+                    &key.name,
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::OpenRouterKey,
+                    },
+                    current_unix_seconds(),
+                );
+                match db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None) {
+                    Ok(saved) => {
+                        if let Some(k) = s
+                            .preferences
+                            .openrouter_keys
+                            .iter_mut()
+                            .find(|k| k.id == id)
+                        {
+                            k.secret_id = Some(saved.id);
+                        }
+                    }
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not store API key in Keychain: {err}"));
+                        return;
+                    }
+                }
+            }
+        }
         match s
             .preferences
             .replace_openrouter_key_secret(&id, raw_api_key)
@@ -5354,8 +5726,21 @@ pub(crate) fn rename_selected_openrouter_key(new_name: &str) -> bool {
     let mut renamed = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
+        let linked_secret_id = s
+            .preferences
+            .openrouter_key(&id)
+            .and_then(|k| k.secret_id.clone());
         match s.preferences.rename_openrouter_key(&id, new_name) {
             Ok(()) => {
+                if !s.demo_mode
+                    && let Some(secret_id) = linked_secret_id
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                    && let Ok(Some(mut record)) = db.get_secret(&secret_id)
+                {
+                    record.name = new_name.trim().to_owned();
+                    let _ = db.update_secret_metadata(s.secret_store.as_ref(), record, None);
+                }
                 s.preferences_error = None;
                 s.preferences_feedback = Some(format!("Renamed key to '{}'.", new_name.trim()));
                 s.persist_preferences();
@@ -5372,8 +5757,19 @@ pub(crate) fn rename_selected_openrouter_key(new_name: &str) -> bool {
 pub(crate) fn remove_selected_openrouter_key() {
     state().update(|s| {
         let id = s.selected_provider_id.clone();
+        let linked_secret_id = s
+            .preferences
+            .openrouter_key(&id)
+            .and_then(|k| k.secret_id.clone());
         match s.preferences.remove_openrouter_key(&id) {
             Ok(next_selected) => {
+                if !s.demo_mode
+                    && let Some(secret_id) = linked_secret_id
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.delete_secret(s.secret_store.as_ref(), &secret_id);
+                }
                 s.selected_provider_id = next_selected;
                 s.preferences_error = None;
                 s.preferences_feedback = Some("Removed OpenRouter key.".to_owned());
@@ -6033,10 +6429,25 @@ pub(crate) fn clear_claude_spawn_setting(spec_id: &str) {
 /// Adds or updates a Claude spawn environment variable override. Returns `true` on success.
 pub(crate) fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
     let mut ok = false;
-    state().update(
-        |s| match s.preferences.claude_spawn_settings.set_env_var(key, value) {
+    state().update(|s| {
+        let normalized = key.trim().to_owned();
+        match s
+            .preferences
+            .claude_spawn_settings
+            .set_env_var(&normalized, value)
+        {
             Ok(()) => {
-                let normalized = key.trim();
+                if let Some(old_secret_id) = s
+                    .preferences
+                    .claude_spawn_settings
+                    .secret_env_vars
+                    .remove(&normalized)
+                    && !s.demo_mode
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.delete_secret(s.secret_store.as_ref(), &old_secret_id);
+                }
                 s.preferences_error = None;
                 s.preferences_feedback = Some(format!("Saved environment variable {normalized}."));
                 s.persist_preferences();
@@ -6046,15 +6457,104 @@ pub(crate) fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
                 s.preferences_feedback = None;
                 s.preferences_error = Some(err.to_string());
             }
-        },
-    );
+        }
+    });
     ok
 }
 
-/// Removes a configured Claude spawn environment variable.
+/// Adds or updates a secret Claude spawn environment variable stored in Keychain.
+pub(crate) fn set_claude_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        let normalized = key.trim().to_owned();
+        if let Err(err) = factory_core::validate_env_name(&normalized) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+        if let Err(err) = factory_core::validate_secret_value(raw_value) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+        if !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let secret = SecretString::from(raw_value.to_owned());
+            let secret_id = if let Some(existing_id) = s
+                .preferences
+                .claude_spawn_settings
+                .secret_env_vars
+                .get(&normalized)
+                .cloned()
+            {
+                match db.replace_keychain_secret(
+                    s.secret_store.as_ref(),
+                    &existing_id,
+                    &secret,
+                    None,
+                ) {
+                    Ok(rec) => rec.id,
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not update secret in Keychain: {err}"));
+                        return;
+                    }
+                }
+            } else {
+                let record = SecretRecord::new_keychain(
+                    format!("Claude · {normalized}"),
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::ProviderSpawnEnv,
+                    },
+                    current_unix_seconds(),
+                );
+                match db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None) {
+                    Ok(rec) => rec.id,
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not save secret in Keychain: {err}"));
+                        return;
+                    }
+                }
+            };
+            s.preferences
+                .claude_spawn_settings
+                .env_vars
+                .remove(&normalized);
+            s.preferences
+                .claude_spawn_settings
+                .secret_env_vars
+                .insert(normalized.clone(), secret_id);
+        }
+        s.preferences_error = None;
+        s.preferences_feedback = Some(format!(
+            "Saved secret environment variable {normalized} in Keychain."
+        ));
+        s.persist_preferences();
+        ok = true;
+    });
+    ok
+}
+
+/// Removes a configured Claude spawn environment variable (plain or secret).
 pub(crate) fn remove_claude_spawn_env_var(key: &str) {
     state().update(|s| {
-        if s.preferences.claude_spawn_settings.remove_env_var(key) {
+        let removed_plain = s.preferences.claude_spawn_settings.remove_env_var(key);
+        let removed_secret = s
+            .preferences
+            .claude_spawn_settings
+            .secret_env_vars
+            .remove(key);
+        if let Some(secret_id) = removed_secret.as_deref()
+            && !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.delete_secret(s.secret_store.as_ref(), secret_id);
+        }
+        if removed_plain || removed_secret.is_some() {
             s.preferences_error = None;
             s.preferences_feedback = Some(format!("Removed environment variable {key}."));
             s.persist_preferences();
@@ -6253,10 +6753,25 @@ pub(crate) fn clear_codex_spawn_setting(spec_id: &str) {
 /// Adds or updates a Codex spawn environment variable override. Returns `true` on success.
 pub(crate) fn set_codex_spawn_env_var(key: &str, value: &str) -> bool {
     let mut ok = false;
-    state().update(
-        |s| match s.preferences.codex_spawn_settings.set_env_var(key, value) {
+    state().update(|s| {
+        let normalized = key.trim().to_owned();
+        match s
+            .preferences
+            .codex_spawn_settings
+            .set_env_var(&normalized, value)
+        {
             Ok(()) => {
-                let normalized = key.trim();
+                if let Some(old_secret_id) = s
+                    .preferences
+                    .codex_spawn_settings
+                    .secret_env_vars
+                    .remove(&normalized)
+                    && !s.demo_mode
+                    && let Some(db_arc) = s.db.as_ref()
+                    && let Ok(db) = db_arc.lock()
+                {
+                    let _ = db.delete_secret(s.secret_store.as_ref(), &old_secret_id);
+                }
                 s.preferences_error = None;
                 s.preferences_feedback = Some(format!("Saved environment variable {normalized}."));
                 s.persist_preferences();
@@ -6266,15 +6781,104 @@ pub(crate) fn set_codex_spawn_env_var(key: &str, value: &str) -> bool {
                 s.preferences_feedback = None;
                 s.preferences_error = Some(err.to_string());
             }
-        },
-    );
+        }
+    });
     ok
 }
 
-/// Removes a configured Codex spawn environment variable.
+/// Adds or updates a secret Codex spawn environment variable stored in Keychain.
+pub(crate) fn set_codex_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        let normalized = key.trim().to_owned();
+        if let Err(err) = factory_core::validate_env_name(&normalized) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+        if let Err(err) = factory_core::validate_secret_value(raw_value) {
+            s.preferences_feedback = None;
+            s.preferences_error = Some(err.to_string());
+            return;
+        }
+        if !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let secret = SecretString::from(raw_value.to_owned());
+            let secret_id = if let Some(existing_id) = s
+                .preferences
+                .codex_spawn_settings
+                .secret_env_vars
+                .get(&normalized)
+                .cloned()
+            {
+                match db.replace_keychain_secret(
+                    s.secret_store.as_ref(),
+                    &existing_id,
+                    &secret,
+                    None,
+                ) {
+                    Ok(rec) => rec.id,
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not update secret in Keychain: {err}"));
+                        return;
+                    }
+                }
+            } else {
+                let record = SecretRecord::new_keychain(
+                    format!("Codex · {normalized}"),
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::ProviderSpawnEnv,
+                    },
+                    current_unix_seconds(),
+                );
+                match db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None) {
+                    Ok(rec) => rec.id,
+                    Err(err) => {
+                        s.preferences_error =
+                            Some(format!("Could not save secret in Keychain: {err}"));
+                        return;
+                    }
+                }
+            };
+            s.preferences
+                .codex_spawn_settings
+                .env_vars
+                .remove(&normalized);
+            s.preferences
+                .codex_spawn_settings
+                .secret_env_vars
+                .insert(normalized.clone(), secret_id);
+        }
+        s.preferences_error = None;
+        s.preferences_feedback = Some(format!(
+            "Saved secret environment variable {normalized} in Keychain."
+        ));
+        s.persist_preferences();
+        ok = true;
+    });
+    ok
+}
+
+/// Removes a configured Codex spawn environment variable (plain or secret).
 pub(crate) fn remove_codex_spawn_env_var(key: &str) {
     state().update(|s| {
-        if s.preferences.codex_spawn_settings.remove_env_var(key) {
+        let removed_plain = s.preferences.codex_spawn_settings.remove_env_var(key);
+        let removed_secret = s
+            .preferences
+            .codex_spawn_settings
+            .secret_env_vars
+            .remove(key);
+        if let Some(secret_id) = removed_secret.as_deref()
+            && !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            let _ = db.delete_secret(s.secret_store.as_ref(), secret_id);
+        }
+        if removed_plain || removed_secret.is_some() {
             s.preferences_error = None;
             s.preferences_feedback = Some(format!("Removed environment variable {key}."));
             s.persist_preferences();
@@ -7207,44 +7811,169 @@ pub(crate) fn revoke_project_mcp_servers() {
     });
 }
 
-/// Adds one of this user's servers from the add-server form. `false` (with the reason shown)
-/// when the form isn't valid.
-pub(crate) fn add_mcp_server(
+/// Adds one of this user's servers from the add-server form, optionally moving marked inline
+/// values into Keychain as `McpOnly` secrets and rewriting them to `${VAR}` (or `Bearer ${VAR}`).
+pub(crate) fn add_mcp_server_with_secret_lines(
     scope: McpServerScope,
     name: &str,
     command_or_url: &str,
     args_text: &str,
     pairs_text: &str,
+    secret_line_indices: &BTreeSet<usize>,
 ) -> bool {
-    let parsed =
-        factory_core::mcp::McpServerDef::from_form(name, command_or_url, args_text, pairs_text);
     let mut added = false;
-    state().update(|s| match parsed {
-        Err(err) => match scope {
-            McpServerScope::Project => s.project_settings_error = Some(err),
-            McpServerScope::User => s.preferences_error = Some(err),
-        },
-        Ok(server) => {
-            let message = format!("Added MCP server '{}'.", server.name);
-            match scope {
-                McpServerScope::Project => {
-                    s.ensure_project_settings_mut().upsert_mcp_server(server);
-                    s.project_settings_error = None;
-                    s.project_settings_feedback = Some(message);
-                    s.persist_active_project_settings();
-                }
-                McpServerScope::User => {
-                    let servers = &mut s.preferences.extensions.mcp_servers;
-                    match servers.iter_mut().find(|x| x.name == server.name) {
-                        Some(existing) => *existing = server,
-                        None => servers.push(server),
-                    }
-                    s.preferences_error = None;
-                    s.preferences_feedback = Some(message);
-                    s.persist_preferences();
-                }
+    state().update(|s| {
+        let mut rewritten_lines = Vec::new();
+        let mut extracted_count = 0usize;
+        let is_url = command_or_url.trim().starts_with("http://")
+            || command_or_url.trim().starts_with("https://");
+        let target_project = match scope {
+            McpServerScope::Project => {
+                let pname = s.selected_project_name();
+                s.project_id_by_name(&pname).map(|pid| (pid, pname))
             }
-            added = true;
+            McpServerScope::User => None,
+        };
+        let mut existing_names: BTreeSet<String> = s
+            .secrets
+            .iter()
+            .filter_map(|rec| match rec.kind {
+                SecretKind::Env { .. } => Some(rec.name.to_ascii_uppercase()),
+                SecretKind::Internal { .. } => None,
+            })
+            .collect();
+
+        for (line_idx, raw_line) in pairs_text.lines().enumerate() {
+            let trimmed = raw_line.trim();
+            if trimmed.is_empty() || !secret_line_indices.contains(&line_idx) {
+                rewritten_lines.push(raw_line.to_owned());
+                continue;
+            }
+            let sep = if is_url { ':' } else { '=' };
+            let Some((raw_k, raw_v)) = trimmed.split_once(sep) else {
+                rewritten_lines.push(raw_line.to_owned());
+                continue;
+            };
+            let k = raw_k.trim();
+            let v = raw_v.trim();
+            if v.is_empty() || contains_env_reference(v) {
+                rewritten_lines.push(raw_line.to_owned());
+                continue;
+            }
+            let (was_bearer, secret_val) = if is_url && k.eq_ignore_ascii_case("authorization") {
+                if let Some(rest) = v
+                    .strip_prefix("Bearer ")
+                    .or_else(|| v.strip_prefix("bearer "))
+                {
+                    (true, rest.trim())
+                } else {
+                    (false, v)
+                }
+            } else {
+                (false, v)
+            };
+            if secret_val.is_empty() {
+                rewritten_lines.push(raw_line.to_owned());
+                continue;
+            }
+            let base = format!("{}_{}", sanitize_env_segment(name), sanitize_env_segment(k));
+            let mut env_name = base.clone();
+            let mut suffix = 2usize;
+            while existing_names.contains(&env_name) {
+                env_name = format!("{base}_{suffix}");
+                suffix += 1;
+            }
+            existing_names.insert(env_name.clone());
+
+            if !s.demo_mode
+                && let Some(db_arc) = s.db.as_ref()
+                && let Ok(db) = db_arc.lock()
+            {
+                let (env_scope, proj_name_opt) = match &target_project {
+                    Some((pid, pname)) => (EnvScope::Project(*pid), Some(pname.as_str())),
+                    None => (
+                        EnvScope::App {
+                            shared_with: Sharing::AllProjects,
+                        },
+                        None,
+                    ),
+                };
+                let record = SecretRecord::new_keychain(
+                    &env_name,
+                    SecretKind::Env {
+                        scope: env_scope,
+                        exposure: Exposure::McpOnly,
+                    },
+                    current_unix_seconds(),
+                );
+                let secret = SecretString::from(secret_val.to_owned());
+                if let Err(err) = db.create_keychain_secret(
+                    s.secret_store.as_ref(),
+                    record,
+                    &secret,
+                    proj_name_opt,
+                ) {
+                    let msg = format!("Could not store MCP secret {env_name} in Keychain: {err}");
+                    match scope {
+                        McpServerScope::Project => s.project_settings_error = Some(msg),
+                        McpServerScope::User => s.preferences_error = Some(msg),
+                    }
+                    return;
+                }
+                extracted_count += 1;
+            }
+            let replacement = if was_bearer {
+                format!("{k}: Bearer ${{{env_name}}}")
+            } else if is_url {
+                format!("{k}: ${{{env_name}}}")
+            } else {
+                format!("{k}=${{{env_name}}}")
+            };
+            rewritten_lines.push(replacement);
+        }
+
+        let final_pairs = rewritten_lines.join("\n");
+        let parsed = factory_core::mcp::McpServerDef::from_form(
+            name,
+            command_or_url,
+            args_text,
+            &final_pairs,
+        );
+        match parsed {
+            Err(err) => match scope {
+                McpServerScope::Project => s.project_settings_error = Some(err),
+                McpServerScope::User => s.preferences_error = Some(err),
+            },
+            Ok(server) => {
+                let message = if extracted_count > 0 {
+                    format!(
+                        "Added MCP server '{}' ({extracted_count} secret(s) stored in Keychain).",
+                        server.name
+                    )
+                } else {
+                    format!("Added MCP server '{}'.", server.name)
+                };
+                match scope {
+                    McpServerScope::Project => {
+                        s.ensure_project_settings_mut().upsert_mcp_server(server);
+                        s.project_settings_error = None;
+                        s.project_settings_feedback = Some(message);
+                        s.persist_active_project_settings();
+                    }
+                    McpServerScope::User => {
+                        let servers = &mut s.preferences.extensions.mcp_servers;
+                        match servers.iter_mut().find(|x| x.name == server.name) {
+                            Some(existing) => *existing = server,
+                            None => servers.push(server),
+                        }
+                        s.preferences_error = None;
+                        s.preferences_feedback = Some(message);
+                        s.persist_preferences();
+                    }
+                }
+                s.refresh_secrets_state();
+                added = true;
+            }
         }
     });
     added
@@ -7409,6 +8138,73 @@ impl AppState {
         ))
     }
 
+    /// Files a secret problem in the Inbox (deduplicated per problem & project) and returns a
+    /// notification to post when it is new.
+    fn file_secret_problem(
+        &mut self,
+        ctx: McpProblemContext<'_>,
+        problem: &SecretProblem,
+    ) -> Option<nsh_core::notifications::Notification> {
+        let digest =
+            factory_core::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned();
+        let id = format!("secret:{}:{digest}", ctx.project_name);
+        if self.inbox.pending.iter().any(|r| r.id == id) {
+            return None;
+        }
+        let title = problem.title();
+        let subtitle = if problem.blocking {
+            format!("{} stopped until this secret is fixed.", ctx.where_label)
+        } else {
+            format!("{} reported a secret setup notice.", ctx.where_label)
+        };
+        let agent = match ctx.provider {
+            ProviderKind::Codex => AgentBadge::Codex,
+            _ => AgentBadge::Claude,
+        };
+        let req = AttentionRequest {
+            id: id.clone(),
+            kind: AttentionRequestKind::Setup,
+            agent,
+            project_name: ctx.project_name.to_owned(),
+            workflow_name: ctx.context_label.clone(),
+            context_label: ctx.context_label.clone(),
+            run_number: ctx.run_number,
+            machine_name: "This Mac".to_owned(),
+            inbox_title: title.clone(),
+            inbox_subtitle: subtitle.clone(),
+            menubar_title: format!("{} · Secret needs attention", ctx.project_name),
+            menubar_subtitle: title.clone(),
+            waiting_minutes: 0,
+            past_reminder_threshold: false,
+            status_pill: if problem.blocking {
+                "Stopped work".to_owned()
+            } else {
+                "Needs setup".to_owned()
+            },
+            why_text: format!("{title}\n\n{subtitle}"),
+            deadline_badge: None,
+            timeout_footer: "Clears once the secret is fixed or dismissed.".to_owned(),
+            note_placeholder: String::new(),
+            body: AttentionRequestBody::SecretProblem(SecretProblemDetail {
+                problem: problem.clone(),
+                stopped_work: problem.blocking,
+            }),
+        };
+        self.inbox.pending.insert(0, req);
+        if self.inbox_selected_id.is_none() {
+            self.inbox_selected_id = self.inbox.default_selected_id();
+        }
+        self.sync_inbox_selection_and_drafts();
+        if self.inbox.notifications_snoozed_minutes.is_some() {
+            return None;
+        }
+        Some(nsh_core::notifications::Notification::new(
+            id,
+            format!("{}: Secret needs attention", ctx.project_name),
+            format!("{title} {subtitle}"),
+        ))
+    }
+
     /// Clears Inbox items about servers that have since reached an agent.
     fn clear_ready_mcp_servers(
         &mut self,
@@ -7457,12 +8253,22 @@ pub(crate) fn inbox_fix_setup_item() {
     let Some(req) = inbox_selected_pending() else {
         return;
     };
-    if let AttentionRequestBody::McpProblem(detail) = &req.body {
-        if detail.problem.fix.button_label().is_none() {
-            inbox_dismiss_setup_item();
-            return;
+    match &req.body {
+        AttentionRequestBody::McpProblem(detail) => {
+            if detail.problem.fix.button_label().is_none() {
+                inbox_dismiss_setup_item();
+                return;
+            }
+            apply_mcp_fix(Some(&req.project_name), &detail.problem.fix);
         }
-        apply_mcp_fix(Some(&req.project_name), &detail.problem.fix);
+        AttentionRequestBody::SecretProblem(detail) => {
+            if detail.problem.fix.button_label().is_none() {
+                inbox_dismiss_setup_item();
+                return;
+            }
+            apply_secret_fix(Some(&req.project_name), &detail.problem.fix);
+        }
+        _ => {}
     }
 }
 
@@ -7697,18 +8503,86 @@ pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let demo = s.demo_mode;
+        let project_name = s.selected_project_name();
         match s.ensure_project_settings_mut().set_github_token(raw_token) {
             Ok(()) => {
                 if !demo {
-                    let settings = s.ensure_project_settings_mut();
-                    settings.source_connected = false;
-                    settings.source_error = None;
-                    s.save_github_pat_for_active_project(raw_token);
+                    let saved = s.db.as_ref().and_then(|db_arc| {
+                        db_arc.lock().ok().map(|db| {
+                            let existing_pat_id = s
+                                .project_settings
+                                .get(&project_name)
+                                .and_then(|ps| ps.github_pat_id.clone());
+                            let secret = SecretString::from(raw_token.trim().to_owned());
+                            if let Some(pat_id) = existing_pat_id {
+                                db.replace_keychain_secret(
+                                    s.secret_store.as_ref(),
+                                    &pat_id,
+                                    &secret,
+                                    None,
+                                )
+                            } else {
+                                let base_name = if project_name.trim().is_empty() {
+                                    "GitHub PAT".to_owned()
+                                } else {
+                                    format!("{project_name} GitHub PAT")
+                                };
+                                let existing_names: BTreeSet<String> = s
+                                    .secrets
+                                    .iter()
+                                    .filter(|r| {
+                                        matches!(
+                                            r.kind,
+                                            SecretKind::Internal {
+                                                purpose: InternalPurpose::GitHubPat
+                                            }
+                                        )
+                                    })
+                                    .map(|r| r.name.to_ascii_lowercase())
+                                    .collect();
+                                let mut name = base_name.clone();
+                                let mut n = 2usize;
+                                while existing_names.contains(&name.to_ascii_lowercase()) {
+                                    name = format!("{base_name} ({n})");
+                                    n += 1;
+                                }
+                                let record = SecretRecord::new_keychain(
+                                    name,
+                                    SecretKind::Internal {
+                                        purpose: InternalPurpose::GitHubPat,
+                                    },
+                                    current_unix_seconds(),
+                                );
+                                db.create_keychain_secret(
+                                    s.secret_store.as_ref(),
+                                    record,
+                                    &secret,
+                                    None,
+                                )
+                            }
+                        })
+                    });
+                    if let Some(res) = saved {
+                        match res {
+                            Ok(rec) => {
+                                let settings = s.ensure_project_settings_mut();
+                                settings.github_pat_id = Some(rec.id);
+                                settings.source_connected = false;
+                                settings.source_error = None;
+                            }
+                            Err(err) => {
+                                s.project_settings_error =
+                                    Some(format!("Could not save GitHub token in Keychain: {err}"));
+                                return;
+                            }
+                        }
+                    }
                 }
                 s.project_settings_error = None;
                 s.project_settings_feedback =
-                    Some("Saved personal access token for this project.".to_owned());
+                    Some("Saved personal access token in Keychain for this project.".to_owned());
                 s.persist_active_project_settings();
+                s.refresh_secrets_state();
                 ok = true;
             }
             Err(err) => {
@@ -7717,6 +8591,28 @@ pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
         }
     });
     ok
+}
+
+/// Selects a reusable named App-level GitHub PAT for the active project.
+pub(crate) fn select_project_github_pat(secret_id: &str) {
+    state().update(|s| {
+        let last4 = s
+            .secrets
+            .iter()
+            .find(|r| r.id == secret_id)
+            .and_then(|r| r.preview.as_deref())
+            .map(|p| p.trim_start_matches('…').to_owned());
+        let settings = s.ensure_project_settings_mut();
+        settings.github_auth_mode = IssueSourceAuthMode::PersonalToken;
+        settings.github_pat_id = Some(secret_id.to_owned());
+        settings.github_token_last4 = last4;
+        settings.source_connected = false;
+        settings.source_error = None;
+        s.project_settings_error = None;
+        s.project_settings_feedback = Some("Selected GitHub personal access token.".to_owned());
+        s.persist_active_project_settings();
+        s.refresh_secrets_state();
+    });
 }
 
 pub(crate) fn use_project_github_cli() {
@@ -8006,11 +8902,14 @@ pub(crate) fn toggle_project_auto_reload_workflows() {
 }
 
 pub(crate) fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bool {
+    if is_secret {
+        return create_project_keychain_secret(key, value, Exposure::McpOnly);
+    }
     let mut added = false;
     state().update(|s| {
         match s
             .ensure_project_settings_mut()
-            .add_env_var(key, value, is_secret)
+            .add_env_var(key, value, false)
         {
             Ok(_) => {
                 s.project_settings_error = None;
@@ -9388,11 +10287,15 @@ fn spawn_real_workflow_run(
             antigravity_binary,
         } = s.provider_launch();
 
-        let github_auth = s.resolve_github_auth_for_project(project_name).ok();
         let github_repo = if settings.github_repo.trim().is_empty() {
             None
         } else {
             Some(settings.github_repo.clone())
+        };
+        let secret_resolver = if s.demo_mode {
+            None
+        } else {
+            Some(Arc::clone(&s.secret_resolver))
         };
 
         let project_env = s.agent_env(Some(&settings));
@@ -9426,7 +10329,9 @@ fn spawn_real_workflow_run(
                 inputs,
                 issue_number,
                 github_repo,
-                github_auth,
+                github_auth: None,
+                github_auth_mode: settings.github_auth_mode,
+                github_pat_secret_id: settings.github_pat_id.clone(),
                 default_provider: settings.default_provider,
                 default_sandbox: settings.sandbox_mode,
                 model_override: if settings.model_override.trim().is_empty() {
@@ -9457,6 +10362,7 @@ fn spawn_real_workflow_run(
                 link_pr_closes_issue: settings.link_pr_closes_issue,
                 project_env,
                 mcp: s.mcp_sources(&project.root_path, Some(&settings)),
+                secret_resolver,
                 runtime_root,
                 budget_limit_cents: settings.per_run_budget_cents,
             },
@@ -9521,6 +10427,7 @@ fn spawn_real_workflow_run(
     let control_for_gates = control;
     Owner::detached().run(|| {
         spawn(async move {
+            let mut preflight_secret_problem: Option<SecretProblem> = None;
             loop {
                 let rx_clone = rx_shared.clone();
                 let next_event = spawn_blocking_task(move || {
@@ -9559,6 +10466,31 @@ fn spawn_real_workflow_run(
                         state()
                             .update(|s| cleared = s.clear_ready_mcp_servers(&proj_name, servers));
                         close_notifications(cleared);
+                    }
+                    RunnerEvent::SecretProblem {
+                        step_index,
+                        step_title,
+                        problem,
+                    } => {
+                        if (step_index.is_none() || *step_index == Some(0))
+                            && preflight_secret_problem.is_none()
+                        {
+                            preflight_secret_problem = Some(problem.clone());
+                        }
+                        let mut notification = None;
+                        state().update(|s| {
+                            notification = s.file_secret_problem(
+                                McpProblemContext {
+                                    project_name: &proj_name,
+                                    context_label: wf_name.clone(),
+                                    where_label: format!("Step '{step_title}'"),
+                                    run_number,
+                                    provider: ProviderKind::Claude,
+                                },
+                                problem,
+                            );
+                        });
+                        post_mcp_notifications(notification.into_iter().collect());
                     }
                     _ => {}
                 }
@@ -9700,8 +10632,39 @@ fn spawn_real_workflow_run(
                             entry.recent_runs.truncate(5);
                         }
 
+                        s.flush_secret_resolver_updates();
                         if let Some(issue_no) = issue_number {
-                            finished_issue_cleanup = Some(issue_no);
+                            if status == RunExecutionState::Failed
+                                && let Some(ref prob) = preflight_secret_problem
+                            {
+                                let reason = prob.title();
+                                let queue = s.ensure_queue_mut(&proj_name);
+                                queue.hold_item_for_setup(issue_no, &reason);
+                                s.persist_work_queue_by_name(&proj_name);
+                                let resume_problem = SecretProblem {
+                                    project_id: Some(project_id),
+                                    secret_id: prob.secret_id.clone(),
+                                    secret_name: prob.secret_name.clone(),
+                                    manager_id: prob.manager_id.clone(),
+                                    reason: format!(
+                                        "Queued work for {proj_name} is held in Needs Setup ({reason}). Fix the secret, then resume queued work."
+                                    ),
+                                    fix: SecretFix::ResumeQueuedWork { project_id },
+                                    blocking: true,
+                                };
+                                let _ = s.file_secret_problem(
+                                    McpProblemContext {
+                                        project_name: &proj_name,
+                                        context_label: wf_name.clone(),
+                                        where_label: format!("Issue #{issue_no}"),
+                                        run_number,
+                                        provider: ProviderKind::Claude,
+                                    },
+                                    &resume_problem,
+                                );
+                            } else {
+                                finished_issue_cleanup = Some(issue_no);
+                            }
                         }
                         s.status_message = Some(summary.clone());
                     }
@@ -9725,6 +10688,1321 @@ fn spawn_real_workflow_run(
     true
 }
 
+// --- Secrets & Secret Managers ----------------------------------------------------------
+
+/// Summary of an inherited App secret as seen from the active project.
+#[derive(Debug, Clone)]
+pub(crate) struct InheritedAppSecretView {
+    pub(crate) record: SecretRecord,
+    pub(crate) excluded: bool,
+    pub(crate) overridden: bool,
+}
+
+/// Summary of a `${VAR}` required by any MCP server in the active project.
+#[derive(Debug, Clone)]
+pub(crate) struct NeededMcpVarView {
+    pub(crate) name: String,
+    pub(crate) servers: Vec<String>,
+    pub(crate) status: NeededMcpVarStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NeededMcpVarStatus {
+    ProjectSecret {
+        source_label: String,
+        needs_value: bool,
+    },
+    AppSecret {
+        source_label: String,
+        needs_value: bool,
+    },
+    PlainVar,
+    ExcludedAppSecret,
+    Missing,
+}
+
+pub(crate) fn secrets_store_status() -> StoreStatus {
+    state().with(|s| s.secrets_store_status.clone())
+}
+
+pub(crate) fn secrets_feedback() -> Option<String> {
+    state().with(|s| s.secrets_feedback.clone())
+}
+
+pub(crate) fn secrets_error() -> Option<String> {
+    state().with(|s| s.secrets_error.clone())
+}
+
+pub(crate) fn clear_secrets_messages() {
+    state().update(|s| {
+        s.secrets_feedback = None;
+        s.secrets_error = None;
+    });
+}
+
+pub(crate) fn secrets_test_in_progress() -> bool {
+    state().with(|s| s.secrets_test_in_progress)
+}
+
+pub(crate) fn secrets_test_result() -> Option<Result<String, String>> {
+    state().with(|s| s.secrets_test_result.clone())
+}
+
+pub(crate) fn db_path_change_pending() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    state().with(|s| s.db_path_change_pending.clone())
+}
+
+pub(crate) fn legacy_db_files_found() -> Vec<std::path::PathBuf> {
+    state().with(|s| s.legacy_db_files_found.clone())
+}
+
+pub(crate) fn take_secrets_prefill() -> (Option<String>, Option<EnvScope>) {
+    let mut out = (None, None);
+    state().update(|s| {
+        out = (
+            s.secrets_prefill_name.take(),
+            s.secrets_prefill_scope.take(),
+        );
+    });
+    out
+}
+
+pub(crate) fn app_env_secrets() -> Vec<SecretRecord> {
+    state().with(|s| {
+        s.secrets
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    SecretKind::Env {
+                        scope: EnvScope::App { .. },
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+pub(crate) fn github_pat_secrets() -> Vec<SecretRecord> {
+    state().with(|s| {
+        s.secrets
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::GitHubPat
+                    }
+                )
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+pub(crate) fn projects_using_github_pat(secret_id: &str) -> Vec<String> {
+    state().with(|s| {
+        s.project_settings
+            .values()
+            .filter(|ps| ps.github_pat_id.as_deref() == Some(secret_id))
+            .map(|ps| ps.project_name.clone())
+            .collect()
+    })
+}
+
+/// Projects' MCP servers (tracked + user + project extra) referencing a secret's env var name.
+pub(crate) fn mcp_servers_referencing_var(var_name: &str) -> Vec<String> {
+    state().with(|s| {
+        let mut names = BTreeSet::new();
+        for server in &s.preferences.extensions.mcp_servers {
+            if server.env_references().iter().any(|r| r == var_name) {
+                names.insert(format!("{} (all projects)", server.name));
+            }
+        }
+        for project in s.factory.projects() {
+            if let Some(config) = factory_core::mcp::load_project_mcp(&project.root_path).config() {
+                for server in &config.servers {
+                    if server.env_references().iter().any(|r| r == var_name) {
+                        names.insert(format!("{} ({})", server.name, project.name));
+                    }
+                }
+            }
+            if let Some(ps) = s.project_settings.get(&project.name) {
+                for server in &ps.mcp_servers {
+                    if server.env_references().iter().any(|r| r == var_name) {
+                        names.insert(format!("{} ({})", server.name, project.name));
+                    }
+                }
+            }
+        }
+        names.into_iter().collect()
+    })
+}
+
+pub(crate) fn active_project_env_secrets() -> Vec<SecretRecord> {
+    state().with(|s| {
+        let pname = s.selected_project_name();
+        let Some(pid) = s.project_id_by_name(&pname) else {
+            return Vec::new();
+        };
+        s.secrets
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    SecretKind::Env {
+                        scope: EnvScope::Project(id),
+                        ..
+                    } if id == pid
+                )
+            })
+            .cloned()
+            .collect()
+    })
+}
+
+pub(crate) fn active_project_inherited_app_secrets() -> Vec<InheritedAppSecretView> {
+    state().with(|s| {
+        let pname = s.selected_project_name();
+        let Some(pid) = s.project_id_by_name(&pname) else {
+            return Vec::new();
+        };
+        let settings = s.project_settings.get(&pname);
+        let excluded_ids = settings
+            .map(|ps| ps.excluded_app_secrets.clone())
+            .unwrap_or_default();
+        let project_secret_names: BTreeSet<String> = s
+            .secrets
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.kind,
+                    SecretKind::Env {
+                        scope: EnvScope::Project(id),
+                        ..
+                    } if id == pid
+                )
+            })
+            .map(|r| r.name.to_ascii_uppercase())
+            .collect();
+
+        s.secrets
+            .iter()
+            .filter_map(|r| match &r.kind {
+                SecretKind::Env {
+                    scope: EnvScope::App { shared_with },
+                    ..
+                } if shared_with.includes_project(pid) => Some(InheritedAppSecretView {
+                    record: r.clone(),
+                    excluded: excluded_ids.contains(&r.id),
+                    overridden: project_secret_names.contains(&r.name.to_ascii_uppercase()),
+                }),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+/// Returns `${VAR}` names needed by any MCP server in the active project and their resolution status.
+pub(crate) fn active_project_needed_mcp_vars() -> Vec<NeededMcpVarView> {
+    state().with(|s| {
+        let pname = s.selected_project_name();
+        let pid = s.project_id_by_name(&pname);
+        let settings = s.project_settings.get(&pname);
+        let project_root = s.project_root_by_name(&pname);
+        let mut by_var: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        if let Some(root) = project_root
+            && let Some(config) = factory_core::mcp::load_project_mcp(&root).config()
+        {
+            for server in &config.servers {
+                if !server.disabled {
+                    for var in server.env_references() {
+                        by_var.entry(var).or_default().push(server.name.clone());
+                    }
+                }
+            }
+        }
+        if let Some(ps) = settings {
+            for server in &ps.mcp_servers {
+                if !server.disabled {
+                    for var in server.env_references() {
+                        by_var.entry(var).or_default().push(server.name.clone());
+                    }
+                }
+            }
+        }
+        for server in &s.preferences.extensions.mcp_servers {
+            if !server.disabled {
+                for var in server.env_references() {
+                    by_var.entry(var).or_default().push(server.name.clone());
+                }
+            }
+        }
+
+        let excluded_ids = settings
+            .map(|ps| ps.excluded_app_secrets.clone())
+            .unwrap_or_default();
+        let plain_names: BTreeSet<String> = settings
+            .map(|ps| {
+                ps.env_vars
+                    .iter()
+                    .filter(|v| !v.is_secret && !v.key.trim().is_empty())
+                    .map(|v| v.key.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        by_var
+            .into_iter()
+            .map(|(name, mut servers)| {
+                servers.sort();
+                servers.dedup();
+                let status = if let Some(pid) = pid
+                    && let Some(rec) = s.secrets.iter().find(|r| {
+                        matches!(
+                            r.kind,
+                            SecretKind::Env {
+                                scope: EnvScope::Project(id),
+                                ..
+                            } if id == pid
+                        ) && r.name.eq_ignore_ascii_case(&name)
+                    }) {
+                    NeededMcpVarStatus::ProjectSecret {
+                        source_label: rec.source.badge_label().to_owned(),
+                        needs_value: rec.state == SecretState::NeedsValue,
+                    }
+                } else if let Some(pid) = pid
+                    && let Some(rec) = s.secrets.iter().find(|r| {
+                        matches!(
+                            &r.kind,
+                            SecretKind::Env {
+                                scope: EnvScope::App { shared_with },
+                                ..
+                            } if shared_with.includes_project(pid)
+                        ) && r.name.eq_ignore_ascii_case(&name)
+                    })
+                {
+                    if excluded_ids.contains(&rec.id) {
+                        NeededMcpVarStatus::ExcludedAppSecret
+                    } else {
+                        NeededMcpVarStatus::AppSecret {
+                            source_label: rec.source.badge_label().to_owned(),
+                            needs_value: rec.state == SecretState::NeedsValue,
+                        }
+                    }
+                } else if plain_names.contains(&name) {
+                    NeededMcpVarStatus::PlainVar
+                } else {
+                    NeededMcpVarStatus::Missing
+                };
+                NeededMcpVarView {
+                    name,
+                    servers,
+                    status,
+                }
+            })
+            .collect()
+    })
+}
+
+/// Checks if a `${VAR}` referenced by a project MCP server currently resolves to an inherited App secret.
+pub(crate) fn var_resolves_to_inherited_app_secret(var_name: &str) -> bool {
+    state().with(|s| {
+        let pname = s.selected_project_name();
+        let Some(pid) = s.project_id_by_name(&pname) else {
+            return false;
+        };
+        let has_proj = s.secrets.iter().any(|r| {
+            matches!(
+                r.kind,
+                SecretKind::Env {
+                    scope: EnvScope::Project(id),
+                    ..
+                } if id == pid
+            ) && r.name.eq_ignore_ascii_case(var_name)
+        });
+        if has_proj {
+            return false;
+        }
+        let excluded = s
+            .project_settings
+            .get(&pname)
+            .map(|ps| ps.excluded_app_secrets.clone())
+            .unwrap_or_default();
+        s.secrets.iter().any(|r| {
+            matches!(
+                &r.kind,
+                SecretKind::Env {
+                    scope: EnvScope::App { shared_with },
+                    ..
+                } if shared_with.includes_project(pid)
+            ) && !excluded.contains(&r.id)
+                && r.name.eq_ignore_ascii_case(var_name)
+        })
+    })
+}
+
+pub(crate) fn create_app_keychain_secret(
+    name: &str,
+    raw_value: &str,
+    sharing: Sharing,
+    exposure: Exposure,
+) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.secrets_error = Some("Disable Demo Mode to add real Keychain secrets.".to_owned());
+            return;
+        }
+        let trimmed = name.trim();
+        let record = SecretRecord::new_keychain(
+            trimmed,
+            SecretKind::Env {
+                scope: EnvScope::App {
+                    shared_with: sharing,
+                },
+                exposure,
+            },
+            current_unix_seconds(),
+        );
+        let secret = SecretString::from(raw_value.to_owned());
+        let Some(db_arc) = s.db.as_ref() else {
+            s.secrets_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc
+            .lock()
+            .ok()
+            .map(|db| db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None));
+        match res {
+            Some(Ok(saved)) => {
+                let cleared = s.inbox.clear_secret_problems(|p| {
+                    p.secret_name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&saved.name))
+                });
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.secrets_error = None;
+                s.secrets_feedback =
+                    Some(format!("Saved app secret '{}' in Keychain.", saved.name));
+                s.refresh_secrets_state();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.secrets_feedback = None;
+                s.secrets_error = Some(err.to_string());
+            }
+            None => {
+                s.secrets_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn create_app_manager_secret(
+    name: &str,
+    manager_id: &str,
+    reference: &str,
+    sharing: Sharing,
+    exposure: Exposure,
+) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.secrets_error = Some("Disable Demo Mode to add secret references.".to_owned());
+            return;
+        }
+        let record = SecretRecord::new_manager_ref(
+            name.trim(),
+            SecretKind::Env {
+                scope: EnvScope::App {
+                    shared_with: sharing,
+                },
+                exposure,
+            },
+            manager_id.trim(),
+            reference.trim(),
+            current_unix_seconds(),
+        );
+        let Some(db_arc) = s.db.as_ref() else {
+            s.secrets_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc
+            .lock()
+            .ok()
+            .map(|db| db.create_manager_secret(record));
+        match res {
+            Some(Ok(saved)) => {
+                let cleared = s.inbox.clear_secret_problems(|p| {
+                    p.secret_name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&saved.name))
+                });
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.secrets_error = None;
+                s.secrets_feedback = Some(format!("Saved manager secret '{}'.", saved.name));
+                s.refresh_secrets_state();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.secrets_feedback = None;
+                s.secrets_error = Some(err.to_string());
+            }
+            None => {
+                s.secrets_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn create_project_keychain_secret(
+    name: &str,
+    raw_value: &str,
+    exposure: Exposure,
+) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.project_settings_error =
+                Some("Disable Demo Mode to add real Keychain secrets.".to_owned());
+            return;
+        }
+        let pname = s.selected_project_name();
+        let Some(pid) = s.project_id_by_name(&pname) else {
+            s.project_settings_error = Some("No persisted project selected.".to_owned());
+            return;
+        };
+        let record = SecretRecord::new_keychain(
+            name.trim(),
+            SecretKind::Env {
+                scope: EnvScope::Project(pid),
+                exposure,
+            },
+            current_unix_seconds(),
+        );
+        let secret = SecretString::from(raw_value.to_owned());
+        let Some(db_arc) = s.db.as_ref() else {
+            s.project_settings_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc.lock().ok().map(|db| {
+            db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, Some(&pname))
+        });
+        match res {
+            Some(Ok(saved)) => {
+                let cleared = s.inbox.clear_secret_problems(|p| {
+                    p.secret_name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&saved.name))
+                });
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.project_settings_error = None;
+                s.project_settings_feedback =
+                    Some(format!("Saved secret '{}' in Keychain.", saved.name));
+                s.refresh_secrets_state();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.project_settings_feedback = None;
+                s.project_settings_error = Some(err.to_string());
+            }
+            None => {
+                s.project_settings_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn create_project_manager_secret(
+    name: &str,
+    manager_id: &str,
+    reference: &str,
+    exposure: Exposure,
+) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.project_settings_error =
+                Some("Disable Demo Mode to add secret references.".to_owned());
+            return;
+        }
+        let pname = s.selected_project_name();
+        let Some(pid) = s.project_id_by_name(&pname) else {
+            s.project_settings_error = Some("No persisted project selected.".to_owned());
+            return;
+        };
+        let record = SecretRecord::new_manager_ref(
+            name.trim(),
+            SecretKind::Env {
+                scope: EnvScope::Project(pid),
+                exposure,
+            },
+            manager_id.trim(),
+            reference.trim(),
+            current_unix_seconds(),
+        );
+        let Some(db_arc) = s.db.as_ref() else {
+            s.project_settings_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc
+            .lock()
+            .ok()
+            .map(|db| db.create_manager_secret(record));
+        match res {
+            Some(Ok(saved)) => {
+                let cleared = s.inbox.clear_secret_problems(|p| {
+                    p.secret_name
+                        .as_deref()
+                        .is_some_and(|n| n.eq_ignore_ascii_case(&saved.name))
+                });
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.project_settings_error = None;
+                s.project_settings_feedback =
+                    Some(format!("Saved manager secret '{}'.", saved.name));
+                s.refresh_secrets_state();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.project_settings_feedback = None;
+                s.project_settings_error = Some(err.to_string());
+            }
+            None => {
+                s.project_settings_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn create_github_pat_secret(name: &str, raw_token: &str) -> Option<SecretId> {
+    let mut created = None;
+    state().update(|s| {
+        if s.demo_mode {
+            s.secrets_error = Some("Disable Demo Mode to save real GitHub tokens.".to_owned());
+            return;
+        }
+        let trimmed = name.trim();
+        let record = SecretRecord::new_keychain(
+            trimmed,
+            SecretKind::Internal {
+                purpose: InternalPurpose::GitHubPat,
+            },
+            current_unix_seconds(),
+        );
+        let secret = SecretString::from(raw_token.trim().to_owned());
+        let Some(db_arc) = s.db.as_ref() else {
+            s.secrets_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc
+            .lock()
+            .ok()
+            .map(|db| db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None));
+        match res {
+            Some(Ok(saved)) => {
+                created = Some(saved.id.clone());
+                s.secrets_error = None;
+                s.secrets_feedback =
+                    Some(format!("Saved GitHub PAT '{}' in Keychain.", saved.name));
+                s.refresh_secrets_state();
+            }
+            Some(Err(err)) => {
+                s.secrets_feedback = None;
+                s.secrets_error = Some(err.to_string());
+            }
+            None => {
+                s.secrets_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    created
+}
+
+pub(crate) fn replace_secret_value(id: &str, new_value: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.secrets_error = Some("Disable Demo Mode to modify Keychain secrets.".to_owned());
+            return;
+        }
+        let proj_name = s
+            .secrets
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.project_id())
+            .and_then(|pid| s.factory.project(pid))
+            .map(|p| p.name.clone());
+        let secret = SecretString::from(new_value.to_owned());
+        let Some(db_arc) = s.db.as_ref() else {
+            s.secrets_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let res = db_arc.lock().ok().map(|db| {
+            db.replace_keychain_secret(s.secret_store.as_ref(), id, &secret, proj_name.as_deref())
+        });
+        match res {
+            Some(Ok(saved)) => {
+                let cleared = s
+                    .inbox
+                    .clear_secret_problems(|p| p.secret_id.as_deref() == Some(&saved.id));
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.secrets_error = None;
+                s.secrets_feedback = Some(format!("Updated '{}' in Keychain.", saved.name));
+                s.project_settings_error = None;
+                s.project_settings_feedback =
+                    Some(format!("Updated '{}' in Keychain.", saved.name));
+                s.refresh_secrets_state();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.secrets_feedback = None;
+                s.secrets_error = Some(err.to_string());
+                s.project_settings_error = Some(err.to_string());
+            }
+            None => {
+                s.secrets_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn update_secret_exposure(id: &str, exposure: Exposure) {
+    state().update(|s| {
+        if s.demo_mode {
+            return;
+        }
+        let Some(mut record) = s.secrets.iter().find(|r| r.id == id).cloned() else {
+            return;
+        };
+        if let SecretKind::Env {
+            exposure: ref mut exp,
+            ..
+        } = record.kind
+        {
+            *exp = exposure;
+        } else {
+            return;
+        }
+        let proj_name = record
+            .project_id()
+            .and_then(|pid| s.factory.project(pid))
+            .map(|p| p.name.clone());
+        let outcome = s.db.as_ref().and_then(|db_arc| {
+            db_arc.lock().ok().map(|db| {
+                db.update_secret_metadata(s.secret_store.as_ref(), record, proj_name.as_deref())
+            })
+        });
+        if let Some(res) = outcome {
+            match res {
+                Ok(saved) => {
+                    s.secrets_error = None;
+                    s.secrets_feedback = Some(format!(
+                        "Updated exposure for '{}' to {}.",
+                        saved.name,
+                        exposure.label()
+                    ));
+                    s.project_settings_error = None;
+                    s.project_settings_feedback = s.secrets_feedback.clone();
+                    s.refresh_secrets_state();
+                }
+                Err(err) => {
+                    s.secrets_error = Some(err.to_string());
+                    s.project_settings_error = Some(err.to_string());
+                }
+            }
+        }
+    });
+}
+
+pub(crate) fn update_app_secret_sharing(id: &str, sharing: Sharing) {
+    state().update(|s| {
+        if s.demo_mode {
+            return;
+        }
+        let Some(mut record) = s.secrets.iter().find(|r| r.id == id).cloned() else {
+            return;
+        };
+        if let SecretKind::Env {
+            scope: EnvScope::App {
+                shared_with: ref mut sh,
+            },
+            ..
+        } = record.kind
+        {
+            *sh = sharing;
+        } else {
+            return;
+        }
+        let outcome = s.db.as_ref().and_then(|db_arc| {
+            db_arc
+                .lock()
+                .ok()
+                .map(|db| db.update_secret_metadata(s.secret_store.as_ref(), record, None))
+        });
+        if let Some(res) = outcome {
+            match res {
+                Ok(saved) => {
+                    s.secrets_error = None;
+                    s.secrets_feedback = Some(format!("Updated sharing for '{}'.", saved.name));
+                    s.refresh_secrets_state();
+                }
+                Err(err) => {
+                    s.secrets_error = Some(err.to_string());
+                }
+            }
+        }
+    });
+}
+
+pub(crate) fn delete_secret_by_id(id: &str) {
+    state().update(|s| {
+        if s.demo_mode {
+            return;
+        }
+        let name = s
+            .secrets
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| id.to_owned());
+        let outcome = s.db.as_ref().and_then(|db_arc| {
+            db_arc
+                .lock()
+                .ok()
+                .map(|db| db.delete_secret(s.secret_store.as_ref(), id))
+        });
+        if let Some(res) = outcome {
+            match res {
+                Ok(_) => {
+                    // Unlink from any project GitHub PAT reference.
+                    let affected_projects: Vec<String> = s
+                        .project_settings
+                        .iter()
+                        .filter(|(_, ps)| ps.github_pat_id.as_deref() == Some(id))
+                        .map(|(k, _)| k.clone())
+                        .collect();
+                    for pname in affected_projects {
+                        if let Some(ps) = s.project_settings.get_mut(&pname) {
+                            ps.github_pat_id = None;
+                            ps.github_token_last4 = None;
+                        }
+                        s.persist_project_settings_by_name(&pname);
+                    }
+                    s.secrets_error = None;
+                    s.secrets_feedback = Some(format!("Deleted secret '{name}'."));
+                    s.project_settings_error = None;
+                    s.project_settings_feedback = Some(format!("Deleted secret '{name}'."));
+                    s.refresh_secrets_state();
+                }
+                Err(err) => {
+                    s.secrets_error = Some(err.to_string());
+                    s.project_settings_error = Some(err.to_string());
+                }
+            }
+        }
+    });
+}
+
+pub(crate) fn toggle_project_exclude_app_secret(secret_id: &str) {
+    state().update(|s| {
+        let settings = s.ensure_project_settings_mut();
+        let excluded = if settings.excluded_app_secrets.contains(secret_id) {
+            settings.excluded_app_secrets.remove(secret_id);
+            false
+        } else {
+            settings.excluded_app_secrets.insert(secret_id.to_owned());
+            true
+        };
+        s.project_settings_error = None;
+        s.project_settings_feedback = Some(if excluded {
+            "Excluded app secret from this project.".to_owned()
+        } else {
+            "Re-included app secret in this project.".to_owned()
+        });
+        s.persist_active_project_settings();
+        s.refresh_secrets_state();
+    });
+}
+
+pub(crate) fn confirm_database_moved() {
+    state().update(|s| {
+        let outcome = s.db.as_ref().and_then(|db_arc| {
+            db_arc.lock().ok().map(|db| {
+                let res = db.confirm_database_moved();
+                if res.is_ok() {
+                    let _ = migrate_plaintext_secrets(&db, s.secret_store.as_ref(), false, false);
+                    let _ = db.sweep_secret_tombstones(s.secret_store.as_ref(), false);
+                }
+                res
+            })
+        });
+        if let Some(res) = outcome {
+            match res {
+                Ok(()) => {
+                    s.db_path_change_pending = None;
+                    s.secrets_error = None;
+                    s.secrets_feedback =
+                        Some("Confirmed database moved. Keychain bindings kept.".to_owned());
+                    let cleared = s
+                        .inbox
+                        .clear_secret_problems(|p| p.reason.contains("Database moved or cloned"));
+                    close_notifications(cleared);
+                    s.sync_inbox_selection_and_drafts();
+                    s.refresh_secrets_state();
+                }
+                Err(err) => {
+                    s.secrets_error = Some(format!("Could not update database path: {err}"));
+                }
+            }
+        }
+    });
+}
+
+pub(crate) fn confirm_database_cloned() {
+    state().update(|s| {
+        let outcome = s.db.as_ref().and_then(|db_arc| {
+            db_arc.lock().ok().map(|db| {
+                let res = db.confirm_database_cloned();
+                if res.is_ok() {
+                    let _ = migrate_plaintext_secrets(&db, s.secret_store.as_ref(), false, false);
+                }
+                res
+            })
+        });
+        if let Some(res) = outcome {
+            match res {
+                Ok(_) => {
+                    s.db_path_change_pending = None;
+                    s.secrets_error = None;
+                    s.secrets_feedback = Some(
+                        "Confirmed database cloned. Assigned a fresh Keychain namespace; re-enter Keychain values below."
+                            .to_owned(),
+                    );
+                    let cleared = s
+                        .inbox
+                        .clear_secret_problems(|p| p.reason.contains("Database moved or cloned"));
+                    close_notifications(cleared);
+                    s.sync_inbox_selection_and_drafts();
+                    s.refresh_secrets_state();
+                }
+                Err(err) => {
+                    s.secrets_error = Some(format!("Could not reset cloned database: {err}"));
+                }
+            }
+        }
+    });
+}
+
+pub(crate) fn delete_legacy_databases_now() {
+    state().update(|s| {
+        let paths = s.legacy_db_files_found.clone();
+        if paths.is_empty() {
+            return;
+        }
+        match delete_legacy_database_files(&paths) {
+            Ok(removed) => {
+                s.legacy_db_files_found.clear();
+                let cleared = s.inbox.clear_secret_problems(|p| {
+                    matches!(p.fix, SecretFix::DeleteLegacyDatabases { .. })
+                });
+                close_notifications(cleared);
+                s.sync_inbox_selection_and_drafts();
+                s.secrets_error = None;
+                s.secrets_feedback = Some(format!("Deleted {removed} legacy database file(s)."));
+            }
+            Err(err) => {
+                s.secrets_error = Some(format!("Could not delete legacy files: {err}"));
+            }
+        }
+    });
+}
+
+// --- 1Password & Generic Command Managers -----------------------------------------------
+
+pub(crate) fn set_one_password_enabled(enabled: bool) {
+    state().update(|s| {
+        s.preferences.secrets.one_password.enabled = enabled;
+        s.secrets_error = None;
+        s.secrets_feedback = Some(if enabled {
+            "1Password secret manager enabled.".to_owned()
+        } else {
+            "1Password secret manager disabled.".to_owned()
+        });
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_one_password_binary_path(path: &str) {
+    state().update(|s| {
+        let trimmed = path.trim();
+        s.preferences.secrets.one_password.binary_path = if trimmed.is_empty() {
+            "op".to_owned()
+        } else {
+            trimmed.to_owned()
+        };
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_one_password_auth_mode(mode: OnePasswordAuthMode) {
+    state().update(|s| {
+        s.preferences.secrets.one_password.auth_mode = mode;
+        s.secrets_error = None;
+        s.secrets_feedback = Some(format!("1Password auth mode set to {}.", mode.label()));
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_one_password_desktop_account(account: &str) {
+    state().update(|s| {
+        s.preferences.secrets.one_password.desktop_account = account.trim().to_owned();
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn set_one_password_service_account_token(raw_token: &str) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if s.demo_mode {
+            s.secrets_error = Some("Disable Demo Mode to save a 1Password token.".to_owned());
+            return;
+        }
+        let secret = SecretString::from(raw_token.trim().to_owned());
+        let Some(db_arc) = s.db.as_ref() else {
+            s.secrets_error = Some("Database unavailable.".to_owned());
+            return;
+        };
+        let existing_id = s
+            .preferences
+            .secrets
+            .one_password
+            .service_account_secret_id
+            .clone();
+        let res = db_arc.lock().ok().map(|db| {
+            if let Some(id) = existing_id.as_deref() {
+                db.replace_keychain_secret(s.secret_store.as_ref(), id, &secret, None)
+            } else {
+                let record = SecretRecord::new_keychain(
+                    "1Password Service Account Token",
+                    SecretKind::Internal {
+                        purpose: InternalPurpose::ManagerAuth {
+                            manager: ONE_PASSWORD_MANAGER_ID.to_owned(),
+                        },
+                    },
+                    current_unix_seconds(),
+                );
+                db.create_keychain_secret(s.secret_store.as_ref(), record, &secret, None)
+            }
+        });
+        match res {
+            Some(Ok(saved)) => {
+                s.preferences.secrets.one_password.service_account_secret_id = Some(saved.id);
+                s.secrets_error = None;
+                s.secrets_feedback =
+                    Some("Saved 1Password service account token in Keychain.".to_owned());
+                s.persist_preferences();
+                ok = true;
+            }
+            Some(Err(err)) => {
+                s.secrets_error = Some(err.to_string());
+            }
+            None => {
+                s.secrets_error = Some("Could not lock database.".to_owned());
+            }
+        }
+    });
+    ok
+}
+
+pub(crate) fn test_one_password_connection_async() {
+    let job = state().with_untracked(|s| {
+        if s.secrets_test_in_progress {
+            return None;
+        }
+        let cfg = s.preferences.secrets.one_password.clone();
+        let store = Arc::clone(&s.secret_store);
+        let db_id =
+            s.db.as_ref()
+                .and_then(|arc| arc.lock().ok())
+                .and_then(|db| db.ensure_db_instance_id().ok())
+                .unwrap_or_default();
+        Some((cfg, store, db_id))
+    });
+    let Some((cfg, store, db_id)) = job else {
+        return;
+    };
+    state().update(|s| {
+        s.secrets_test_in_progress = true;
+        s.secrets_test_result = None;
+    });
+    Owner::detached().run(|| {
+        spawn(async move {
+            let outcome = spawn_blocking_task(move || {
+                let mgr = OnePasswordManager::new(cfg, store, db_id);
+                let cancel = factory_core::CancellationToken::new();
+                match mgr.status(&cancel) {
+                    factory_core::ManagerStatus::Ready => {
+                        Ok("1Password CLI is ready and authenticated.".to_owned())
+                    }
+                    factory_core::ManagerStatus::Locked => {
+                        Err("1Password CLI is locked. Unlock 1Password or configure a service account token.".to_owned())
+                    }
+                    factory_core::ManagerStatus::NotInstalled => {
+                        Err("1Password CLI (`op`) was not found on PATH or at the configured binary path.".to_owned())
+                    }
+                    factory_core::ManagerStatus::AuthFailed(msg) => Err(if msg.is_empty() {
+                        "1Password authentication failed.".to_owned()
+                    } else {
+                        msg
+                    }),
+                }
+            })
+            .await;
+            state().update(|s| {
+                s.secrets_test_in_progress = false;
+                s.secrets_test_result = Some(outcome);
+            });
+        });
+    });
+}
+
+pub(crate) fn test_one_password_reference_async(reference: &str) {
+    let reference = reference.trim().to_owned();
+    let job = state().with_untracked(|s| {
+        if s.secrets_test_in_progress {
+            return None;
+        }
+        let cfg = s.preferences.secrets.one_password.clone();
+        let store = Arc::clone(&s.secret_store);
+        let db_id =
+            s.db.as_ref()
+                .and_then(|arc| arc.lock().ok())
+                .and_then(|db| db.ensure_db_instance_id().ok())
+                .unwrap_or_default();
+        Some((cfg, store, db_id))
+    });
+    let Some((cfg, store, db_id)) = job else {
+        return;
+    };
+    state().update(|s| {
+        s.secrets_test_in_progress = true;
+        s.secrets_test_result = None;
+    });
+    Owner::detached().run(|| {
+        spawn(async move {
+            let outcome = spawn_blocking_task(move || {
+                let mgr = OnePasswordManager::new(cfg, store, db_id);
+                let cancel = factory_core::CancellationToken::new();
+                mgr.test_reference(&reference, &cancel)
+                    .map(|()| format!("Reference '{reference}' resolved successfully."))
+                    .map_err(|failure| failure.to_problem(None).reason)
+            })
+            .await;
+            state().update(|s| {
+                s.secrets_test_in_progress = false;
+                s.secrets_test_result = Some(outcome);
+            });
+        });
+    });
+}
+
+pub(crate) fn upsert_command_manager(config: CommandManagerConfig) -> bool {
+    let mut ok = false;
+    state().update(|s| {
+        if config.id.trim().is_empty()
+            || config.name.trim().is_empty()
+            || config.program.trim().is_empty()
+        {
+            s.secrets_error =
+                Some("Manager ID, display name, and program are required.".to_owned());
+            return;
+        }
+        if config.id.eq_ignore_ascii_case("keychain")
+            || config.id.eq_ignore_ascii_case(ONE_PASSWORD_MANAGER_ID)
+        {
+            s.secrets_error =
+                Some("That manager ID is reserved for a built-in provider.".to_owned());
+            return;
+        }
+        let list = &mut s.preferences.secrets.command_managers;
+        match list.iter_mut().find(|m| m.id == config.id) {
+            Some(existing) => *existing = config.clone(),
+            None => list.push(config.clone()),
+        }
+        s.secrets_error = None;
+        s.secrets_feedback = Some(format!("Saved command manager '{}'.", config.name));
+        s.persist_preferences();
+        ok = true;
+    });
+    ok
+}
+
+pub(crate) fn remove_command_manager(id: &str) {
+    state().update(|s| {
+        let removed_auth: Vec<SecretId> = s
+            .preferences
+            .secrets
+            .command_managers
+            .iter()
+            .filter(|m| m.id == id)
+            .flat_map(|m| m.auth_env.values().cloned())
+            .collect();
+        s.preferences
+            .secrets
+            .command_managers
+            .retain(|m| m.id != id);
+        if !s.demo_mode
+            && let Some(db_arc) = s.db.as_ref()
+            && let Ok(db) = db_arc.lock()
+        {
+            for secret_id in removed_auth {
+                let _ = db.delete_secret(s.secret_store.as_ref(), &secret_id);
+            }
+        }
+        s.secrets_error = None;
+        s.secrets_feedback = Some(format!("Removed command manager '{id}'."));
+        s.persist_preferences();
+    });
+}
+
+pub(crate) fn available_secret_managers() -> Vec<(ManagerId, String)> {
+    state().with(|s| {
+        let mut out = Vec::new();
+        if s.preferences.secrets.one_password.enabled {
+            out.push((ONE_PASSWORD_MANAGER_ID.to_owned(), "1Password".to_owned()));
+        }
+        for mgr in &s.preferences.secrets.command_managers {
+            if mgr.enabled {
+                out.push((mgr.id.clone(), mgr.name.clone()));
+            }
+        }
+        out
+    })
+}
+
+/// Resumes all `NeedsSetup` items in the active (or specified) project's work queue.
+pub(crate) fn resume_queued_work_for_project(project_id: ProjectId) {
+    let mut resumed_issues = Vec::new();
+    state().update(|s| {
+        let Some(pname) = s.factory.project(project_id).map(|p| p.name.clone()) else {
+            return;
+        };
+        let queue = s.ensure_queue_mut(&pname);
+        resumed_issues = queue.resume_setup_held_items();
+        s.persist_work_queue_by_name(&pname);
+        let cleared = s.inbox.clear_secret_problems(|p| {
+            matches!(p.fix, SecretFix::ResumeQueuedWork { project_id: pid } if pid == project_id)
+        });
+        close_notifications(cleared);
+        s.sync_inbox_selection_and_drafts();
+        s.status_message = Some(format!(
+            "Resumed {} held issue(s) in {pname}.",
+            resumed_issues.len()
+        ));
+    });
+    if !resumed_issues.is_empty() {
+        sync_github_issues_for_active_project(false);
+    }
+}
+
+pub(crate) fn resume_work_queue_issue(issue_number: u32) {
+    state().update(|s| {
+        let pname = s.selected_project_name();
+        let queue = s.ensure_queue_mut(&pname);
+        if let Some(item) = queue
+            .items
+            .iter_mut()
+            .find(|i| i.issue_number == issue_number)
+            && item.stage == WorkQueueStage::NeedsSetup
+        {
+            item.stage = WorkQueueStage::ReadyForAgents;
+            item.status_text = "Queued".to_owned();
+        }
+        s.persist_work_queue_by_name(&pname);
+        s.status_message = Some(format!("Moved #{issue_number} back to Ready for agents."));
+    });
+}
+
+/// Dispatches a `SecretFix` action from Inbox items or inline run/chat banners.
+pub(crate) fn apply_secret_fix(project_name: Option<&str>, fix: &SecretFix) {
+    if let Some(name) = project_name {
+        state().update(|s| {
+            if let Some(project) = s.factory.projects().iter().find(|p| p.name == name) {
+                s.selected_project = Some(project.id);
+            }
+        });
+    }
+    match fix {
+        SecretFix::AddSecret { name, project_id } => {
+            state().update(|s| {
+                s.secrets_prefill_name = Some(name.clone());
+                s.secrets_prefill_scope = Some(match project_id {
+                    Some(pid) => EnvScope::Project(*pid),
+                    None => EnvScope::App {
+                        shared_with: Sharing::AllProjects,
+                    },
+                });
+            });
+            if project_id.is_some() {
+                open_project_settings_tab(ProjectSettingsTab::Environment);
+                state().update(|s| {
+                    s.project_settings_feedback = Some(format!(
+                        "Add secret '{name}' below so agents and MCP servers can use it."
+                    ));
+                });
+            } else {
+                open_preferences_tab(PreferencesTab::Secrets);
+                state().update(|s| {
+                    s.secrets_feedback = Some(format!("Add app secret '{name}' below."));
+                });
+            }
+        }
+        SecretFix::EditSecret(secret_id) => {
+            let scope_project = state().with_untracked(|s| {
+                s.secrets
+                    .iter()
+                    .find(|r| r.id == *secret_id)
+                    .and_then(|r| r.project_id())
+            });
+            if let Some(pid) = scope_project {
+                state().update(|s| s.selected_project = Some(pid));
+                open_project_settings_tab(ProjectSettingsTab::Environment);
+            } else {
+                open_preferences_tab(PreferencesTab::Secrets);
+            }
+        }
+        SecretFix::UnlockManager(mgr_id) | SecretFix::OpenManagerSettings(mgr_id) => {
+            open_preferences_tab(PreferencesTab::Secrets);
+            if mgr_id == ONE_PASSWORD_MANAGER_ID {
+                test_one_password_connection_async();
+            }
+        }
+        SecretFix::OpenSecretsSettings => {
+            open_preferences_tab(PreferencesTab::Secrets);
+        }
+        SecretFix::ResumeQueuedWork { project_id } => {
+            resume_queued_work_for_project(*project_id);
+        }
+        SecretFix::DeleteLegacyDatabases { .. } => {
+            delete_legacy_databases_now();
+        }
+        SecretFix::None => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -9742,6 +12020,8 @@ mod tests {
             ProjectDatabase::open(&db_path),
             Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
+            Arc::new(MemoryStore::new()),
+            Vec::new(),
         );
         assert!(!clean.demo_mode);
         assert!(clean.factory.projects().is_empty());
@@ -9761,6 +12041,8 @@ mod tests {
             ProjectDatabase::open(&db_path),
             Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
+            Arc::new(MemoryStore::new()),
+            Vec::new(),
         );
         assert!(demo.demo_mode);
         assert!(demo.using_sample_projects);
@@ -9792,6 +12074,8 @@ mod tests {
             ProjectDatabase::open(&db_path),
             Some(BrukHome::with_database_path(&db_path)),
             ClaudePathLookup::ExplicitPath(OsString::new()),
+            Arc::new(MemoryStore::new()),
+            Vec::new(),
         );
         assert!(!restored.demo_mode);
         assert!(!restored.using_sample_projects);

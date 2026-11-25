@@ -716,6 +716,12 @@ fn output_tab_view(
                     Some(run.project_name.clone()),
                 ));
             }
+            StepTranscriptEntry::SecretProblem { problem } => {
+                stream_col = stream_col.child(crate::ui::secrets::secret_problem_banner(
+                    problem.clone(),
+                    Some(run.project_name.clone()),
+                ));
+            }
             StepTranscriptEntry::UserSteering { message } => {
                 stream_col = stream_col.child(
                     view()

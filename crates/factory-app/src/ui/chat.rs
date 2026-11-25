@@ -1600,6 +1600,10 @@ fn chat_entry_view(row: ReadSignal<ChatEntryRow>) -> AnyElement {
             .ml(px(34.0))
             .child(crate::ui::mcp::mcp_problem_banner(problem, None))
             .into_element(),
+        ChatEntry::SecretProblem { problem } => view()
+            .ml(px(34.0))
+            .child(crate::ui::secrets::secret_problem_banner(problem, None))
+            .into_element(),
     }
 }
 

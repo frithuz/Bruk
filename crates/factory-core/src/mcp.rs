@@ -29,7 +29,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::preferences::ProviderKind;
+use crate::{
+    model::ProjectId,
+    preferences::ProviderKind,
+    secrets::{Exposure, ResolvedSecrets, SecretProblem, ValueOrigin},
+};
 
 /// The project's MCP file, relative to the repository root. Antigravity reads it on its own.
 pub const AGENTS_MCP_CONFIG_PATH: &str = ".agents/mcp_config.json";
@@ -944,6 +948,119 @@ pub fn resolve_mcp_servers(
     set
 }
 
+/// Preflight check backed by [`ResolvedSecrets`]:
+/// - Keeps `PATH` resolution wired strictly to plain `plain_path_env` + host `PATH`.
+/// - Existing secret records that failed to read (`resolved.failures`) ALWAYS block (never masked
+///   by `${VAR:-default}`), returning dedicated [`SecretProblem`]s.
+/// - Excluded / unshared secrets (`resolved.strip_from_child_env`) never fall through to host env.
+pub fn preflight_mcp_servers_with_secrets(
+    set: &mut ResolvedMcpSet,
+    resolved: &ResolvedSecrets,
+    plain_path_env: Option<&str>,
+    project_id: Option<ProjectId>,
+) -> Vec<SecretProblem> {
+    use secrecy::ExposeSecret;
+
+    type FailedMcpRecord = (String, McpOrigin, Vec<(String, McpFix, bool)>);
+    let mut secret_problems: Vec<SecretProblem> = Vec::new();
+    let mut failed_mcp: Vec<FailedMcpRecord> = Vec::new();
+
+    for server in &set.servers {
+        let mut reasons: Vec<(String, McpFix, bool)> = Vec::new();
+        let texts = server_texts(&server.def);
+        for var in server.def.env_references() {
+            // 1. Fail-stop: an existing secret record that failed to read ALWAYS blocks,
+            //    even if `${VAR:-default}` is present or the server is optional.
+            if let Some((_, failure)) = resolved
+                .failures
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&var))
+            {
+                let problem = failure.to_problem(project_id);
+                reasons.push((problem.reason.clone(), McpFix::None, true));
+                if !secret_problems
+                    .iter()
+                    .any(|p| p.dedupe_key() == problem.dedupe_key())
+                {
+                    secret_problems.push(problem);
+                }
+                continue;
+            }
+
+            let has_default = texts.iter().any(|t| reference_has_default(t, &var));
+
+            // 2. Exclusion barrier: excluded or unshared App secrets NEVER fall through to host env.
+            let is_stripped = resolved
+                .strip_from_child_env
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(&var));
+            let resolved_val = resolved
+                .values
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(&var))
+                .map(|(_, rv)| rv.value.expose_secret());
+            let present = if let Some(val) = resolved_val {
+                !val.is_empty()
+            } else if is_stripped {
+                false
+            } else {
+                std::env::var(&var).is_ok_and(|v| !v.is_empty())
+            };
+
+            if !has_default && !present {
+                let blocking = set.is_required(&server.def.name, Some(server.origin));
+                reasons.push((
+                    format!(
+                        "needs {var}, which isn't set. Add it in Project Settings › Environment & Secrets."
+                    ),
+                    McpFix::SetEnvVar(var.clone()),
+                    blocking,
+                ));
+            }
+        }
+        if let McpTransport::Stdio { command, .. } = &server.def.transport
+            && env_references(command).is_empty()
+            && !command_exists(command, plain_path_env)
+        {
+            let blocking = set.is_required(&server.def.name, Some(server.origin));
+            reasons.push((
+                format!(
+                    "runs '{command}', which isn't installed or isn't on the PATH agents get. Install it, or set PATH in Project Settings › Environment."
+                ),
+                McpFix::InstallCommand(command.clone()),
+                blocking,
+            ));
+        }
+        if !reasons.is_empty() {
+            failed_mcp.push((server.def.name.clone(), server.origin, reasons));
+        }
+    }
+
+    for (name, origin, reasons) in failed_mcp {
+        for (reason, fix, blocking) in reasons {
+            let fix = match (&fix, origin) {
+                (McpFix::InstallCommand(_), McpOrigin::ProjectExtra | McpOrigin::UserExtra) => {
+                    McpFix::EditExtra {
+                        origin,
+                        name: name.clone(),
+                    }
+                }
+                _ => fix,
+            };
+            set.problems.push(McpProblem {
+                server: Some(name.clone()),
+                origin: Some(origin),
+                reason,
+                fix,
+                blocking,
+            });
+        }
+        set.drop_server(&name);
+    }
+
+    secret_problems
+}
+
 /// Checks what Bruk can before starting the agent: `${VAR}`s that aren't set and commands
 /// that aren't on the `PATH`. Servers that fail are dropped from the set (the agent would only
 /// fail to start them) and recorded as problems.
@@ -1090,19 +1207,61 @@ pub struct CodexMcpDelivery {
     pub config_overrides: Vec<String>,
     /// Variables to set in Codex's own environment.
     pub env: BTreeMap<String, String>,
+    /// Keys in [`Self::env`] whose expanded value came from an `McpOnly` secret (not plain vars),
+    /// so `shell_environment_policy.exclude` strips only those from Codex's agent shell.
+    pub mcp_only_mapped_keys: BTreeSet<String>,
 }
 
-/// Translates the set for Codex. Servers Codex can't take (a `${VAR}` in a command, argument or
-/// URL; SSE; a header that mixes text and a variable other than `Bearer ${VAR}`) are dropped
-/// with a problem.
-pub fn codex_mcp_delivery(
+/// Translates the set for Codex with secret-exposure tracking and collision detection against
+/// existing plain / `AgentAndSteps` environment variables.
+pub fn codex_mcp_delivery_with_secrets(
     set: &mut ResolvedMcpSet,
-    lookup: &dyn Fn(&str) -> Option<String>,
+    resolved: &ResolvedSecrets,
+    existing_agent_env: &BTreeMap<String, String>,
 ) -> CodexMcpDelivery {
+    use secrecy::ExposeSecret;
+    let lookup = |key: &str| -> Option<String> {
+        if let Some((_, rv)) = resolved
+            .values
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        {
+            return Some(rv.value.expose_secret().to_owned());
+        }
+        if resolved
+            .strip_from_child_env
+            .iter()
+            .any(|k| k.eq_ignore_ascii_case(key))
+            || resolved
+                .failures
+                .keys()
+                .any(|k| k.eq_ignore_ascii_case(key))
+        {
+            return None;
+        }
+        std::env::var(key).ok()
+    };
+    let is_mcp_only_var = |var: &str| -> bool {
+        resolved
+            .values
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(var))
+            .is_some_and(|(_, rv)| {
+                rv.exposure == Exposure::McpOnly && matches!(rv.origin, ValueOrigin::Secret { .. })
+            })
+    };
+
     let mut delivery = CodexMcpDelivery::default();
     let mut unsupported: Vec<(String, McpOrigin, String)> = Vec::new();
     for server in &set.servers {
-        match codex_server_table(&server.def, lookup, &mut delivery.env) {
+        match codex_server_table_checked(
+            &server.def,
+            &lookup,
+            &is_mcp_only_var,
+            existing_agent_env,
+            &mut delivery.env,
+            &mut delivery.mcp_only_mapped_keys,
+        ) {
             Ok(table) => delivery
                 .config_overrides
                 .push(format!("mcp_servers.{}={table}", server.def.name)),
@@ -1128,10 +1287,58 @@ pub fn codex_mcp_delivery(
     delivery
 }
 
-fn codex_server_table(
+/// Translates the set for Codex. Servers Codex can't take (a `${VAR}` in a command, argument or
+/// URL; SSE; a header that mixes text and a variable other than `Bearer ${VAR}`) are dropped
+/// with a problem.
+pub fn codex_mcp_delivery(
+    set: &mut ResolvedMcpSet,
+    lookup: &dyn Fn(&str) -> Option<String>,
+) -> CodexMcpDelivery {
+    let mut delivery = CodexMcpDelivery::default();
+    let empty_agent_env = BTreeMap::new();
+    let no_mcp_only = |_: &str| false;
+    let mut unsupported: Vec<(String, McpOrigin, String)> = Vec::new();
+    for server in &set.servers {
+        match codex_server_table_checked(
+            &server.def,
+            lookup,
+            &no_mcp_only,
+            &empty_agent_env,
+            &mut delivery.env,
+            &mut delivery.mcp_only_mapped_keys,
+        ) {
+            Ok(table) => delivery
+                .config_overrides
+                .push(format!("mcp_servers.{}={table}", server.def.name)),
+            Err(reason) => unsupported.push((server.def.name.clone(), server.origin, reason)),
+        }
+    }
+    for (name, origin, reason) in unsupported {
+        let fix = match origin {
+            McpOrigin::Project(file) => McpFix::EditProjectFile(file),
+            _ => McpFix::EditExtra {
+                origin,
+                name: name.clone(),
+            },
+        };
+        set.push_problem(
+            Some(&name),
+            Some(origin),
+            format!("can't be used with Codex: {reason}"),
+            fix,
+        );
+        set.drop_server(&name);
+    }
+    delivery
+}
+
+fn codex_server_table_checked(
     def: &McpServerDef,
     lookup: &dyn Fn(&str) -> Option<String>,
+    is_mcp_only_var: &dyn Fn(&str) -> bool,
+    existing_agent_env: &BTreeMap<String, String>,
     process_env: &mut BTreeMap<String, String>,
+    mcp_only_mapped_keys: &mut BTreeSet<String>,
 ) -> Result<String, String> {
     let mut fields: Vec<String> = Vec::new();
     match &def.transport {
@@ -1155,26 +1362,39 @@ fn codex_server_table(
             ));
             let mut literal = Vec::new();
             let mut forwarded = Vec::new();
+            let mut staged_env: Vec<(String, String, bool)> = Vec::new();
             for (key, value) in env {
-                if env_references(value).is_empty() {
+                let refs = env_references(value);
+                if refs.is_empty() {
                     literal.push(format!("{}={}", toml_key(key), toml_string(value)));
                     continue;
                 }
-                // Codex forwards variables by name from its own environment: set the expanded
-                // value there under the server's key.
                 let expanded = expand_references(value, lookup)
                     .ok_or_else(|| format!("'{key}' refers to a variable that isn't set"))?;
-                match process_env.get(key) {
-                    Some(existing) if *existing != expanded => {
-                        return Err(format!(
-                            "another server sets {key} to a different value; Codex shares one environment between servers"
-                        ));
-                    }
-                    _ => {
-                        process_env.insert(key.clone(), expanded);
-                    }
+                // Reject collision with an existing plain / AgentAndSteps env var instead of clobbering it.
+                if let Some(existing) = existing_agent_env.get(key)
+                    && *existing != expanded
+                {
+                    return Err(format!(
+                        "env key '{key}' collides with a project/agent environment variable of the same name; Codex shares one environment"
+                    ));
                 }
+                if let Some(existing) = process_env.get(key)
+                    && *existing != expanded
+                {
+                    return Err(format!(
+                        "another server sets {key} to a different value; Codex shares one environment between servers"
+                    ));
+                }
+                let uses_mcp_only = refs.iter().any(|r| is_mcp_only_var(r));
+                staged_env.push((key.clone(), expanded, uses_mcp_only));
                 forwarded.push(toml_string(key));
+            }
+            for (key, expanded, uses_mcp_only) in staged_env {
+                process_env.insert(key.clone(), expanded);
+                if uses_mcp_only {
+                    mcp_only_mapped_keys.insert(key);
+                }
             }
             if !literal.is_empty() {
                 fields.push(format!("env={{{}}}", literal.join(",")));
@@ -1269,6 +1489,32 @@ pub fn antigravity_mcp_delivery(
     let file = sources.project.file();
     if file == Some(ProjectMcpFile::AgentsMcpConfig) && !set.project_trusted {
         delivery.deny_all_mcp = true;
+    }
+    // Antigravity (`agy` v1.5.16) launches enabled `.agents/mcp_config.json` servers on its own
+    // (even under `permissions.deny: ["mcp(*)"]`) and performs ZERO `${VAR}` expansion anywhere.
+    // Block before spawning `agy` whenever any enabled server in `.agents/mcp_config.json` uses `${VAR}`.
+    if let Some(config) = sources.project.config()
+        && config.file == ProjectMcpFile::AgentsMcpConfig
+    {
+        for server in config.servers.iter().filter(|s| !s.disabled) {
+            let refs = server.env_references();
+            if !refs.is_empty() {
+                set.problems.push(McpProblem {
+                    server: Some(server.name.clone()),
+                    origin: Some(McpOrigin::Project(ProjectMcpFile::AgentsMcpConfig)),
+                    reason: format!(
+                        "uses {} in .agents/mcp_config.json, which Antigravity does not expand and would send literally. Switch this step or chat to Claude or Codex.",
+                        refs.iter()
+                            .map(|r| format!("${{{r}}}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                    fix: McpFix::ChangeProvider,
+                    blocking: true,
+                });
+                set.drop_server(&server.name);
+            }
+        }
     }
     let mut not_delivered = Vec::new();
     for server in &set.servers {

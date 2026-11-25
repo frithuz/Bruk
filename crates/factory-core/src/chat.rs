@@ -15,18 +15,19 @@
 //! reads how the agent's context window is filled ([`query_chat_context`]).
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::{BufRead, BufReader, Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU32, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
 };
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
@@ -42,16 +43,22 @@ use crate::{
     mcp::{
         ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
         McpSourcesPolicy, ResolvedMcpSet, antigravity_log_failures, claude_init_failures,
-        codex_stderr_failure,
+        codex_stderr_failure, resolve_mcp_servers,
     },
     model::ProjectId,
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
     runner::terminate_pid,
+    secrets::{
+        CancellationToken, ChatSecretsCache, SecretProblem, SecretRedactor, SecretResolver,
+        StreamingRedactor,
+    },
     step_context::{
-        ISOLATED_CODEX_HOME_DIR, StepContextError, StepMcpScope, TemplateContext,
-        build_isolated_antigravity_spawn_plan, build_isolated_claude_spawn_plan,
-        build_isolated_codex_spawn_plan, compile_step_context, materialize_step_context,
+        ISOLATED_CODEX_HOME_DIR, StepContextError, StepMcpScope, StepSecretsDelivery,
+        TemplateContext, apply_antigravity_secrets_delivery, apply_claude_secrets_delivery,
+        apply_codex_secrets_delivery, build_isolated_antigravity_spawn_plan,
+        build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
+        materialize_step_context,
     },
 };
 
@@ -159,6 +166,8 @@ pub enum ChatEntry {
     },
     /// An MCP server that didn't reach the agent, shown as a banner with a way to fix it.
     McpProblem { problem: McpProblem },
+    /// A secret or secret manager failure surfaced as a banner with a direct fix action.
+    SecretProblem { problem: SecretProblem },
 }
 
 /// Where a chat's agent works.
@@ -710,6 +719,11 @@ impl ChatSession {
                     problem: problem.clone(),
                 });
             }
+            ChatEvent::SecretProblem(problem) => {
+                self.entries.push(ChatEntry::SecretProblem {
+                    problem: problem.clone(),
+                });
+            }
             ChatEvent::McpServersReady(_) => return delta,
             ChatEvent::ContextUsage(usage) => {
                 // Not activity: the chat keeps its place in the list.
@@ -1027,6 +1041,8 @@ pub enum ChatEvent {
     },
     /// An MCP server didn't reach the agent for this turn.
     McpProblem(McpProblem),
+    /// A secret or secret manager failed to resolve for this turn.
+    SecretProblem(SecretProblem),
     /// MCP servers that started for this turn, so earlier notifications about them can clear.
     McpServersReady(Vec<(String, McpOrigin)>),
     /// The turn ended: `Idle` when it succeeded.
@@ -1910,6 +1926,8 @@ pub enum ChatTurnError {
     StepContext(#[from] StepContextError),
     #[error("{0}")]
     Attachment(String),
+    #[error("{0}")]
+    Secret(String),
 }
 
 /// Everything one chat turn needs, resolved by the caller from the session, the project,
@@ -1917,6 +1935,7 @@ pub enum ChatTurnError {
 #[derive(Debug, Clone)]
 pub struct ChatTurnRequest {
     pub session_id: String,
+    pub project_id: ProjectId,
     pub provider: ProviderKind,
     pub agent: Option<String>,
     pub model: Option<String>,
@@ -1936,6 +1955,10 @@ pub struct ChatTurnRequest {
     pub catalog: BrukCatalog,
     pub project_model_override: Option<String>,
     pub project_env: BTreeMap<String, String>,
+    /// Optional off-UI-thread secret resolver.
+    pub secret_resolver: Option<Arc<SecretResolver>>,
+    /// Per-chat secret cache (10-min idle TTL, invalidated on `secrets_generation` bump).
+    pub secrets_cache: Option<Arc<Mutex<ChatSecretsCache>>>,
     /// MCP servers the chat's agent chooses from, gathered when the turn starts.
     pub mcp: McpSources,
     pub claude_binary: Option<PathBuf>,
@@ -1969,6 +1992,7 @@ pub struct ChatTurnControl {
 struct ChatTurnShared {
     stopped: AtomicBool,
     child_pid: AtomicU32,
+    cancel: CancellationToken,
 }
 
 impl ChatTurnControl {
@@ -1976,9 +2000,15 @@ impl ChatTurnControl {
         Self::default()
     }
 
-    /// Stops the turn, ending the provider process if it started.
+    /// Cooperative cancellation token wired to this chat turn's stop button.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.shared.cancel
+    }
+
+    /// Stops the turn, ending the provider process and any in-flight secret manager calls.
     pub fn stop(&self) {
         self.shared.stopped.store(true, Ordering::SeqCst);
+        self.shared.cancel.cancel();
         let pid = self.shared.child_pid.swap(0, Ordering::SeqCst);
         if pid > 0 {
             terminate_pid(pid);
@@ -2012,14 +2042,25 @@ enum ChatCommandPurpose {
 /// Builds the provider command for one chat turn. The message itself is written to the
 /// command's stdin, so it is never read as a flag or a prompt template.
 pub fn build_chat_turn_command(request: &ChatTurnRequest) -> Result<Command, ChatTurnError> {
-    build_chat_command(request, ChatCommandPurpose::Turn).map(|(cmd, _, _)| cmd)
+    build_chat_command(request, ChatCommandPurpose::Turn, &CancellationToken::new())
+        .map(|built| built.cmd)
 }
 
-/// The command for one chat turn, what to write to its stdin, and the MCP servers it gets.
+struct BuiltChatCommand {
+    cmd: Command,
+    stdin_text: String,
+    mcp: ResolvedMcpSet,
+    secret_problems: Vec<SecretProblem>,
+    redactor: Arc<SecretRedactor>,
+}
+
+/// The command for one chat turn, what to write to its stdin, the MCP servers it gets,
+/// any blocking secret problems, and the turn's redactor.
 fn build_chat_command(
     request: &ChatTurnRequest,
     purpose: ChatCommandPurpose,
-) -> Result<(Command, String, ResolvedMcpSet), ChatTurnError> {
+    cancel: &CancellationToken,
+) -> Result<BuiltChatCommand, ChatTurnError> {
     let attachments: Vec<ChatAttachment> = match purpose {
         ChatCommandPurpose::Turn => request
             .attachments
@@ -2046,6 +2087,99 @@ fn build_chat_command(
         outputs: Vec::new(),
         mcp: Vec::new(),
     };
+
+    // Resolve secrets off the UI thread when a SecretResolver is supplied.
+    let mut secret_problems: Vec<SecretProblem> = Vec::new();
+    let mut internal_secrets: Vec<SecretString> = Vec::new();
+    let mut provider_spawn_env: BTreeMap<String, String> = BTreeMap::new();
+    let resolved_secrets_opt = if let Some(resolver) = request.secret_resolver.as_ref() {
+        let resolved_agent = step
+            .agent
+            .as_deref()
+            .and_then(|a| request.catalog.resolve_agent(a).ok());
+        let policy = McpSourcesPolicy::All.stricter(
+            resolved_agent
+                .as_ref()
+                .map(|a| a.mcp_sources)
+                .unwrap_or_default(),
+        );
+        let allowlist: Vec<String> = resolved_agent
+            .as_ref()
+            .map(|a| a.mcp.clone())
+            .unwrap_or_default();
+        let preview_mcp = resolve_mcp_servers(&request.mcp, policy, &allowlist);
+        let mut referenced_vars = BTreeSet::new();
+        for srv in &preview_mcp.servers {
+            for var in srv.def.env_references() {
+                referenced_vars.insert(var);
+            }
+        }
+        let res = if let Some(cache_arc) = request.secrets_cache.as_ref() {
+            let mut guard = cache_arc.lock().expect("chat secrets cache lock poisoned");
+            resolver.resolve_for_execution(
+                request.project_id,
+                &referenced_vars,
+                true,
+                &mut *guard,
+                cancel,
+            )
+        } else {
+            let mut ephemeral = ChatSecretsCache::new();
+            resolver.resolve_for_execution(
+                request.project_id,
+                &referenced_vars,
+                true,
+                &mut ephemeral,
+                cancel,
+            )
+        };
+        for failure in res.failures.values() {
+            let problem = failure.to_problem(Some(request.project_id));
+            if !secret_problems
+                .iter()
+                .any(|p| p.dedupe_key() == problem.dedupe_key())
+            {
+                secret_problems.push(problem);
+            }
+        }
+
+        // Resolve Claude/Codex spawn-settings secret env vars.
+        let bindings = match request.provider {
+            ProviderKind::Claude => Some(&request.claude_settings.secret_env_vars),
+            ProviderKind::Codex => Some(&request.codex_settings.secret_env_vars),
+            _ => None,
+        };
+        if let Some(map) = bindings {
+            for (env_name, secret_id) in map {
+                match resolver.resolve_internal(secret_id, cancel) {
+                    Ok(secret) => {
+                        provider_spawn_env
+                            .insert(env_name.clone(), secret.expose_secret().to_owned());
+                        internal_secrets.push(secret);
+                    }
+                    Err(failure) => {
+                        let problem = failure.to_problem(Some(request.project_id));
+                        if !secret_problems
+                            .iter()
+                            .any(|p| p.dedupe_key() == problem.dedupe_key())
+                        {
+                            secret_problems.push(problem);
+                        }
+                    }
+                }
+            }
+        }
+
+        Some(res)
+    } else {
+        None
+    };
+
+    let redactor = Arc::new(match resolved_secrets_opt.as_ref() {
+        Some(res) => res.build_redactor_with_internals(internal_secrets.iter()),
+        None => SecretRedactor::empty(),
+    });
+
     let mut bundle = compile_step_context(
         &request.catalog,
         &step,
@@ -2057,8 +2191,18 @@ fn build_chat_command(
             sources: &request.mcp,
             policy: McpSourcesPolicy::All,
             env: &request.project_env,
+            resolved_secrets: resolved_secrets_opt.as_ref(),
+            project_id: Some(request.project_id),
         },
     )?;
+    for problem in &bundle.secret_problems {
+        if !secret_problems
+            .iter()
+            .any(|p| p.dedupe_key() == problem.dedupe_key())
+        {
+            secret_problems.push(problem.clone());
+        }
+    }
     // The access the user picked for this chat wins over the agent's default.
     bundle.provider = request.provider;
     bundle.sandbox = request.sandbox;
@@ -2088,6 +2232,11 @@ fn build_chat_command(
                 None,
                 &request.project_env,
             )?;
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                let delivery =
+                    StepSecretsDelivery::from_resolved(resolved, provider_spawn_env, true);
+                apply_claude_secrets_delivery(&mut plan, &delivery);
+            }
             let mut stdin_text = prompt;
             match purpose {
                 ChatCommandPurpose::Turn => {
@@ -2124,11 +2273,13 @@ fn build_chat_command(
                     plan.args.push("--no-session-persistence".to_owned());
                 }
             }
-            Ok((
-                plan.to_command(),
+            Ok(BuiltChatCommand {
+                cmd: plan.to_command(),
                 stdin_text,
-                materialized.bundle.mcp.clone(),
-            ))
+                mcp: materialized.bundle.mcp.clone(),
+                secret_problems,
+                redactor,
+            })
         }
         ProviderKind::Codex => {
             let binary = request
@@ -2143,6 +2294,16 @@ fn build_chat_command(
                 &materialized,
                 &request.project_env,
             )?;
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                let delivery =
+                    StepSecretsDelivery::from_resolved(resolved, provider_spawn_env, true);
+                apply_codex_secrets_delivery(
+                    &mut plan,
+                    &delivery,
+                    &request.codex_settings,
+                    &materialized.bundle.codex_mcp,
+                );
+            }
             if let Some(id) = resume {
                 plan.args.push("resume".to_owned());
                 plan.args.push(id.to_owned());
@@ -2159,7 +2320,13 @@ fn build_chat_command(
             }
             // `-`: read the prompt from stdin.
             plan.args.push("-".to_owned());
-            Ok((plan.to_command(), prompt, materialized.bundle.mcp.clone()))
+            Ok(BuiltChatCommand {
+                cmd: plan.to_command(),
+                stdin_text: prompt,
+                mcp: materialized.bundle.mcp.clone(),
+                secret_problems,
+                redactor,
+            })
         }
         ProviderKind::Antigravity => {
             let binary =
@@ -2176,6 +2343,11 @@ fn build_chat_command(
                 &materialized,
                 &request.project_env,
             );
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                // Antigravity NEVER receives McpOnly secrets (§7).
+                let delivery = StepSecretsDelivery::from_resolved(resolved, BTreeMap::new(), false);
+                apply_antigravity_secrets_delivery(&mut plan, &delivery);
+            }
             if let Some(dir) = attachments_dir.as_deref() {
                 plan.args.push(format!("--add-dir={dir}"));
             }
@@ -2195,11 +2367,13 @@ fn build_chat_command(
                 "event": "user",
                 "message": { "role": "user", "content": content },
             });
-            Ok((
-                plan.to_command(),
-                format!("{line}\n"),
-                materialized.bundle.mcp.clone(),
-            ))
+            Ok(BuiltChatCommand {
+                cmd: plan.to_command(),
+                stdin_text: format!("{line}\n"),
+                mcp: materialized.bundle.mcp.clone(),
+                secret_problems,
+                redactor,
+            })
         }
         ProviderKind::OpenRouter => Err(ChatTurnError::UnsupportedProvider(
             ProviderKind::OpenRouter.label(),
@@ -2266,7 +2440,37 @@ fn run_chat_turn(
         }
     }
 
-    let (mut cmd, stdin_text, mcp) = build_chat_command(request, ChatCommandPurpose::Turn)?;
+    let built = build_chat_command(
+        request,
+        ChatCommandPurpose::Turn,
+        control.cancellation_token(),
+    )?;
+    let BuiltChatCommand {
+        mut cmd,
+        stdin_text,
+        mcp,
+        secret_problems,
+        redactor,
+    } = built;
+    let mut secret_blocking: Vec<String> = Vec::new();
+    for problem in &secret_problems {
+        if problem.blocking {
+            secret_blocking.push(problem.title());
+        }
+        let _ = tx.send(ChatEvent::SecretProblem(problem.clone()));
+    }
+    if !secret_blocking.is_empty() {
+        return Ok((
+            ChatSessionStatus::Failed,
+            Some(truncate_chars(
+                &format!(
+                    "This turn cannot run due to a secret failure: {}",
+                    secret_blocking.join("; ")
+                ),
+                ERROR_MAX_CHARS,
+            )),
+        ));
+    }
     for problem in &mcp.problems {
         let _ = tx.send(ChatEvent::McpProblem(problem.clone()));
     }
@@ -2313,6 +2517,9 @@ fn run_chat_turn(
     let mut result_error: Option<String> = None;
     let mut last_error: Option<String> = None;
     let mut stray_output: Vec<String> = Vec::new();
+    // Rolling-tail streaming redactor so secrets split across Claude `--include-partial-messages`
+    // token deltas never appear unredacted in the live UI (§7).
+    let mut delta_redactor = StreamingRedactor::new(Arc::clone(&redactor));
     // Codex streams no token counts; its rollout file records one after each model request.
     // Claude's requests of this turn: the finished ones' tokens and the latest one's.
     let mut finished_requests = ChatTokenBreakdown::default();
@@ -2352,7 +2559,7 @@ fn run_chat_turn(
             if items.is_empty() {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() && !trimmed.starts_with('{') && stray_output.len() < 20 {
-                    stray_output.push(trimmed.to_owned());
+                    stray_output.push(redactor.redact(trimmed));
                 }
                 continue;
             }
@@ -2374,6 +2581,14 @@ fn run_chat_turn(
                 }
             }
             for item in items {
+                // Flush any buffered streaming delta tail before non-delta events.
+                if !matches!(item, ChatStreamItem::TextDelta(_)) {
+                    let flushed = delta_redactor.flush();
+                    if !flushed.is_empty() {
+                        saw_text = true;
+                        let _ = tx.send(ChatEvent::AssistantDelta { text: flushed });
+                    }
+                }
                 let event = match item {
                     ChatStreamItem::SessionStarted(session_id) => {
                         ChatEvent::ProviderSessionStarted { session_id }
@@ -2404,12 +2619,18 @@ fn run_chat_turn(
                         ChatEvent::TokenUse { tokens, scope }
                     }
                     ChatStreamItem::TextDelta(text) => {
+                        let safe = delta_redactor.push(&text);
+                        if safe.is_empty() {
+                            continue;
+                        }
                         saw_text = true;
-                        ChatEvent::AssistantDelta { text }
+                        ChatEvent::AssistantDelta { text: safe }
                     }
                     ChatStreamItem::Text(text) => {
                         saw_text = true;
-                        ChatEvent::AssistantMessage { text }
+                        ChatEvent::AssistantMessage {
+                            text: redactor.redact(&text),
+                        }
                     }
                     ChatStreamItem::ToolUse {
                         id,
@@ -2418,9 +2639,9 @@ fn run_chat_turn(
                         input,
                     } => ChatEvent::ToolStarted {
                         tool_id: id,
-                        verb,
-                        target,
-                        input,
+                        verb: redactor.redact(&verb),
+                        target: redactor.redact(&target),
+                        input: redactor.redact(&input),
                     },
                     ChatStreamItem::ToolResult {
                         id,
@@ -2430,10 +2651,12 @@ fn run_chat_turn(
                     } => ChatEvent::ToolFinished {
                         tool_id: id,
                         success: !is_error,
-                        detail,
-                        output,
+                        detail: redactor.redact(&detail),
+                        output: redactor.redact(&output),
                     },
-                    ChatStreamItem::Reasoning(text) => ChatEvent::Reasoning { text },
+                    ChatStreamItem::Reasoning(text) => ChatEvent::Reasoning {
+                        text: redactor.redact(&text),
+                    },
                     ChatStreamItem::Result {
                         text,
                         is_error,
@@ -2446,7 +2669,9 @@ fn run_chat_turn(
                                 cost_micros,
                             });
                         }
-                        let text = text.filter(|t| !t.trim().is_empty());
+                        let text = text
+                            .map(|t| redactor.redact(&t))
+                            .filter(|t| !t.trim().is_empty());
                         if is_error {
                             result_error = Some(
                                 text.unwrap_or_else(|| format!("{provider_label} turn failed")),
@@ -2462,13 +2687,17 @@ fn run_chat_turn(
                         }
                     }
                     ChatStreamItem::Error(message) => {
-                        last_error = Some(message);
+                        last_error = Some(redactor.redact(&message));
                         continue;
                     }
                 };
                 let _ = tx.send(event);
             }
         }
+    }
+    let trailing = delta_redactor.flush();
+    if !trailing.is_empty() {
+        let _ = tx.send(ChatEvent::AssistantDelta { text: trailing });
     }
 
     let exit = child.wait();
@@ -2483,7 +2712,7 @@ fn run_chat_turn(
     for line in raw_stderr.lines() {
         match codex_stderr_failure(line) {
             Some(failure) => late_failures.push(failure),
-            None => stderr_lines.push(line),
+            None => stderr_lines.push(redactor.redact(line)),
         }
     }
     let stderr_text = stderr_lines.join("\n");
@@ -2603,8 +2832,13 @@ pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatCon
 }
 
 fn query_claude_context(request: &ChatTurnRequest, now: i64) -> Result<ChatContextUsage, String> {
-    let (mut cmd, _, _) = build_chat_command(request, ChatCommandPurpose::ContextQuery)
-        .map_err(|err| err.to_string())?;
+    let mut cmd = build_chat_command(
+        request,
+        ChatCommandPurpose::ContextQuery,
+        &CancellationToken::new(),
+    )
+    .map_err(|err| err.to_string())?
+    .cmd;
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -3937,6 +4171,7 @@ mod tests {
         fs::create_dir_all(&repo).unwrap();
         ChatTurnRequest {
             session_id: "chat-1".to_owned(),
+            project_id: 1,
             provider,
             agent: Some("implementer".to_owned()),
             model: None,
@@ -3950,6 +4185,8 @@ mod tests {
             catalog: BrukCatalog::load_for_project(&repo),
             project_model_override: None,
             project_env: BTreeMap::new(),
+            secret_resolver: None,
+            secrets_cache: None,
             mcp: Default::default(),
             claude_binary: (provider == ProviderKind::Claude).then(|| binary.to_path_buf()),
             claude_default_model: None,

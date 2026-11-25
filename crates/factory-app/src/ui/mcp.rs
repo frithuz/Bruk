@@ -352,11 +352,33 @@ fn server_row(server: &McpServerDef, editable: Option<McpServerScope>) -> View {
         );
     let refs = server.env_references();
     if !refs.is_empty() {
+        let app_inherited: Vec<&String> = if editable.is_none() {
+            refs.iter()
+                .filter(|r| store::var_resolves_to_inherited_app_secret(r))
+                .collect()
+        } else {
+            Vec::new()
+        };
         details = details.child(
             text(format!("Needs {}", refs.join(", ")))
                 .text_size(px(11.0))
                 .text_color(palette::text_muted()),
         );
+        if !app_inherited.is_empty() {
+            let names = app_inherited
+                .into_iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ");
+            details = details.child(
+                text(format!(
+                    "Receives inherited app secret(s): {names} — review before approving"
+                ))
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::pill_warning_text()),
+            );
+        }
     }
     let mut row = view()
         .flex_row()
@@ -405,6 +427,7 @@ struct AddServerForm {
     target: Signal<String>,
     args: Signal<String>,
     pairs: Signal<String>,
+    secret_overrides: Signal<std::collections::BTreeMap<usize, bool>>,
 }
 
 impl AddServerForm {
@@ -415,6 +438,7 @@ impl AddServerForm {
             target: signal(String::new()),
             args: signal(String::new()),
             pairs: signal(String::new()),
+            secret_overrides: signal(std::collections::BTreeMap::new()),
         }
     }
 
@@ -423,6 +447,33 @@ impl AddServerForm {
         self.target.set(String::new());
         self.args.set(String::new());
         self.pairs.set(String::new());
+        self.secret_overrides.set(std::collections::BTreeMap::new());
+    }
+
+    fn effective_secret_lines(&self) -> std::collections::BTreeSet<usize> {
+        let target = self.target.get_untracked();
+        let is_url = target.trim().starts_with("http://") || target.trim().starts_with("https://");
+        let sep = if is_url { ':' } else { '=' };
+        let overrides = self.secret_overrides.get_untracked();
+        let mut out = std::collections::BTreeSet::new();
+        for (idx, line) in self.pairs.get_untracked().lines().enumerate() {
+            let trimmed = line.trim();
+            let Some((raw_k, raw_v)) = trimmed.split_once(sep) else {
+                continue;
+            };
+            let k = raw_k.trim();
+            let v = raw_v.trim();
+            if v.is_empty() || factory_core::contains_env_reference(v) {
+                continue;
+            }
+            let default_secret =
+                k.eq_ignore_ascii_case("authorization") || factory_core::looks_like_secret_key(k);
+            let is_secret = overrides.get(&idx).copied().unwrap_or(default_secret);
+            if is_secret {
+                out.insert(idx);
+            }
+        }
+        out
     }
 
     /// The form, or its Add Server button. Only opening and closing re-renders it, so typing
@@ -443,12 +494,14 @@ impl AddServerForm {
                 .into_element();
         }
         let save = move || {
-            if store::add_mcp_server(
+            let secret_lines = form.effective_secret_lines();
+            if store::add_mcp_server_with_secret_lines(
                 scope,
                 &form.name.get_untracked(),
                 &form.target.get_untracked(),
                 &form.args.get_untracked(),
                 &form.pairs.get_untracked(),
+                &secret_lines,
             ) {
                 form.clear();
                 form.open.set(false);
@@ -490,12 +543,99 @@ impl AddServerForm {
                 self.pairs,
                 true,
             ))
+            .child(dynamic(move || {
+                let target = form.target.get();
+                let is_url =
+                    target.trim().starts_with("http://") || target.trim().starts_with("https://");
+                let sep = if is_url { ':' } else { '=' };
+                let pairs_val = form.pairs.get();
+                let overrides = form.secret_overrides.get();
+                let mut rows = view().gap(px(4.0));
+                let mut any = false;
+                for (idx, line) in pairs_val.lines().enumerate() {
+                    let trimmed = line.trim();
+                    let Some((raw_k, raw_v)) = trimmed.split_once(sep) else {
+                        continue;
+                    };
+                    let k = raw_k.trim();
+                    let v = raw_v.trim();
+                    if v.is_empty() || factory_core::contains_env_reference(v) {
+                        continue;
+                    }
+                    any = true;
+                    let default_secret = k.eq_ignore_ascii_case("authorization")
+                        || factory_core::looks_like_secret_key(k);
+                    let is_secret = overrides.get(&idx).copied().unwrap_or(default_secret);
+                    rows =
+                        rows.child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(5.0))
+                                .bg(palette::card_inset_bg())
+                                .child(
+                                    text(format!(
+                                        "{k}: {}",
+                                        if is_secret {
+                                            "Store in Keychain as ${VAR} (MCP only)"
+                                        } else {
+                                            "Store as plain value"
+                                        }
+                                    ))
+                                    .text_size(px(11.0))
+                                    .text_color(palette::text_secondary()),
+                                )
+                                .child(
+                                    button()
+                                        .test_id(&format!("mcp-form-pair-secret-{idx}"))
+                                        .on_press(move || {
+                                            form.secret_overrides.update(|map| {
+                                                map.insert(idx, !is_secret);
+                                            });
+                                        })
+                                        .px(px(7.0))
+                                        .py(px(2.5))
+                                        .rounded(px(4.5))
+                                        .border_1()
+                                        .border_color(if is_secret {
+                                            palette::card_selected_border()
+                                        } else {
+                                            palette::border_color()
+                                        })
+                                        .bg(if is_secret {
+                                            palette::card_selected_bg()
+                                        } else {
+                                            palette::control_bg()
+                                        })
+                                        .child(
+                                            text(if is_secret {
+                                                "Secret: On"
+                                            } else {
+                                                "Secret: Off"
+                                            })
+                                            .text_size(px(10.5))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(if is_secret {
+                                                palette::link_blue()
+                                            } else {
+                                                palette::text_muted()
+                                            }),
+                                        ),
+                                ),
+                        );
+                }
+                if !any { view() } else { rows }
+            }))
             .child(
                 view()
                     .flex_row()
                     .justify_end()
                     .gap(px(8.0))
                     .child(small_button("mcp-form-cancel", "Cancel", move || {
+                        form.clear();
                         form.open.set(false);
                     }))
                     .child(

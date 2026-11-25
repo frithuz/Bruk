@@ -9,7 +9,7 @@
 //! - All transient step files are materialized outside the git checkout so `git status` stays clean
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
@@ -24,18 +24,21 @@ use crate::{
         ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings, build_claude_spawn_plan,
     },
     codex_settings::{
-        CODEX_DISABLE_UPDATE_CHECK_ARG, CodexSettingsError, CodexSpawnOptions, CodexSpawnPlan,
-        CodexSpawnSettings, build_codex_spawn_plan,
+        CODEX_DISABLE_UPDATE_CHECK_ARG, CodexSettingValue, CodexSettingsError, CodexSpawnOptions,
+        CodexSpawnPlan, CodexSpawnSettings, build_codex_spawn_plan,
     },
     definitions::{AgentTaskStepDef, AgentToolsPolicy, BrukCatalog, CatalogError, ResolvedAgent},
     mcp::{
         ANTIGRAVITY_LOG_FILE, AntigravityMcpDelivery, CODEX_DISABLE_APPS_ARG, CODEX_MCP_RUST_LOG,
         CodexMcpDelivery, McpSources, McpSourcesPolicy, ResolvedMcpSet, antigravity_mcp_delivery,
-        claude_mcp_config, claude_mcp_config_path, codex_mcp_delivery, preflight_mcp_servers,
+        claude_mcp_config, claude_mcp_config_path, codex_mcp_delivery,
+        codex_mcp_delivery_with_secrets, preflight_mcp_servers, preflight_mcp_servers_with_secrets,
         resolve_mcp_servers,
     },
+    model::ProjectId,
     preferences::ProviderKind,
     project_settings::ProjectSandboxMode,
+    secrets::{ResolvedSecrets, SecretProblem, is_ambient_credential_var_name},
 };
 
 /// Errors returned while compiling or materializing a step context bundle.
@@ -154,6 +157,50 @@ pub struct StepContextBundle {
     pub codex_mcp: CodexMcpDelivery,
     /// What Bruk does about MCP for Antigravity (when the provider is Antigravity).
     pub antigravity_mcp: AntigravityMcpDelivery,
+    /// Dedicated blocking secret problems encountered during MCP preflight.
+    pub secret_problems: Vec<SecretProblem>,
+}
+
+/// Secrets delivery policy applied on top of a provider spawn plan (§7 Delivery Matrix).
+#[derive(Debug, Clone, Default)]
+pub struct StepSecretsDelivery {
+    /// Plain + `AgentAndSteps` + (for Claude/Codex) referenced `McpOnly` env values.
+    pub env: BTreeMap<String, String>,
+    /// Resolved `Internal { purpose: ProviderSpawnEnv }` values for Claude / Codex spawn settings.
+    pub provider_spawn_env: BTreeMap<String, String>,
+    /// Variable names explicitly stripped via `env_remove` (excluded, unshared, unreferenced `McpOnly`,
+    /// `Internal` names, `GH_TOKEN`, `OP_SERVICE_ACCOUNT_TOKEN`, `OP_CONNECT_*`).
+    pub env_remove: BTreeSet<String>,
+    /// Names of `McpOnly` secrets injected for MCP servers (denied in Claude sandbox / Codex shell).
+    pub mcp_only_names: BTreeSet<String>,
+    /// Names of `AgentAndSteps` secrets allowed in agent shell (drives Codex `ignore_default_excludes`).
+    pub agent_and_steps_names: BTreeSet<String>,
+}
+
+impl StepSecretsDelivery {
+    pub fn from_resolved(
+        resolved: &ResolvedSecrets,
+        provider_spawn_env: BTreeMap<String, String>,
+        include_mcp_only_in_env: bool,
+    ) -> Self {
+        let env = if include_mcp_only_in_env {
+            resolved.full_agent_env()
+        } else {
+            resolved.agent_and_steps_env()
+        };
+        let mcp_only_names = resolved.mcp_only_secret_names();
+        let mut env_remove = resolved.strip_from_child_env.clone();
+        if !include_mcp_only_in_env {
+            env_remove.extend(mcp_only_names.iter().cloned());
+        }
+        Self {
+            env,
+            provider_spawn_env,
+            env_remove,
+            mcp_only_names,
+            agent_and_steps_names: resolved.agent_and_steps_secret_names(),
+        }
+    }
 }
 
 /// What a step chooses MCP servers from.
@@ -162,8 +209,12 @@ pub struct StepMcpScope<'a> {
     pub sources: &'a McpSources,
     /// The strictest `mcp_sources` of the workflow and composites around the step.
     pub policy: McpSourcesPolicy,
-    /// The environment the agent gets on top of Bruk's own, for `${VAR}`s.
+    /// Plain project environment variables (including `PATH`).
     pub env: &'a BTreeMap<String, String>,
+    /// Optional resolved secrets from [`crate::secrets::SecretResolver`].
+    pub resolved_secrets: Option<&'a ResolvedSecrets>,
+    /// Project id for attaching to [`SecretProblem`]s.
+    pub project_id: Option<ProjectId>,
 }
 
 impl StepMcpScope<'static> {
@@ -175,6 +226,8 @@ impl StepMcpScope<'static> {
             sources: SOURCES.get_or_init(McpSources::default),
             policy: McpSourcesPolicy::All,
             env: &ENV,
+            resolved_secrets: None,
+            project_id: None,
         }
     }
 }
@@ -187,8 +240,40 @@ pub struct MaterializedStepContext {
     pub instructions_file: Option<PathBuf>,
     pub claude_agents_file: Option<PathBuf>,
     pub codex_home_dir: Option<PathBuf>,
+    /// Ephemeral `0600` copies of Codex auth files created only when symlinking failed.
+    pub ephemeral_codex_auth_files: Vec<PathBuf>,
     /// The `--mcp-config` file for Claude, when the step has servers.
     pub claude_mcp_file: Option<PathBuf>,
+}
+
+impl MaterializedStepContext {
+    /// Unconditionally removes any ephemeral fallback copies of Codex auth credentials.
+    pub fn cleanup_ephemeral_codex_auth(&self) {
+        for path in &self.ephemeral_codex_auth_files {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+/// RAII guard ensuring ephemeral Codex auth copies are deleted when a workflow step ends.
+pub struct EphemeralCodexAuthGuard {
+    paths: Vec<PathBuf>,
+}
+
+impl EphemeralCodexAuthGuard {
+    pub fn for_context(ctx: &MaterializedStepContext) -> Self {
+        Self {
+            paths: ctx.ephemeral_codex_auth_files.clone(),
+        }
+    }
+}
+
+impl Drop for EphemeralCodexAuthGuard {
+    fn drop(&mut self) {
+        for path in &self.paths {
+            let _ = fs::remove_file(path);
+        }
+    }
 }
 
 /// Compiles the minimal [`StepContextBundle`] for one [`AgentTaskStepDef`].
@@ -367,15 +452,49 @@ pub fn compile_step_context(
     };
     let mut codex_mcp = CodexMcpDelivery::default();
     let mut antigravity_mcp = AntigravityMcpDelivery::default();
+    let mut secret_problems = Vec::new();
+    let plain_path = mcp_scope.env.get("PATH").map(String::as_str);
+
     match provider {
-        ProviderKind::Claude => preflight_mcp_servers(&mut mcp, &lookup),
+        ProviderKind::Claude => {
+            if let Some(resolved) = mcp_scope.resolved_secrets {
+                secret_problems = preflight_mcp_servers_with_secrets(
+                    &mut mcp,
+                    resolved,
+                    plain_path,
+                    mcp_scope.project_id,
+                );
+            } else {
+                preflight_mcp_servers(&mut mcp, &lookup);
+            }
+        }
         ProviderKind::Codex => {
-            preflight_mcp_servers(&mut mcp, &lookup);
-            codex_mcp = codex_mcp_delivery(&mut mcp, &lookup);
+            if let Some(resolved) = mcp_scope.resolved_secrets {
+                secret_problems = preflight_mcp_servers_with_secrets(
+                    &mut mcp,
+                    resolved,
+                    plain_path,
+                    mcp_scope.project_id,
+                );
+                let agent_env = resolved.agent_and_steps_env();
+                codex_mcp = codex_mcp_delivery_with_secrets(&mut mcp, resolved, &agent_env);
+            } else {
+                preflight_mcp_servers(&mut mcp, &lookup);
+                codex_mcp = codex_mcp_delivery(&mut mcp, &lookup);
+            }
         }
         ProviderKind::Antigravity => {
             antigravity_mcp = antigravity_mcp_delivery(&mut mcp, mcp_scope.sources, &allowlist);
-            preflight_mcp_servers(&mut mcp, &lookup);
+            if let Some(resolved) = mcp_scope.resolved_secrets {
+                secret_problems = preflight_mcp_servers_with_secrets(
+                    &mut mcp,
+                    resolved,
+                    plain_path,
+                    mcp_scope.project_id,
+                );
+            } else {
+                preflight_mcp_servers(&mut mcp, &lookup);
+            }
         }
         ProviderKind::OpenRouter => {}
     }
@@ -397,6 +516,7 @@ pub fn compile_step_context(
         mcp,
         codex_mcp,
         antigravity_mcp,
+        secret_problems,
     })
 }
 
@@ -477,6 +597,7 @@ pub fn materialize_step_context(
         None
     };
 
+    let mut ephemeral_codex_auth_files = Vec::new();
     let codex_home_dir = if bundle.provider == ProviderKind::Codex {
         let home = runtime_dir.join(ISOLATED_CODEX_HOME_DIR);
         fs::create_dir_all(&home).map_err(|source| StepContextError::CreateDir {
@@ -484,12 +605,17 @@ pub fn materialize_step_context(
             source,
         })?;
         if let Some(src_home) = source_codex_home {
-            // Copy ONLY auth credential files; never copy user AGENTS.md, skills/, or config.toml.
+            // Link ONLY auth credential files via symlink (never leave permanent plaintext copies;
+            // fall back to a 0600 ephemeral copy tracked for unconditional drop cleanup).
             for auth_file in ["auth.json", "credentials.json"] {
                 let src = src_home.join(auth_file);
                 if src.is_file() {
                     let dst = home.join(auth_file);
-                    let _ = fs::copy(&src, &dst);
+                    let _ = fs::remove_file(&dst);
+                    if !try_symlink_file(&src, &dst) && fs::copy(&src, &dst).is_ok() {
+                        set_owner_read_write_only(&dst);
+                        ephemeral_codex_auth_files.push(dst);
+                    }
                 }
             }
         }
@@ -519,6 +645,7 @@ pub fn materialize_step_context(
         instructions_file,
         claude_agents_file,
         codex_home_dir,
+        ephemeral_codex_auth_files,
         claude_mcp_file,
     })
 }
@@ -773,6 +900,8 @@ pub struct AntigravitySpawnPlan {
     pub working_dir: Option<PathBuf>,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Environment variable names explicitly removed from the spawned `agy` process.
+    pub env_remove: BTreeSet<String>,
     /// The step's agent and skills, which Antigravity can't take as a system prompt in print
     /// mode; Bruk sends them ahead of the first message instead.
     pub instructions: Option<String>,
@@ -786,6 +915,9 @@ impl AntigravitySpawnPlan {
             cmd.current_dir(dir);
         }
         cmd.args(&self.args);
+        for key in &self.env_remove {
+            cmd.env_remove(key);
+        }
         cmd.envs(&self.env);
         cmd
     }
@@ -915,9 +1047,223 @@ pub fn build_isolated_antigravity_spawn_plan(
         working_dir: Some(working_dir.as_ref().to_path_buf()),
         args,
         env,
+        env_remove: BTreeSet::new(),
         instructions: Some(bundle.system_instructions.trim())
             .filter(|i| !i.is_empty())
             .map(str::to_owned),
+    }
+}
+
+/// Applies least-privilege secrets delivery and isolation onto a [`ClaudeSpawnPlan`] (§7):
+/// - Strips excluded, unshared, unreferenced `McpOnly`, `Internal`, `GH_TOKEN`, and `OP_*` vars.
+/// - Injects resolved `ProviderSpawnEnv` secrets (marking them masked for previews).
+/// - Deep-merges `McpOnly` names into `--settings` JSON `sandbox.credentials.envVars` as
+///   `{ "name": "<VAR>", "mode": "deny" }` objects.
+pub fn apply_claude_secrets_delivery(plan: &mut ClaudeSpawnPlan, delivery: &StepSecretsDelivery) {
+    plan.env_remove.extend(delivery.env_remove.iter().cloned());
+    for (k, v) in &delivery.provider_spawn_env {
+        if k != CLAUDE_DISABLE_AUTOUPDATER_ENV {
+            plan.env.insert(k.clone(), v.clone());
+            plan.masked_env_keys.insert(k.clone());
+            plan.env_remove.remove(k);
+        }
+    }
+    for (k, v) in &delivery.env {
+        if k != CLAUDE_DISABLE_AUTOUPDATER_ENV {
+            plan.env.entry(k.clone()).or_insert_with(|| v.clone());
+            plan.env_remove.remove(k);
+        }
+    }
+
+    if !delivery.mcp_only_names.is_empty() {
+        let mut root = match plan.settings_json.take() {
+            Some(serde_json::Value::Object(map)) => map,
+            _ => serde_json::Map::new(),
+        };
+        let sandbox = root
+            .entry("sandbox".to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !sandbox.is_object() {
+            *sandbox = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let sandbox_obj = sandbox.as_object_mut().expect("sandbox object");
+        let creds = sandbox_obj
+            .entry("credentials".to_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+        if !creds.is_object() {
+            *creds = serde_json::Value::Object(serde_json::Map::new());
+        }
+        let creds_obj = creds.as_object_mut().expect("credentials object");
+        let env_vars_val = creds_obj
+            .entry("envVars".to_owned())
+            .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+        if !env_vars_val.is_array() {
+            *env_vars_val = serde_json::Value::Array(Vec::new());
+        }
+        let arr = env_vars_val.as_array_mut().expect("envVars array");
+
+        // Normalize any legacy bare-string entries to `{ "name": ..., "mode": "deny" }` objects.
+        for item in arr.iter_mut() {
+            if let Some(name) = item.as_str().map(str::to_owned) {
+                *item = serde_json::json!({ "name": name, "mode": "deny" });
+            }
+        }
+        for name in &delivery.mcp_only_names {
+            let already = arr.iter().any(|item| {
+                item.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|existing| existing == name)
+            });
+            if !already {
+                arr.push(serde_json::json!({ "name": name, "mode": "deny" }));
+            }
+        }
+
+        let merged_val = serde_json::Value::Object(root);
+        if let Ok(serialized) = serde_json::to_string(&merged_val) {
+            set_or_push_flag(&mut plan.args, "--settings", &serialized);
+        }
+        plan.settings_json = Some(merged_val);
+    }
+}
+
+/// Applies least-privilege secrets delivery and isolation onto a [`CodexSpawnPlan`] (§7):
+/// - Strips excluded, unshared, unreferenced `McpOnly`, `Internal`, `GH_TOKEN`, and `OP_*` vars.
+/// - Injects resolved `ProviderSpawnEnv` secrets.
+/// - When `AgentAndSteps` secrets exist, sets `-c shell_environment_policy.ignore_default_excludes=true`
+///   and `env_remove`s every ambient host env var containing `KEY`/`SECRET`/`TOKEN` unless explicitly allowed.
+/// - Unions `shell_environment_policy.exclude` with user excludes + `McpOnly` names + Codex stdio
+///   mapped keys sourced from `McpOnly` secrets (not mapped plain vars).
+pub fn apply_codex_secrets_delivery(
+    plan: &mut CodexSpawnPlan,
+    delivery: &StepSecretsDelivery,
+    base_settings: &CodexSpawnSettings,
+    codex_mcp: &CodexMcpDelivery,
+) {
+    plan.env_remove.extend(delivery.env_remove.iter().cloned());
+    for (k, v) in &delivery.provider_spawn_env {
+        if k != "CODEX_HOME" {
+            plan.env.insert(k.clone(), v.clone());
+            plan.masked_env_keys.insert(k.clone());
+            plan.env_remove.remove(k);
+        }
+    }
+    for (k, v) in &delivery.env {
+        if k != "CODEX_HOME" {
+            plan.env.entry(k.clone()).or_insert_with(|| v.clone());
+            plan.env_remove.remove(k);
+        }
+    }
+
+    if !delivery.agent_and_steps_names.is_empty() {
+        remove_codex_config_prefix(plan, "shell_environment_policy.ignore_default_excludes");
+        push_codex_config(
+            plan,
+            "shell_environment_policy.ignore_default_excludes",
+            "true",
+        );
+
+        // Strip ambient host env vars containing KEY/SECRET/TOKEN unless explicitly allowed.
+        for (host_key, _) in std::env::vars() {
+            if !is_ambient_credential_var_name(&host_key) {
+                continue;
+            }
+            let allowed = delivery
+                .agent_and_steps_names
+                .iter()
+                .any(|k| k.eq_ignore_ascii_case(&host_key))
+                || delivery
+                    .mcp_only_names
+                    .iter()
+                    .any(|k| k.eq_ignore_ascii_case(&host_key))
+                || codex_mcp
+                    .env
+                    .keys()
+                    .any(|k| k.eq_ignore_ascii_case(&host_key))
+                || matches!(host_key.as_str(), "OPENAI_API_KEY" | "CODEX_ACCESS_TOKEN")
+                || base_settings.env_vars.contains_key(&host_key)
+                || base_settings.secret_env_vars.contains_key(&host_key);
+            if !allowed {
+                plan.env_remove.insert(host_key);
+            }
+        }
+    }
+
+    // Union `shell_environment_policy.exclude` with user excludes + McpOnly names + McpOnly-sourced mapped keys.
+    let mut excludes: BTreeSet<String> = BTreeSet::new();
+    if let Some(CodexSettingValue::StringList(user_excludes)) =
+        base_settings.get("shell_environment_policy.exclude")
+    {
+        for item in user_excludes {
+            let trimmed = item.trim();
+            if !trimmed.is_empty() {
+                excludes.insert(trimmed.to_owned());
+            }
+        }
+    }
+    excludes.extend(delivery.mcp_only_names.iter().cloned());
+    excludes.extend(codex_mcp.mcp_only_mapped_keys.iter().cloned());
+
+    if !excludes.is_empty() {
+        remove_codex_config_prefix(plan, "shell_environment_policy.exclude");
+        let array_toml = format!(
+            "[{}]",
+            excludes
+                .iter()
+                .map(|k| toml_quote(k))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        push_codex_config(plan, "shell_environment_policy.exclude", &array_toml);
+    }
+}
+
+/// Applies least-privilege secrets delivery and isolation onto an [`AntigravitySpawnPlan`] (§7):
+/// - NEVER injects `McpOnly` secrets into `agy`.
+/// - Explicitly strips all `McpOnly`, excluded, unshared, `Internal`, `GH_TOKEN`, and `OP_*` vars.
+pub fn apply_antigravity_secrets_delivery(
+    plan: &mut AntigravitySpawnPlan,
+    delivery: &StepSecretsDelivery,
+) {
+    plan.env_remove.extend(delivery.env_remove.iter().cloned());
+    plan.env_remove
+        .extend(delivery.mcp_only_names.iter().cloned());
+    for k in &delivery.mcp_only_names {
+        plan.env.remove(k);
+    }
+    for (k, v) in &delivery.env {
+        if k != ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV && !delivery.mcp_only_names.contains(k) {
+            plan.env.insert(k.clone(), v.clone());
+            plan.env_remove.remove(k);
+        }
+    }
+}
+
+fn try_symlink_file(src: &Path, dst: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(src, dst).is_ok()
+    }
+    #[cfg(windows)]
+    {
+        std::os::windows::fs::symlink_file(src, dst).is_ok()
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (src, dst);
+        false
+    }
+}
+
+fn set_owner_read_write_only(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
     }
 }
 
@@ -1300,6 +1646,8 @@ mod tests {
                 sources: &sources,
                 policy: McpSourcesPolicy::All,
                 env: &env,
+                resolved_secrets: None,
+                project_id: None,
             },
         )
         .unwrap();
@@ -1352,6 +1700,8 @@ mod tests {
             sources: &sources,
             policy: McpSourcesPolicy::Project,
             env: &env,
+            resolved_secrets: None,
+            project_id: None,
         };
 
         let bundle = compile_step_context(
@@ -1451,6 +1801,8 @@ mod tests {
                 sources: &sources,
                 policy: McpSourcesPolicy::All,
                 env: &env,
+                resolved_secrets: None,
+                project_id: None,
             },
         )
         .unwrap();
@@ -1487,7 +1839,13 @@ mod tests {
     #[test]
     fn antigravity_denies_mcp_tools_until_the_project_file_is_approved() {
         let temp = TempDir::new().unwrap();
-        let repo = mcp_repo(&temp);
+        let repo = temp.path().join("repo-no-vars");
+        fs::create_dir_all(repo.join(".agents")).unwrap();
+        fs::write(
+            repo.join(".agents/mcp_config.json"),
+            r#"{"mcpServers":{"local":{"command":"sh","args":["-c","true"]}}}"#,
+        )
+        .unwrap();
         let mut sources = mcp_sources_for(&repo);
         sources.approved_fingerprint = None;
         let env = mcp_env();
@@ -1513,6 +1871,8 @@ mod tests {
                     sources: &sources,
                     policy: McpSourcesPolicy::All,
                     env: &env,
+                    resolved_secrets: None,
+                    project_id: None,
                 },
             )
             .unwrap();
@@ -1524,6 +1884,41 @@ mod tests {
             assert_eq!(denies_mcp, !approved, "{sandbox:?} approved={approved}");
             assert!(plan.args.iter().any(|a| a.starts_with("--log-file=")));
         }
+    }
+
+    #[test]
+    fn antigravity_blocks_agents_mcp_config_with_env_var_references() {
+        let temp = TempDir::new().unwrap();
+        let repo = mcp_repo(&temp);
+        let sources = mcp_sources_for(&repo);
+        let env = mcp_env();
+        let catalog = BrukCatalog::load_for_project(&repo);
+        let bundle = compile_step_context(
+            &catalog,
+            &agent_step(ProviderKind::Antigravity),
+            &TemplateContext::default(),
+            ProviderKind::Antigravity,
+            ProjectSandboxMode::WorkspaceWrite,
+            None,
+            StepMcpScope {
+                sources: &sources,
+                policy: McpSourcesPolicy::All,
+                env: &env,
+                resolved_secrets: None,
+                project_id: None,
+            },
+        )
+        .unwrap();
+        assert!(bundle.mcp.has_blocking_problem());
+        assert!(
+            bundle
+                .mcp
+                .problems
+                .iter()
+                .any(|p| p.blocking && p.fix == crate::mcp::McpFix::ChangeProvider),
+            "{:?}",
+            bundle.mcp.problems
+        );
     }
 
     #[test]
@@ -1552,6 +1947,8 @@ mod tests {
                 sources: &sources,
                 policy: McpSourcesPolicy::All,
                 env: &env,
+                resolved_secrets: None,
+                project_id: None,
             },
         )
         .unwrap();
@@ -1564,5 +1961,119 @@ mod tests {
             .collect();
         assert_eq!(names, ["web"]);
         assert!(bundle.mcp.servers[0].required);
+    }
+
+    #[test]
+    fn claude_secrets_delivery_emits_deny_objects_and_strips_env_remove() {
+        let settings = ClaudeSpawnSettings {
+            extra_settings_json:
+                r#"{"sandbox":{"credentials":{"envVars":[{"name":"PRE_EXISTING","mode":"deny"}]}}}"#
+                    .to_owned(),
+            ..Default::default()
+        };
+        let mut plan =
+            crate::build_claude_spawn_plan("/usr/bin/claude", None, &settings, &Default::default())
+                .unwrap();
+
+        let delivery = StepSecretsDelivery {
+            env: [("AGENT_ONLY".to_owned(), "agent_secret_val_1234".to_owned())]
+                .into_iter()
+                .collect(),
+            env_remove: ["EXCLUDED_VAR".to_owned(), "MCP_ONLY".to_owned()]
+                .into_iter()
+                .collect(),
+            mcp_only_names: ["MCP_ONLY".to_owned(), "INTERNAL_SECRET".to_owned()]
+                .into_iter()
+                .collect(),
+            agent_and_steps_names: ["AGENT_ONLY".to_owned()].into_iter().collect(),
+            provider_spawn_env: [(
+                "ANTHROPIC_API_KEY".to_owned(),
+                "sk-ant-spawn-9999".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+
+        apply_claude_secrets_delivery(&mut plan, &delivery);
+
+        assert_eq!(
+            plan.env.get("AGENT_ONLY").map(String::as_str),
+            Some("agent_secret_val_1234")
+        );
+        assert_eq!(
+            plan.env.get("ANTHROPIC_API_KEY").map(String::as_str),
+            Some("sk-ant-spawn-9999")
+        );
+        assert!(plan.env_remove.contains("EXCLUDED_VAR"));
+        assert!(plan.env_remove.contains("MCP_ONLY"));
+        // Preview must mask provider_spawn_env secrets
+        let preview = plan.preview_command_line();
+        assert!(!preview.contains("sk-ant-spawn-9999"));
+        assert!(preview.contains("[secret:ANTHROPIC_API_KEY]"));
+
+        // Verify --settings JSON merged sandbox.credentials.envVars as {name, mode: "deny"} objects.
+        let parsed = plan.settings_json.as_ref().unwrap();
+        let arr = parsed["sandbox"]["credentials"]["envVars"]
+            .as_array()
+            .unwrap();
+        let names: BTreeSet<&str> = arr
+            .iter()
+            .map(|v| {
+                assert_eq!(v["mode"], "deny");
+                v["name"].as_str().unwrap()
+            })
+            .collect();
+        assert!(names.contains("PRE_EXISTING"));
+        assert!(names.contains("MCP_ONLY"));
+        assert!(names.contains("INTERNAL_SECRET"));
+    }
+
+    #[test]
+    fn codex_secrets_delivery_sets_ignore_default_excludes_and_merges_exclusions() {
+        let settings = CodexSpawnSettings::default();
+        let mut plan =
+            crate::build_codex_spawn_plan("/usr/bin/codex", None, &settings, &Default::default())
+                .unwrap();
+
+        let delivery = StepSecretsDelivery {
+            env: [(
+                "CUSTOM_API_KEY".to_owned(),
+                "sk_custom_1234567890".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
+            env_remove: ["AMBIENT_TOKEN".to_owned(), "MCP_SECRET".to_owned()]
+                .into_iter()
+                .collect(),
+            mcp_only_names: ["MCP_SECRET".to_owned()].into_iter().collect(),
+            agent_and_steps_names: ["CUSTOM_API_KEY".to_owned()].into_iter().collect(),
+            provider_spawn_env: [(
+                "OPENAI_API_KEY".to_owned(),
+                "sk-openai-spawn-9999".to_owned(),
+            )]
+            .into_iter()
+            .collect(),
+        };
+        let codex_mcp = CodexMcpDelivery::default();
+
+        apply_codex_secrets_delivery(&mut plan, &delivery, &settings, &codex_mcp);
+
+        assert_eq!(
+            plan.env.get("CUSTOM_API_KEY").map(String::as_str),
+            Some("sk_custom_1234567890")
+        );
+        assert!(plan.env_remove.contains("AMBIENT_TOKEN"));
+        assert!(plan.env_remove.contains("MCP_SECRET"));
+        assert!(plan.config_overrides.iter().any(|(k, v)| {
+            k == "shell_environment_policy.ignore_default_excludes" && v == "true"
+        }));
+        assert!(
+            plan.config_overrides
+                .iter()
+                .any(|(k, v)| k == "shell_environment_policy.exclude" && v.contains("MCP_SECRET"))
+        );
+        let preview = plan.preview_command_line();
+        assert!(!preview.contains("sk-openai-spawn-9999"));
+        assert!(preview.contains("[secret:OPENAI_API_KEY]"));
     }
 }

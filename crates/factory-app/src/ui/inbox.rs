@@ -720,6 +720,9 @@ fn pending_detail_surface(req: &AttentionRequest) -> impl IntoElement {
         AttentionRequestBody::McpProblem(detail) => {
             body = body.child(mcp_problem_detail_section(req, detail));
         }
+        AttentionRequestBody::SecretProblem(detail) => {
+            body = body.child(secret_problem_detail_section(req, detail));
+        }
     }
 
     let mut pane = view()
@@ -1606,6 +1609,71 @@ fn mcp_problem_detail_section(
                 "Project MCP servers should work for every developer, so the work that needed this one stopped. It clears from the Inbox once the server starts."
             } else {
                 "The agent ran without this server. It clears from the Inbox once the server starts."
+            })
+            .text_size(px(12.0))
+            .text_color(palette::text_muted()),
+        )
+        .child(actions)
+}
+
+fn secret_problem_detail_section(
+    req: &AttentionRequest,
+    detail: &factory_core::SecretProblemDetail,
+) -> impl IntoElement {
+    let mut actions = view().flex_row().items_center().gap(px(10.0));
+    if let Some(label) = detail.problem.fix.button_label() {
+        actions = actions.child(
+            button()
+                .test_id("inbox-secret-fix")
+                .accessibility_label(label)
+                .on_press(store::inbox_fix_setup_item)
+                .h(px(34.0))
+                .px(px(16.0))
+                .rounded(px(8.0))
+                .bg(palette::nav_active_bg())
+                .items_center()
+                .justify_center()
+                .active(|s| s.opacity(0.85))
+                .child(
+                    text(label)
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::nav_active_fg()),
+                ),
+        );
+    }
+    actions = actions.child(
+        button()
+            .test_id("inbox-secret-dismiss")
+            .accessibility_label("Dismiss")
+            .on_press(store::inbox_dismiss_setup_item)
+            .h(px(34.0))
+            .px(px(16.0))
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(palette::border_color())
+            .bg(palette::control_bg())
+            .items_center()
+            .justify_center()
+            .hover(|s| s.bg(palette::subtle_surface_bg()))
+            .child(
+                text("Dismiss")
+                    .text_size(px(13.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette::text_primary()),
+            ),
+    );
+    view()
+        .gap(px(14.0))
+        .child(crate::ui::secrets::secret_problem_banner(
+            detail.problem.clone(),
+            Some(req.project_name.clone()),
+        ))
+        .child(
+            text(if detail.stopped_work {
+                "Work stopped until this secret issue is resolved."
+            } else {
+                "Review this secret setup notice and resolve or dismiss it."
             })
             .text_size(px(12.0))
             .text_color(palette::text_muted()),

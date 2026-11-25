@@ -1,5 +1,7 @@
 //! Per-project settings domain model and placeholder fixtures.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -10,6 +12,7 @@ use crate::{
     },
     mcp::McpServerDef,
     preferences::{ProviderKind, format_dollars_cents},
+    secrets::SecretId,
 };
 
 /// Left-rail navigation sections inside the Project Settings window.
@@ -241,7 +244,12 @@ pub struct ProjectSettings {
     pub issue_source: IssueSourceKind,
     pub github_repo: String,
     pub github_auth_mode: IssueSourceAuthMode,
+    /// Legacy preview field kept for backward-compat deserialization; replaced by `github_pat_id`.
+    #[serde(default)]
     pub github_token_last4: Option<String>,
+    /// Reusable named App-level GitHub PAT (`Internal { purpose: GitHubPat }`) selected for this project.
+    #[serde(default)]
+    pub github_pat_id: Option<SecretId>,
     pub itsaplan_workspace: String,
     pub itsaplan_agent_member: String,
     pub source_connected: bool,
@@ -273,6 +281,9 @@ pub struct ProjectSettings {
 
     // Environment
     pub env_vars: Vec<ProjectEnvVar>,
+    /// App-scoped Env secrets explicitly excluded from this project (opt-out of `AllProjects`).
+    #[serde(default)]
+    pub excluded_app_secrets: BTreeSet<SecretId>,
     pub load_dotenv_local: bool,
     pub inherit_host_path: bool,
 
@@ -322,6 +333,7 @@ impl ProjectSettings {
             github_repo: String::new(),
             github_auth_mode: IssueSourceAuthMode::GitHubCli,
             github_token_last4: None,
+            github_pat_id: None,
             itsaplan_workspace: String::new(),
             itsaplan_agent_member: String::new(),
             source_connected: false,
@@ -347,6 +359,7 @@ impl ProjectSettings {
             auto_reload_workflows: true,
 
             env_vars: Vec::new(),
+            excluded_app_secrets: BTreeSet::new(),
             load_dotenv_local: false,
             inherit_host_path: true,
 
@@ -407,6 +420,7 @@ impl ProjectSettings {
             github_repo: "acme/api-gateway".to_owned(),
             github_auth_mode: IssueSourceAuthMode::GitHubCli,
             github_token_last4: None,
+            github_pat_id: None,
             itsaplan_workspace: "acme-engineering".to_owned(),
             itsaplan_agent_member: "@factory-bot".to_owned(),
             source_connected: true,
@@ -515,6 +529,7 @@ impl ProjectSettings {
                     is_secret: true,
                 },
             ],
+            excluded_app_secrets: BTreeSet::new(),
             load_dotenv_local: true,
             inherit_host_path: true,
 
@@ -761,12 +776,31 @@ impl ProjectSettings {
 
     /// Sign-in summary displayed in the `Sign-in` row of the Issue source card.
     pub fn sign_in_summary(&self) -> String {
+        self.sign_in_summary_with_pat(None, None)
+    }
+
+    /// Sign-in summary showing the selected named GitHub PAT when available.
+    pub fn sign_in_summary_with_pat(
+        &self,
+        pat_name: Option<&str>,
+        pat_preview: Option<&str>,
+    ) -> String {
         match self.issue_source {
             IssueSourceKind::GitHubIssues => match self.github_auth_mode {
                 IssueSourceAuthMode::GitHubCli => "Your GitHub CLI (gh) sign-in".to_owned(),
                 IssueSourceAuthMode::PersonalToken => {
-                    let tail = self.github_token_last4.as_deref().unwrap_or("4a9f");
-                    format!("Personal access token (ghp_••••••••••••{tail})")
+                    if let Some(name) = pat_name {
+                        match pat_preview {
+                            Some(preview) => format!("Personal access token · {name} ({preview})"),
+                            None => format!("Personal access token · {name}"),
+                        }
+                    } else if let Some(tail) = self.github_token_last4.as_deref() {
+                        format!("Personal access token (ghp_••••••••••••{tail})")
+                    } else if self.github_pat_id.is_some() {
+                        "Personal access token (configured)".to_owned()
+                    } else {
+                        "Personal access token (not selected)".to_owned()
+                    }
                 }
             },
             IssueSourceKind::ItsAPlan => {

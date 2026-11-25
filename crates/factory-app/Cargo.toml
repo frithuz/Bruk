@@ -9,6 +9,8 @@ env_logger.workspace = true
 factory-core.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true

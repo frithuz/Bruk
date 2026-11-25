@@ -31,6 +31,7 @@ pub(crate) struct CodexSpawnUiState {
     pub(crate) env_editor_open: Signal<bool>,
     pub(crate) draft_env_key: Signal<String>,
     pub(crate) draft_env_value: Signal<String>,
+    pub(crate) draft_env_secret: Signal<bool>,
     pub(crate) editing_extra_args: Signal<bool>,
     pub(crate) draft_extra_args: Signal<String>,
     pub(crate) editing_extra_config: Signal<bool>,
@@ -50,6 +51,7 @@ impl CodexSpawnUiState {
             env_editor_open: signal(false),
             draft_env_key: signal(String::new()),
             draft_env_value: signal(String::new()),
+            draft_env_secret: signal(false),
             editing_extra_args: signal(false),
             draft_extra_args: signal(String::new()),
             editing_extra_config: signal(false),
@@ -1530,7 +1532,12 @@ fn env_vars_section(ui: CodexSpawnUiState, matches: &EnvRawFilterMatches<'_>) ->
         ));
     }
 
-    if matches.matching_env_vars.is_empty() {
+    let secret_env_keys: Vec<String> = store::codex_spawn_settings()
+        .secret_env_vars
+        .keys()
+        .cloned()
+        .collect();
+    if matches.matching_env_vars.is_empty() && secret_env_keys.is_empty() {
         if matches.show_add_env_controls {
             container = container.child(
                 text("No additional custom environment variables configured.")
@@ -1543,20 +1550,54 @@ fn env_vars_section(ui: CodexSpawnUiState, matches: &EnvRawFilterMatches<'_>) ->
         for (key, value) in &matches.matching_env_vars {
             rows = rows.child(env_var_row(ui, (*key).clone(), (*value).clone()));
         }
+        for key in secret_env_keys {
+            let masked = format!("[secret:{key}] (Keychain)");
+            rows = rows.child(env_var_row(ui, key, masked));
+        }
         container = container.child(rows);
     }
 
     if is_editor_open {
+        let is_secret = ui.draft_env_secret.get();
         let save_env = move || {
             let key = ui.draft_env_key.get_untracked();
             let val = ui.draft_env_value.get_untracked();
-            if store::set_codex_spawn_env_var(&key, &val) {
+            let ok = if ui.draft_env_secret.get_untracked() {
+                store::set_codex_spawn_secret_env_var(&key, &val)
+            } else {
+                store::set_codex_spawn_env_var(&key, &val)
+            };
+            if ok {
                 ui.draft_env_key.set(String::new());
                 ui.draft_env_value.set(String::new());
+                ui.draft_env_secret.set(false);
                 ui.env_editor_open.set(false);
             }
         };
         let on_submit = save_env;
+
+        let mut val_field = input()
+            .test_id("prefs-codex-spawn-env-value-input")
+            .value(move || ui.draft_env_value.get())
+            .on_change(move |v: &str| ui.draft_env_value.set(v.to_owned()))
+            .on_submit(move |_: &str| on_submit())
+            .placeholder(if is_secret {
+                "secret value (Keychain)"
+            } else {
+                "value"
+            })
+            .app_class("font-mono")
+            .flex_1()
+            .px(px(9.0))
+            .py(px(6.0))
+            .border_1()
+            .border_color(palette::border_color())
+            .bg(palette::card_bg())
+            .rounded(px(6.5))
+            .text_color(palette::text_primary());
+        if is_secret {
+            val_field = val_field.masked(true);
+        }
 
         container = container.child(
             view()
@@ -1587,65 +1628,93 @@ fn env_vars_section(ui: CodexSpawnUiState, matches: &EnvRawFilterMatches<'_>) ->
                                 .rounded(px(6.5))
                                 .text_color(palette::text_primary()),
                         )
-                        .child(
-                            input()
-                                .test_id("prefs-codex-spawn-env-value-input")
-                                .value(move || ui.draft_env_value.get())
-                                .on_change(move |v: &str| ui.draft_env_value.set(v.to_owned()))
-                                .on_submit(move |_: &str| on_submit())
-                                .placeholder("value")
-                                .app_class("font-mono")
-                                .flex_1()
-                                .px(px(9.0))
-                                .py(px(6.0))
-                                .border_1()
-                                .border_color(palette::border_color())
-                                .bg(palette::card_bg())
-                                .rounded(px(6.5))
-                                .text_color(palette::text_primary()),
-                        ),
+                        .child(val_field),
                 )
                 .child(
                     view()
                         .flex_row()
                         .items_center()
-                        .justify_end()
+                        .justify_between()
                         .gap(px(8.0))
                         .child(
                             button()
-                                .test_id("prefs-codex-spawn-env-cancel")
-                                .on_press(move || {
-                                    store::clear_preferences_messages();
-                                    ui.env_editor_open.set(false);
-                                })
-                                .px(px(10.0))
-                                .py(px(5.0))
-                                .rounded(px(6.5))
+                                .test_id("prefs-codex-spawn-env-secret-toggle")
+                                .on_press(move || ui.draft_env_secret.update(|s| *s = !*s))
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(5.5))
                                 .border_1()
-                                .border_color(palette::border_color())
-                                .bg(palette::control_bg())
-                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .border_color(if is_secret {
+                                    palette::card_selected_border()
+                                } else {
+                                    palette::border_color()
+                                })
+                                .bg(if is_secret {
+                                    palette::card_selected_bg()
+                                } else {
+                                    palette::control_bg()
+                                })
                                 .child(
-                                    text("Cancel")
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::text_primary()),
+                                    text(if is_secret {
+                                        "Secret (Keychain): On"
+                                    } else {
+                                        "Secret (Keychain): Off"
+                                    })
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(
+                                        if is_secret {
+                                            palette::link_blue()
+                                        } else {
+                                            palette::text_muted()
+                                        },
+                                    ),
                                 ),
                         )
                         .child(
-                            button()
-                                .test_id("prefs-codex-spawn-env-save")
-                                .on_press(save_env)
-                                .px(px(11.0))
-                                .py(px(5.0))
-                                .rounded(px(6.5))
-                                .bg(palette::nav_active_bg())
-                                .active(|s| s.opacity(0.8))
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
                                 .child(
-                                    text("Save Variable")
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(palette::nav_active_fg()),
+                                    button()
+                                        .test_id("prefs-codex-spawn-env-cancel")
+                                        .on_press(move || {
+                                            ui.draft_env_key.set(String::new());
+                                            ui.draft_env_value.set(String::new());
+                                            ui.draft_env_secret.set(false);
+                                            store::clear_preferences_messages();
+                                            ui.env_editor_open.set(false);
+                                        })
+                                        .px(px(10.0))
+                                        .py(px(5.0))
+                                        .rounded(px(6.5))
+                                        .border_1()
+                                        .border_color(palette::border_color())
+                                        .bg(palette::control_bg())
+                                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                        .child(
+                                            text("Cancel")
+                                                .text_size(px(12.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(palette::text_primary()),
+                                        ),
+                                )
+                                .child(
+                                    button()
+                                        .test_id("prefs-codex-spawn-env-save")
+                                        .on_press(save_env)
+                                        .px(px(11.0))
+                                        .py(px(5.0))
+                                        .rounded(px(6.5))
+                                        .bg(palette::nav_active_bg())
+                                        .active(|s| s.opacity(0.8))
+                                        .child(
+                                            text("Save Variable")
+                                                .text_size(px(12.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(palette::nav_active_fg()),
+                                        ),
                                 ),
                         ),
                 ),
@@ -2070,7 +2139,7 @@ fn extra_config_overrides_row(ui: CodexSpawnUiState, current: String) -> impl In
                         )
                         .child(
                             text(
-                                "Raw key = value TOML overrides (one per line) emitted via -c for experimental or future Codex config keys.",
+                                "Raw key = value TOML overrides (one per line) emitted via -c for experimental or future Codex config keys. Do not put API keys or credentials here — use secret environment variables above so values stay in Keychain and are redacted.",
                             )
                             .text_size(px(11.5))
                             .text_color(palette::text_muted()),

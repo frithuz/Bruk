@@ -14,6 +14,7 @@ mod palette;
 pub(crate) mod preferences;
 mod project_settings;
 mod register_project;
+pub(crate) mod secrets;
 mod work_queue;
 mod workflow_editor;
 mod workflow_run;

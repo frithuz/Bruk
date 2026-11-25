@@ -51,6 +51,16 @@ else
   /usr/libexec/PlistBuddy -c "Add :CFBundleIconName string $ICON_NAME" "$INFO_PLIST"
 fi
 
-# Re-sign the bundle ad hoc after updating Contents/Resources and Info.plist
-codesign --force --sign - --timestamp=none "$APP_BUNDLE"
+# Re-sign the bundle after updating Contents/Resources and Info.plist, preserving a stable
+# designated requirement when BRUK_DEV_SIGN_IDENTITY or "Bruk Local Dev" is available.
+SIGN_IDENTITY="${BRUK_DEV_SIGN_IDENTITY:-}"
+if [ -z "$SIGN_IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -Fq '"Bruk Local Dev"'; then
+  SIGN_IDENTITY="Bruk Local Dev"
+fi
+if [ -n "$SIGN_IDENTITY" ]; then
+  codesign --force --sign "$SIGN_IDENTITY" --identifier dev.frithuz.bruk --timestamp=none "$APP_BUNDLE"
+else
+  echo "note: no signing identity configured (set BRUK_DEV_SIGN_IDENTITY or run \`task macos:setup-dev-cert\`); signing ad hoc" >&2
+  codesign --force --sign - --identifier dev.frithuz.bruk --timestamp=none "$APP_BUNDLE"
+fi
 echo "Compiled $ICON_BUNDLE into $RESOURCES_DIR/Assets.car (CFBundleIconName=$ICON_NAME)"

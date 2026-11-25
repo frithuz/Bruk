@@ -23,6 +23,7 @@ pub mod model;
 pub mod preferences;
 pub mod project_settings;
 pub mod runner;
+pub mod secrets;
 pub mod step_context;
 pub mod storage;
 pub mod work_queue;
@@ -119,8 +120,8 @@ pub use github_intake::{
 pub use inbox::{
     AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AttentionRequest, AttentionRequestBody,
     AttentionRequestKind, InboxFilter, InboxState, LoopAttemptSummary, LoopExhaustedDetail,
-    PermissionDetail, PermissionRiskTag, QuestionDetail, QuestionOption, ReviewDetail,
-    ReviewFileStat, WaitingRulesConfig,
+    McpProblemDetail, PermissionDetail, PermissionRiskTag, QuestionDetail, QuestionOption,
+    ReviewDetail, ReviewFileStat, SecretProblemDetail, WaitingRulesConfig,
 };
 pub use machines::{
     BRUK_APP_VERSION, BRUK_DATA_SCHEMA, CoreUpdatePolicy, MachineAgentKind, MachineCatchUpSummary,
@@ -148,6 +149,20 @@ pub use runner::{
     RunnerError, RunnerEvent, WorkflowRunRequest, apply_runner_event_to_view_data,
     collect_git_diffs, execute_workflow_blocking, parse_antigravity_json_line,
     parse_claude_stream_json_line, parse_codex_json_line, parse_unified_diff, spawn_workflow_run,
+};
+pub use secrets::{
+    BRUK_KEYCHAIN_SERVICE, BUILT_IN_COMMAND_MANAGER_PRESETS, CancellationToken, ChatSecretsCache,
+    CommandManagerConfig, CommandManagerPreset, CommandSecretManager, EnvScope, Exposure,
+    InternalPurpose, ManagerId, ManagerRegistry, ManagerStatus, MemoryStore, MigrationReport,
+    ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordConfig, OnePasswordManager,
+    RunSecretsCache, SecretError, SecretFailure, SecretFix, SecretId, SecretKind, SecretManager,
+    SecretProblem, SecretRecord, SecretRedactor, SecretResolver, SecretSource, SecretState,
+    SecretStore, SecretsMetadataSnapshot, SecretsSettings, Sharing, StoreStatus, StreamingRedactor,
+    WorkflowSecretRequirements, collect_workflow_secret_requirements, compute_preview,
+    contains_env_reference, default_secret_store, delete_legacy_database_files,
+    find_legacy_database_files, has_surrounding_whitespace, is_ambient_credential_var_name,
+    looks_like_secret_key, migrate_plaintext_secrets, sanitize_env_segment, validate_env_name,
+    validate_op_reference, validate_secret_value,
 };
 pub use step_context::{
     ANTIGRAVITY_READ_ONLY_DENY_RULES, ANTIGRAVITY_WORKSPACE_WRITE_ALLOW_RULES,

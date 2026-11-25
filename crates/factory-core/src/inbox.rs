@@ -180,6 +180,7 @@ pub enum AttentionRequestBody {
     Review(ReviewDetail),
     LoopExhausted(LoopExhaustedDetail),
     McpProblem(McpProblemDetail),
+    SecretProblem(SecretProblemDetail),
 }
 
 /// An MCP server that didn't reach an agent, with what to do about it.
@@ -187,6 +188,14 @@ pub enum AttentionRequestBody {
 pub struct McpProblemDetail {
     pub problem: crate::mcp::McpProblem,
     /// Whether it stopped the step or chat turn.
+    pub stopped_work: bool,
+}
+
+/// A secret or secret-manager problem surfaced in Inbox *Setup* and banners.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecretProblemDetail {
+    pub problem: crate::secrets::SecretProblem,
+    /// Whether it stopped the step, chat turn, sync, or queued run.
     pub stopped_work: bool,
 }
 
@@ -306,6 +315,9 @@ impl AttentionRequest {
             AttentionRequestKind::LoopExhausted => "Grant 3 More Attempts",
             AttentionRequestKind::Setup => match &self.body {
                 AttentionRequestBody::McpProblem(detail) => {
+                    detail.problem.fix.button_label().unwrap_or("Dismiss")
+                }
+                AttentionRequestBody::SecretProblem(detail) => {
                     detail.problem.fix.button_label().unwrap_or("Dismiss")
                 }
                 _ => "Fix…",
@@ -935,6 +947,28 @@ impl InboxState {
             .filter(|r| r.project_name == project_name)
             .filter_map(|r| match &r.body {
                 AttentionRequestBody::McpProblem(detail) if resolved(&detail.problem) => {
+                    Some(r.id.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        for id in &ids {
+            self.resolve_request(id, "Fixed".to_owned(), None);
+        }
+        ids
+    }
+
+    /// Clears Setup items (`secret_problem_id`s) whose secret problem is resolved.
+    /// Returns the ids cleared so their OS notifications can be closed.
+    pub fn clear_secret_problems(
+        &mut self,
+        mut resolved: impl FnMut(&crate::secrets::SecretProblem) -> bool,
+    ) -> Vec<String> {
+        let ids: Vec<String> = self
+            .pending
+            .iter()
+            .filter_map(|r| match &r.body {
+                AttentionRequestBody::SecretProblem(detail) if resolved(&detail.problem) => {
                     Some(r.id.clone())
                 }
                 _ => None,

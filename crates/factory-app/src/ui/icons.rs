@@ -129,6 +129,15 @@ pub(crate) fn extensions(color: impl IntoReactive<AdaptiveColor>) -> impl IntoEl
     .text_color(color)
 }
 
+/// Key icon for the Preferences Secrets tab.
+pub(crate) fn secrets(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.2" cy="10" r="3.4"/><path d="M10.6 10h6.4"/><path d="M14.2 10v2.4"/><path d="M16.8 10v1.8"/></svg>"#,
+        20.0,
+    )
+    .text_color(color)
+}
+
 /// Horizontal sliders icon for the Preferences Advanced tab.
 pub(crate) fn advanced(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
     icon_svg(

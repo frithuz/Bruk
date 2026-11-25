@@ -20,11 +20,16 @@ tasks:
     cmds:
       - NSH_VERSION={{.NSH_VERSION}} curl -fsSL https://nsh.dev/install.sh | sh
 
+  macos:setup-dev-cert:
+    desc: Create a local macOS code-signing cert ("Bruk Local Dev") for stable Keychain access in dev builds
+    cmds:
+      - bash scripts/setup-dev-cert.sh
+
   run:
-    desc: Run the native macOS app via Cargo
+    desc: Run the native macOS app via Cargo (signed with local dev identity when available)
     aliases: [dev]
     cmds:
-      - cargo run {{.CLI_ARGS}}
+      - bash scripts/run-signed-dev.sh {{.CLI_ARGS}}
 
   run:nsh:
     desc: Run the macOS app with Native Shell CLI (auto-rebuilds on Rust changes)

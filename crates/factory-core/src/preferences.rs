@@ -23,6 +23,7 @@ use crate::{
         CodexSettingsError, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
         build_codex_spawn_plan,
     },
+    secrets::{SecretId, SecretsSettings},
 };
 
 /// Top-level toolbar tabs inside the macOS Preferences window.
@@ -33,6 +34,7 @@ pub enum PreferencesTab {
     Appearance,
     #[default]
     Providers,
+    Secrets,
     Machines,
     Extensions,
     Advanced,
@@ -43,6 +45,7 @@ impl PreferencesTab {
         Self::General,
         Self::Appearance,
         Self::Providers,
+        Self::Secrets,
         Self::Machines,
         Self::Extensions,
         Self::Advanced,
@@ -53,6 +56,7 @@ impl PreferencesTab {
             Self::General => "General",
             Self::Appearance => "Appearance",
             Self::Providers => "Providers",
+            Self::Secrets => "Secrets",
             Self::Machines => "Machines",
             Self::Extensions => "Extensions",
             Self::Advanced => "Advanced",
@@ -301,11 +305,14 @@ impl CliAccount {
     }
 }
 
-/// OpenRouter API key configuration stored as metadata (secret stays in macOS Keychain).
+/// OpenRouter API key configuration stored as metadata (secret stays in OS Keychain / secret manager).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenRouterKey {
     pub id: String,
     pub name: String,
+    /// Link to the `Internal { purpose: OpenRouterKey }` secret record holding the raw key.
+    #[serde(default)]
+    pub secret_id: Option<SecretId>,
     pub key_prefix: String,
     pub key_last4: String,
     pub monthly_cap_cents: Option<u64>,
@@ -708,6 +715,8 @@ pub struct AppPreferences {
     #[serde(default)]
     pub antigravity: Option<CliAccount>,
     pub openrouter_keys: Vec<OpenRouterKey>,
+    #[serde(default)]
+    pub secrets: SecretsSettings,
     pub machines: MachinesSettings,
     pub extensions: ExtensionsSettings,
     pub advanced: AdvancedSettings,
@@ -758,6 +767,7 @@ impl AppPreferences {
             codex_spawn_settings: CodexSpawnSettings::default(),
             antigravity: None,
             openrouter_keys: Vec::new(),
+            secrets: SecretsSettings::default(),
             machines: MachinesSettings::default(),
             extensions: ExtensionsSettings::empty(),
             advanced: AdvancedSettings::default(),
@@ -964,6 +974,7 @@ impl AppPreferences {
                 OpenRouterKey {
                     id: "openrouter-personal".to_owned(),
                     name: "Personal".to_owned(),
+                    secret_id: None,
                     key_prefix: "sk-or-".to_owned(),
                     key_last4: "3f9a".to_owned(),
                     monthly_cap_cents: Some(2_500),
@@ -977,6 +988,7 @@ impl AppPreferences {
                 OpenRouterKey {
                     id: "openrouter-acme".to_owned(),
                     name: "Acme team".to_owned(),
+                    secret_id: None,
                     key_prefix: "sk-or-".to_owned(),
                     key_last4: "81c0".to_owned(),
                     monthly_cap_cents: Some(20_000),
@@ -988,6 +1000,7 @@ impl AppPreferences {
                     test_state: ConnectionTestState::Works,
                 },
             ],
+            secrets: SecretsSettings::default(),
             machines: MachinesSettings::default(),
             extensions: ExtensionsSettings::sample(),
             advanced: AdvancedSettings::default(),
@@ -1338,11 +1351,12 @@ impl AppPreferences {
         self.openrouter_keys.push(OpenRouterKey {
             id: id.clone(),
             name: name.to_owned(),
+            secret_id: None,
             key_prefix,
             key_last4,
             monthly_cap_cents,
             monthly_used_cents: 0,
-            cap_note: "Stored in the macOS Keychain. Bruk stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
+            cap_note: "Stored securely in the OS Keychain. Bruk stops starting OpenRouter steps on this key when the cap is reached.".to_owned(),
             default_model,
             is_default,
             used_by_projects: Vec::new(),

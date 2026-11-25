@@ -4163,3 +4163,79 @@ fn project_mcp_servers_need_approval_and_users_can_add_their_own() {
         config.config().map(|c| c.fingerprint.as_str())
     );
 }
+
+#[test]
+fn secrets_preferences_and_project_environment_flows() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("bruk.db");
+    let repo = temp.path().join("secret-demo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let mut app = start_with_db(db_path.clone());
+
+    // Register a project first.
+    app.press("role:button[Register Project]").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "secret-demo").unwrap();
+    app.type_text("text:Repository path", &repo.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'secret-demo'").unwrap();
+
+    // Open Preferences -> Secrets tab and add an App Env secret.
+    app.press_key("mod+,").unwrap();
+    app.wait_for("id:prefs-tab-secrets").unwrap();
+    app.press("id:prefs-tab-secrets").unwrap();
+    app.wait_for("id:prefs-secrets-store-status").unwrap();
+    assert!(app.screen().shows("Keychain available"));
+
+    app.press("id:prefs-secrets-add-app-btn").unwrap();
+    app.wait_for("id:prefs-secrets-app-name-input").unwrap();
+    app.type_text("id:prefs-secrets-app-name-input", "SHARED_API_TOKEN")
+        .unwrap();
+    app.type_text(
+        "id:prefs-secrets-app-value-input",
+        "sk_live_app_secret_99887766",
+    )
+    .unwrap();
+    app.press("id:prefs-secrets-app-save").unwrap();
+    app.wait_for("Saved app secret 'SHARED_API_TOKEN' in Keychain.")
+        .unwrap();
+    assert!(app.screen().shows("SHARED_API_TOKEN"));
+    // Plaintext secret value must NEVER be shown on screen.
+    assert!(!app.screen().shows("sk_live_app_secret_99887766"));
+
+    // Open Project Settings -> Environment.
+    app.press("id:sidebar-project-settings-1").unwrap();
+    app.wait_for("secret-demo · Issues & intake").unwrap();
+    app.press("id:ps-tab-environment").unwrap();
+    app.wait_for("Inherited from App Secrets").unwrap();
+    assert!(app.screen().shows("SHARED_API_TOKEN"));
+
+    // Exclude the inherited App secret for this project, then add a project secret.
+    app.press("id:ps-inherited-exclude").unwrap();
+    app.wait_for("Excluded in this project").unwrap();
+
+    app.press("id:ps-env-add-btn").unwrap();
+    app.wait_for("id:ps-env-key-input").unwrap();
+    app.type_text("id:ps-env-key-input", "PROJ_SECRET_KEY")
+        .unwrap();
+    app.type_text("id:ps-env-value-input", "proj_super_secret_55443322")
+        .unwrap();
+    app.press("id:ps-env-secret-checkbox").unwrap();
+    app.press("id:ps-env-save").unwrap();
+    app.wait_for("Saved secret 'PROJ_SECRET_KEY' in Keychain.")
+        .unwrap();
+    assert!(app.screen().shows("PROJ_SECRET_KEY"));
+    assert!(!app.screen().shows("proj_super_secret_55443322"));
+
+    // Verify SQLite stores metadata only and zero plaintext secret bytes!
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let records = db.list_secrets().unwrap();
+    assert_eq!(records.len(), 2);
+    let raw_db_bytes = std::fs::read(&db_path).unwrap();
+    let raw_db_text = String::from_utf8_lossy(&raw_db_bytes);
+    assert!(!raw_db_text.contains("sk_live_app_secret_99887766"));
+    assert!(!raw_db_text.contains("proj_super_secret_55443322"));
+}

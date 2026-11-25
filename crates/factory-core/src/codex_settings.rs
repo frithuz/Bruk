@@ -9,7 +9,7 @@
 //! overridden in Preferences.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -366,6 +366,9 @@ pub struct CodexSpawnSettings {
     /// Environment variables applied to the spawned `codex` process.
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
+    /// Secret-backed environment variables mapped to `Internal { purpose: ProviderSpawnEnv }` ids.
+    #[serde(default)]
+    pub secret_env_vars: BTreeMap<String, crate::secrets::SecretId>,
     /// Extra raw CLI arguments appended verbatim (shell-word split) when spawning Codex.
     #[serde(default)]
     pub extra_cli_args: String,
@@ -392,6 +395,7 @@ impl CodexSpawnSettings {
         self.cli_flags.len()
             + self.config_overrides.len()
             + self.env_vars.len()
+            + self.secret_env_vars.len()
             + usize::from(!self.extra_cli_args.trim().is_empty())
             + usize::from(!self.extra_config_overrides.trim().is_empty())
     }
@@ -400,6 +404,7 @@ impl CodexSpawnSettings {
     pub fn override_count_in_category(&self, category: CodexSettingCategory) -> usize {
         if category == CodexSettingCategory::EnvironmentAndRaw {
             return self.env_vars.len()
+                + self.secret_env_vars.len()
                 + usize::from(!self.extra_cli_args.trim().is_empty())
                 + usize::from(!self.extra_config_overrides.trim().is_empty());
         }
@@ -414,6 +419,7 @@ impl CodexSpawnSettings {
         self.cli_flags.clear();
         self.config_overrides.clear();
         self.env_vars.clear();
+        self.secret_env_vars.clear();
         self.extra_cli_args.clear();
         self.extra_config_overrides.clear();
     }
@@ -455,13 +461,30 @@ impl CodexSpawnSettings {
     pub fn set_env_var(&mut self, key: &str, value: &str) -> Result<(), CodexSettingsError> {
         let key = key.trim();
         validate_env_var_name(key)?;
+        self.secret_env_vars.remove(key);
         self.env_vars.insert(key.to_owned(), value.to_owned());
         Ok(())
     }
 
-    /// Removes a configured environment variable override.
+    /// Binds an environment variable to a Keychain/manager `Internal { purpose: ProviderSpawnEnv }` secret.
+    pub fn set_secret_env_var(
+        &mut self,
+        key: &str,
+        secret_id: crate::secrets::SecretId,
+    ) -> Result<(), CodexSettingsError> {
+        let key = key.trim();
+        validate_env_var_name(key)?;
+        self.env_vars.remove(key);
+        self.secret_env_vars.insert(key.to_owned(), secret_id);
+        Ok(())
+    }
+
+    /// Removes a configured environment variable override (plain or secret-backed).
     pub fn remove_env_var(&mut self, key: &str) -> bool {
-        self.env_vars.remove(key.trim()).is_some()
+        let k = key.trim();
+        let a = self.env_vars.remove(k).is_some();
+        let b = self.secret_env_vars.remove(k).is_some();
+        a || b
     }
 
     /// Validates and stores extra raw CLI arguments (shell-word split at spawn time).
@@ -569,6 +592,10 @@ pub struct CodexSpawnPlan {
     pub working_dir: Option<PathBuf>,
     pub args: Vec<String>,
     pub env: BTreeMap<String, String>,
+    /// Environment variable names explicitly stripped from the spawned child (`env_remove`).
+    pub env_remove: BTreeSet<String>,
+    /// Environment variable names whose values are masked as `[secret:NAME]` in command previews.
+    pub masked_env_keys: BTreeSet<String>,
     /// User-configured `config.toml` overrides (emitted as `-c key=value`).
     pub config_overrides: Vec<(String, String)>,
 }
@@ -581,6 +608,9 @@ impl CodexSpawnPlan {
             cmd.current_dir(dir);
         }
         cmd.args(&self.args);
+        for key in &self.env_remove {
+            cmd.env_remove(key);
+        }
         cmd.envs(&self.env);
         cmd
     }
@@ -589,7 +619,11 @@ impl CodexSpawnPlan {
     pub fn preview_command_line(&self) -> String {
         let mut parts = Vec::new();
         for (k, v) in &self.env {
-            parts.push(format!("{k}={}", shell_quote(v)));
+            if self.masked_env_keys.contains(k) {
+                parts.push(format!("{k}=[secret:{k}]"));
+            } else {
+                parts.push(format!("{k}={}", shell_quote(v)));
+            }
         }
         parts.push(shell_quote(&self.binary_path.display().to_string()));
         for arg in &self.args {
@@ -663,11 +697,21 @@ pub fn build_codex_spawn_plan(
         args.push(prompt.to_owned());
     }
 
+    let mut env = settings.env_vars.clone();
+    let mut masked_env_keys = BTreeSet::new();
+    for key in settings.secret_env_vars.keys() {
+        masked_env_keys.insert(key.clone());
+        env.entry(key.clone())
+            .or_insert_with(|| format!("[secret:{key}]"));
+    }
+
     Ok(CodexSpawnPlan {
         binary_path: binary_path.as_ref().to_path_buf(),
         working_dir: options.working_dir.clone(),
         args,
-        env: settings.env_vars.clone(),
+        env,
+        env_remove: BTreeSet::new(),
+        masked_env_keys,
         config_overrides,
     })
 }

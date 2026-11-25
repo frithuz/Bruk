@@ -128,6 +128,9 @@ pub enum StepTranscriptEntry {
     McpProblem {
         problem: crate::mcp::McpProblem,
     },
+    SecretProblem {
+        problem: crate::secrets::SecretProblem,
+    },
 }
 
 /// Agent and execution sandbox metadata shown in the right-hand step inspector.

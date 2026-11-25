@@ -742,6 +742,11 @@ fn status_indicator(stage: WorkQueueStage, status_text: &str) -> impl IntoElemen
             palette::review_amber(),
             FontWeight::MEDIUM,
         ),
+        WorkQueueStage::NeedsSetup => (
+            icons::alert_circle(palette::pill_warning_text()).into_element(),
+            palette::pill_warning_text(),
+            FontWeight::MEDIUM,
+        ),
         WorkQueueStage::DoneThisWeek => (
             icons::status_merged(palette::success_text()).into_element(),
             palette::success_text(),
@@ -1235,6 +1240,19 @@ fn inspector_content(
                     palette::review_amber(),
                 ));
         }
+        WorkQueueStage::NeedsSetup => {
+            meta = meta
+                .child(metadata_row(
+                    "Workflow",
+                    item.workflow_name.clone(),
+                    palette::text_primary(),
+                ))
+                .child(metadata_row(
+                    "Blocked by",
+                    item.status_text.clone(),
+                    palette::pill_warning_text(),
+                ));
+        }
         WorkQueueStage::DoneThisWeek => {
             let wf = match item.run_number {
                 Some(run_no) => format!("{} · run #{run_no}", item.workflow_name),
@@ -1510,6 +1528,43 @@ fn inspector_actions(
                                 .text_color(palette::text_primary()),
                         ),
                 ),
+            ),
+        WorkQueueStage::NeedsSetup => view()
+            .flex_row()
+            .gap(px(8.0))
+            .child(
+                button()
+                    .test_id("wq-inspector-resume-setup")
+                    .on_press(move || store::resume_work_queue_issue(issue_number))
+                    .px(px(14.0))
+                    .py(px(7.0))
+                    .rounded(px(7.5))
+                    .bg(palette::nav_active_bg())
+                    .active(|s| s.opacity(0.8))
+                    .child(
+                        text("Resume Issue")
+                            .text_size(px(12.5))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::nav_active_fg()),
+                    ),
+            )
+            .child(
+                button()
+                    .test_id("wq-inspector-open-secrets")
+                    .on_press(|| store::open_preferences_tab(factory_core::PreferencesTab::Secrets))
+                    .px(px(11.0))
+                    .py(px(6.0))
+                    .rounded(px(7.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .child(
+                        text("Open Secrets…")
+                            .text_size(px(12.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_primary()),
+                    ),
             ),
         WorkQueueStage::DoneThisWeek => view().flex_row().child(
             button()

@@ -119,6 +119,10 @@ fn preferences_surface() -> impl IntoElement {
                     extensions_tab,
                 ))
                 .child(when(
+                    || store::preferences_tab() == PreferencesTab::Secrets,
+                    crate::ui::secrets::preferences_secrets_tab,
+                ))
+                .child(when(
                     || store::preferences_tab() == PreferencesTab::Advanced,
                     advanced_tab,
                 )),
@@ -173,6 +177,7 @@ fn toolbar_tab_button(tab: PreferencesTab) -> impl IntoElement {
         PreferencesTab::Providers => "prefs-tab-providers",
         PreferencesTab::Machines => "prefs-tab-machines",
         PreferencesTab::Extensions => "prefs-tab-extensions",
+        PreferencesTab::Secrets => "prefs-tab-secrets",
         PreferencesTab::Advanced => "prefs-tab-advanced",
     };
 
@@ -218,6 +223,7 @@ fn tab_icon(tab: PreferencesTab, color: impl IntoReactive<AdaptiveColor> + 'stat
         PreferencesTab::Providers => icons::providers(color).into_element(),
         PreferencesTab::Machines => icons::machines_toolbar(color).into_element(),
         PreferencesTab::Extensions => icons::extensions(color).into_element(),
+        PreferencesTab::Secrets => icons::secrets(color).into_element(),
         PreferencesTab::Advanced => icons::advanced(color).into_element(),
     }
 }
@@ -767,6 +773,8 @@ fn add_openrouter_key_card(
         let cap = draft_cap.get_untracked();
         let model = draft_model.get_untracked();
         if store::add_openrouter_key(&name, &api_key, &cap, &model) {
+            draft_name.set(String::new());
+            draft_key.set(String::new());
             active_editor.set(None);
         }
     };
@@ -819,6 +827,7 @@ fn add_openrouter_key_card(
                         "API key",
                         input()
                             .test_id("prefs-new-key-secret")
+                            .masked(true)
                             .value(move || draft_key.get())
                             .on_change(move |v: &str| draft_key.set(v.to_owned()))
                             .placeholder("sk-or-v1-...")
@@ -879,6 +888,7 @@ fn add_openrouter_key_card(
                             .justify_end()
                             .gap(px(8.0))
                             .child(secondary_button("Cancel", move || {
+                                draft_key.set(String::new());
                                 store::clear_preferences_messages();
                                 active_editor.set(None);
                             }))
@@ -1091,19 +1101,20 @@ fn openrouter_detail_pane(
                         .child(when(
                             move || is_replacing_key,
                             move || {
-                                inline_single_field_editor(
+                                inline_masked_field_editor(
                                     draft_primary,
                                     "Enter new OpenRouter API key",
-                                    true,
                                     "Save Key",
                                     move || {
                                         if store::replace_selected_openrouter_key(
                                             &draft_primary.get_untracked(),
                                         ) {
+                                            draft_primary.set(String::new());
                                             active_editor.set(None);
                                         }
                                     },
                                     move || {
+                                        draft_primary.set(String::new());
                                         store::clear_preferences_messages();
                                         active_editor.set(None);
                                     },
@@ -2697,6 +2708,41 @@ fn inline_single_field_editor(
     if monospace {
         field = field.app_class("font-mono");
     }
+
+    view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .pt(px(2.0))
+        .child(field)
+        .child(secondary_button("Cancel", on_cancel))
+        .child(primary_button(save_label, on_save))
+}
+
+fn inline_masked_field_editor(
+    value: Signal<String>,
+    placeholder: &'static str,
+    save_label: &'static str,
+    on_save: impl Fn() + Clone + 'static,
+    on_cancel: impl Fn() + 'static,
+) -> impl IntoElement {
+    let on_submit = on_save.clone();
+    let field = input()
+        .test_id("prefs-inline-input")
+        .masked(true)
+        .value(move || value.get())
+        .on_change(move |v: &str| value.set(v.to_owned()))
+        .on_submit(move |_: &str| on_submit())
+        .placeholder(placeholder)
+        .app_class("font-mono")
+        .flex_1()
+        .px(px(10.0))
+        .py(px(6.5))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_inset_bg())
+        .rounded(px(7.0))
+        .text_color(palette::text_primary());
 
     view()
         .flex_row()

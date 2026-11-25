@@ -2,7 +2,7 @@
 //! approval gate signaling, and live `git diff` capture.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -34,12 +35,19 @@ use crate::{
     mcp::{
         ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
         McpSourcesPolicy, antigravity_log_failures, claude_init_failures, codex_stderr_failure,
+        resolve_mcp_servers,
     },
     model::ProjectId,
     preferences::ProviderKind,
-    project_settings::ProjectSandboxMode,
+    project_settings::{IssueSourceAuthMode, ProjectSandboxMode},
+    secrets::{
+        CancellationToken, ResolvedSecrets, RunSecretsCache, SecretId, SecretProblem,
+        SecretRedactor, SecretResolver, SecretsCache, collect_workflow_secret_requirements,
+    },
     step_context::{
-        StepMcpScope, TemplateContext, build_isolated_antigravity_spawn_plan,
+        EphemeralCodexAuthGuard, StepMcpScope, StepSecretsDelivery, TemplateContext,
+        apply_antigravity_secrets_delivery, apply_claude_secrets_delivery,
+        apply_codex_secrets_delivery, build_isolated_antigravity_spawn_plan,
         build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
         default_step_runtime_dir, materialize_step_context,
     },
@@ -68,6 +76,8 @@ pub enum RunnerError {
     Stopped,
     #[error("{0}")]
     Mcp(String),
+    #[error("{0}")]
+    Secret(String),
 }
 
 /// Complete configuration passed to [`spawn_workflow_run`] or [`execute_workflow_blocking`].
@@ -85,6 +95,12 @@ pub struct WorkflowRunRequest {
     pub issue_number: Option<u32>,
     pub github_repo: Option<String>,
     pub github_auth: Option<GitHubAuth>,
+    /// GitHub sign-in mode (used with `github_pat_secret_id` for off-UI-thread PAT resolution).
+    pub github_auth_mode: IssueSourceAuthMode,
+    /// Optional `Internal { purpose: GitHubPat }` secret id resolved on the runner thread.
+    pub github_pat_secret_id: Option<SecretId>,
+    /// Optional off-UI-thread secret resolver for Env & Internal secrets.
+    pub secret_resolver: Option<Arc<SecretResolver>>,
     pub default_provider: ProviderKind,
     pub default_sandbox: ProjectSandboxMode,
     pub model_override: Option<String>,
@@ -125,6 +141,7 @@ struct GateSlot {
 struct ControlShared {
     stopped: AtomicBool,
     active_child_pid: AtomicU32,
+    cancel: CancellationToken,
     gate: Mutex<GateSlot>,
     gate_cv: Condvar,
     steering_queue: Mutex<Vec<String>>,
@@ -148,6 +165,7 @@ impl RunControlHandle {
             shared: Arc::new(ControlShared {
                 stopped: AtomicBool::new(false),
                 active_child_pid: AtomicU32::new(0),
+                cancel: CancellationToken::new(),
                 gate: Mutex::new(GateSlot::default()),
                 gate_cv: Condvar::new(),
                 steering_queue: Mutex::new(Vec::new()),
@@ -155,9 +173,16 @@ impl RunControlHandle {
         }
     }
 
-    /// Requests cancellation, terminates the active child process if running, and unblocks gates.
+    /// Cooperative cancellation token wired to this run's stop handle.
+    pub fn cancellation_token(&self) -> &CancellationToken {
+        &self.shared.cancel
+    }
+
+    /// Requests cancellation, terminates the active child process if running, kills any in-flight
+    /// secret manager subprocesses, and unblocks gates.
     pub fn stop(&self) {
         self.shared.stopped.store(true, Ordering::SeqCst);
+        self.shared.cancel.cancel();
         let pid = self.shared.active_child_pid.swap(0, Ordering::SeqCst);
         if pid > 0 {
             terminate_pid(pid);
@@ -268,6 +293,12 @@ pub enum RunnerEvent {
         step_index: usize,
         step_title: String,
         problem: McpProblem,
+    },
+    /// A secret or secret manager failed during preflight or step execution.
+    SecretProblem {
+        step_index: Option<usize>,
+        step_title: String,
+        problem: SecretProblem,
     },
     /// MCP servers that started for a step, so earlier notifications about them can clear.
     McpServersReady {
@@ -384,9 +415,18 @@ pub fn execute_workflow_blocking(
         total_tokens: 0,
         total_cost_cents: 0,
         mcp_policy: request.workflow.mcp_sources,
+        secrets_cache: RunSecretsCache::new(),
+        redactor: SecretRedactor::empty(),
+        internal_secrets_for_redaction: Vec::new(),
     };
 
-    let result = execute_node_list(&mut state, &request.workflow.nodes, &mut template_ctx);
+    // Start-of-run AST secret preflight (§9): resolve all required workflow secrets in one batch
+    // before step 1 begins.
+    let preflight_result = preflight_workflow_secrets(&mut state);
+    let result = match preflight_result {
+        Ok(()) => execute_node_list(&mut state, &request.workflow.nodes, &mut template_ctx),
+        Err(err) => Err(err),
+    };
     let steps_executed = state.next_step_index;
     let total_tokens = state.total_tokens;
     let total_cost_cents = state.total_cost_cents;
@@ -409,7 +449,7 @@ pub fn execute_workflow_blocking(
             None,
         ),
         Err(err) => {
-            let msg = err.to_string();
+            let msg = state.redactor.redact(&err.to_string());
             (
                 RunExecutionState::Failed,
                 format!("Failed '{}': {msg}", request.workflow.name),
@@ -453,6 +493,173 @@ struct ExecutionCursor<'a> {
     total_cost_cents: u64,
     /// The strictest `mcp_sources` of the workflow and the composites the cursor is inside.
     mcp_policy: McpSourcesPolicy,
+    /// Per-run secret cache; cleared and zeroized on ApprovalGate suspension.
+    secrets_cache: RunSecretsCache,
+    /// Structured redactor built from all resolved secrets used in this run.
+    redactor: SecretRedactor,
+    /// Internal secrets resolved during this run (for redaction across outputs/diffs/errors).
+    internal_secrets_for_redaction: Vec<SecretString>,
+}
+
+impl ExecutionCursor<'_> {
+    fn refresh_redactor(&mut self, resolved: Option<&ResolvedSecrets>) {
+        if let Some(res) = resolved {
+            self.redactor =
+                res.build_redactor_with_internals(self.internal_secrets_for_redaction.iter());
+        } else if !self.internal_secrets_for_redaction.is_empty() {
+            let pairs: Vec<(&str, &SecretString)> = self
+                .internal_secrets_for_redaction
+                .iter()
+                .map(|s| ("internal", s))
+                .collect();
+            self.redactor = SecretRedactor::from_secrets(pairs);
+        }
+    }
+
+    fn resolve_github_auth_for_step(&mut self) -> Result<Option<GitHubAuth>, RunnerError> {
+        if let Some(auth) = self.request.github_auth.as_ref() {
+            if let GitHubAuth::PersonalToken(tok) = auth
+                && !tok.trim().is_empty()
+            {
+                self.internal_secrets_for_redaction
+                    .push(SecretString::from(tok.clone()));
+                self.refresh_redactor(None);
+            }
+            return Ok(Some(auth.clone()));
+        }
+        match self.request.github_auth_mode {
+            IssueSourceAuthMode::GitHubCli => Ok(Some(GitHubAuth::GitHubCli)),
+            IssueSourceAuthMode::PersonalToken => {
+                let Some(resolver) = self.request.secret_resolver.as_ref() else {
+                    return Ok(None);
+                };
+                let Some(pat_id) = self.request.github_pat_secret_id.as_ref() else {
+                    return Err(RunnerError::Secret(
+                        "GitHub Personal Access Token is not selected in Project Settings › Issues & intake".to_owned(),
+                    ));
+                };
+                match resolver.resolve_internal(pat_id, self.control.cancellation_token()) {
+                    Ok(secret) => {
+                        let tok = secret.expose_secret().to_owned();
+                        self.internal_secrets_for_redaction.push(secret);
+                        self.refresh_redactor(None);
+                        Ok(Some(GitHubAuth::PersonalToken(tok)))
+                    }
+                    Err(failure) => {
+                        let problem = failure.to_problem(Some(self.request.project_id));
+                        let msg = problem.title();
+                        let _ = self.tx.send(RunnerEvent::SecretProblem {
+                            step_index: None,
+                            step_title: self.request.workflow.name.clone(),
+                            problem,
+                        });
+                        Err(RunnerError::Secret(msg))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Start-of-run batched AST preflight (§9).
+fn preflight_workflow_secrets(cursor: &mut ExecutionCursor<'_>) -> Result<(), RunnerError> {
+    let Some(resolver) = cursor.request.secret_resolver.as_ref() else {
+        return Ok(());
+    };
+    let req = collect_workflow_secret_requirements(
+        &cursor.request.workflow,
+        &cursor.request.catalog,
+        &cursor.request.mcp,
+        cursor.request.github_auth_mode,
+    );
+    let resolved = resolver.resolve_for_execution(
+        cursor.request.project_id,
+        &req.mcp_referenced_vars,
+        req.needs_agent_and_steps,
+        &mut cursor.secrets_cache,
+        cursor.control.cancellation_token(),
+    );
+
+    if !resolved.failures.is_empty() {
+        let mut msgs = Vec::new();
+        for failure in resolved.failures.values() {
+            let problem = failure.to_problem(Some(cursor.request.project_id));
+            msgs.push(problem.title());
+            let _ = cursor.tx.send(RunnerEvent::SecretProblem {
+                step_index: None,
+                step_title: cursor.request.workflow.name.clone(),
+                problem,
+            });
+        }
+        return Err(RunnerError::Secret(format!(
+            "workflow '{}' cannot start: {}",
+            cursor.request.workflow.name,
+            msgs.join("; ")
+        )));
+    }
+
+    // Preflight GitHub PAT if any GitHub step exists under PersonalToken auth mode.
+    if req.needs_github_pat
+        && cursor.request.github_auth.is_none()
+        && let Some(pat_id) = cursor.request.github_pat_secret_id.as_ref()
+    {
+        match resolver.resolve_internal(pat_id, cursor.control.cancellation_token()) {
+            Ok(secret) => {
+                cursor.internal_secrets_for_redaction.push(secret);
+            }
+            Err(failure) => {
+                let problem = failure.to_problem(Some(cursor.request.project_id));
+                let msg = problem.title();
+                let _ = cursor.tx.send(RunnerEvent::SecretProblem {
+                    step_index: None,
+                    step_title: cursor.request.workflow.name.clone(),
+                    problem,
+                });
+                return Err(RunnerError::Secret(format!(
+                    "workflow '{}' cannot start: {msg}",
+                    cursor.request.workflow.name
+                )));
+            }
+        }
+    }
+
+    cursor.refresh_redactor(Some(&resolved));
+    Ok(())
+}
+
+/// Resolves provider spawn-settings `secret_env_vars` (`Internal { purpose: ProviderSpawnEnv }`).
+fn resolve_provider_spawn_env(
+    cursor: &mut ExecutionCursor<'_>,
+    provider: ProviderKind,
+    step_index: usize,
+    step_name: &str,
+) -> Result<BTreeMap<String, String>, RunnerError> {
+    let Some(resolver) = cursor.request.secret_resolver.as_ref() else {
+        return Ok(BTreeMap::new());
+    };
+    let bindings = match provider {
+        ProviderKind::Claude => &cursor.request.claude_settings.secret_env_vars,
+        ProviderKind::Codex => &cursor.request.codex_settings.secret_env_vars,
+        _ => return Ok(BTreeMap::new()),
+    };
+    let mut out = BTreeMap::new();
+    for (env_name, secret_id) in bindings {
+        match resolver.resolve_internal(secret_id, cursor.control.cancellation_token()) {
+            Ok(secret) => {
+                out.insert(env_name.clone(), secret.expose_secret().to_owned());
+                cursor.internal_secrets_for_redaction.push(secret);
+            }
+            Err(failure) => {
+                let problem = failure.to_problem(Some(cursor.request.project_id));
+                let msg = problem.title();
+                report_secret_problem(cursor, step_index, step_name, problem);
+                return Err(RunnerError::Secret(format!(
+                    "step '{step_name}' failed to resolve provider setting '{env_name}': {msg}"
+                )));
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Default)]
@@ -550,6 +757,53 @@ fn execute_agent_step(
         }
     }
 
+    // Collect MCP `${VAR}` names referenced by this step so `SecretResolver` injects ONLY
+    // this step's referenced `McpOnly` secrets plus active `AgentAndSteps` secrets.
+    let resolved_secrets_opt = if let Some(resolver) = cursor.request.secret_resolver.as_ref() {
+        let resolved_agent = effective_step
+            .agent
+            .as_deref()
+            .and_then(|a| cursor.request.catalog.resolve_agent(a).ok());
+        let step_policy = cursor.mcp_policy.stricter(
+            resolved_agent
+                .as_ref()
+                .map(|a| a.mcp_sources)
+                .unwrap_or_default(),
+        );
+        let mut allowlist: Vec<String> = resolved_agent
+            .as_ref()
+            .map(|a| a.mcp.clone())
+            .unwrap_or_default();
+        for name in effective_step
+            .mcp
+            .iter()
+            .map(|n| n.trim())
+            .filter(|n| !n.is_empty())
+        {
+            if !allowlist.iter().any(|existing| existing == name) {
+                allowlist.push(name.to_owned());
+            }
+        }
+        let preview_mcp = resolve_mcp_servers(&cursor.request.mcp, step_policy, &allowlist);
+        let mut referenced_vars = BTreeSet::new();
+        for srv in &preview_mcp.servers {
+            for var in srv.def.env_references() {
+                referenced_vars.insert(var);
+            }
+        }
+        let res = resolver.resolve_for_execution(
+            cursor.request.project_id,
+            &referenced_vars,
+            true,
+            &mut cursor.secrets_cache,
+            cursor.control.cancellation_token(),
+        );
+        cursor.refresh_redactor(Some(&res));
+        Some(res)
+    } else {
+        None
+    };
+
     let bundle = compile_step_context(
         &cursor.request.catalog,
         &effective_step,
@@ -561,6 +815,8 @@ fn execute_agent_step(
             sources: &cursor.request.mcp,
             policy: cursor.mcp_policy,
             env: &cursor.request.project_env,
+            resolved_secrets: resolved_secrets_opt.as_ref(),
+            project_id: Some(cursor.request.project_id),
         },
     )?;
     let step_runtime_dir =
@@ -572,6 +828,8 @@ fn execute_agent_step(
         &step_runtime_dir,
         cursor.request.source_codex_home.as_deref(),
     )?;
+    // Unconditionally clean up any fallback ephemeral 0600 Codex auth copies when this step exits.
+    let _codex_auth_guard = EphemeralCodexAuthGuard::for_context(&materialized);
 
     let provider = materialized.bundle.provider;
     let actor_badge = match materialized.bundle.agent.as_ref() {
@@ -630,6 +888,44 @@ fn execute_agent_step(
         });
     }
 
+    // Report any dedicated blocking secret problems (e.g. broken AgentAndSteps or MCP secret).
+    let mut secret_blocking: Vec<String> = Vec::new();
+    for problem in &materialized.bundle.secret_problems {
+        if problem.blocking {
+            secret_blocking.push(problem.title());
+        }
+        report_secret_problem(cursor, step_index, &step.name, problem.clone());
+    }
+    if let Some(resolved) = resolved_secrets_opt.as_ref() {
+        for failure in resolved.failures.values() {
+            let problem = failure.to_problem(Some(cursor.request.project_id));
+            if !materialized
+                .bundle
+                .secret_problems
+                .iter()
+                .any(|p| p.dedupe_key() == problem.dedupe_key())
+            {
+                secret_blocking.push(problem.title());
+                report_secret_problem(cursor, step_index, &step.name, problem);
+            }
+        }
+    }
+    if !secret_blocking.is_empty() {
+        let summary = secret_blocking.join("; ");
+        let _ = cursor.tx.send(RunnerEvent::StepFinished {
+            step_index,
+            status: RunStepStatus::Failed,
+            duration_ms: started.elapsed().as_millis() as u64,
+            output_preview: truncate_for_prompt(&summary, 240),
+            tokens_used: 0,
+            cost_cents: 0,
+        });
+        return Err(RunnerError::Secret(format!(
+            "step '{}' cannot run due to secret failure: {summary}",
+            step.name
+        )));
+    }
+
     for problem in &materialized.bundle.mcp.problems {
         report_mcp_problem(cursor, step_index, &step.name, problem.clone());
     }
@@ -648,6 +944,9 @@ fn execute_agent_step(
         )));
     }
 
+    let provider_spawn_env = resolve_provider_spawn_env(cursor, provider, step_index, &step.name)?;
+    cursor.refresh_redactor(resolved_secrets_opt.as_ref());
+
     let mut cmd = match provider {
         ProviderKind::Claude => {
             let bin = cursor
@@ -655,7 +954,7 @@ fn execute_agent_step(
                 .claude_binary
                 .as_ref()
                 .ok_or(RunnerError::ProviderBinaryMissing(ProviderKind::Claude))?;
-            let plan = build_isolated_claude_spawn_plan(
+            let mut plan = build_isolated_claude_spawn_plan(
                 bin,
                 cursor.request.claude_default_model.as_deref(),
                 &cursor.request.claude_settings,
@@ -664,6 +963,11 @@ fn execute_agent_step(
                 Some(&format!("{}-{}", cursor.request.run_id, step.id)),
                 &cursor.request.project_env,
             )?;
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                let delivery =
+                    StepSecretsDelivery::from_resolved(resolved, provider_spawn_env, true);
+                apply_claude_secrets_delivery(&mut plan, &delivery);
+            }
             plan.to_command()
         }
         ProviderKind::Codex => {
@@ -672,7 +976,7 @@ fn execute_agent_step(
                 .codex_binary
                 .as_ref()
                 .ok_or(RunnerError::ProviderBinaryMissing(ProviderKind::Codex))?;
-            let plan = build_isolated_codex_spawn_plan(
+            let mut plan = build_isolated_codex_spawn_plan(
                 bin,
                 cursor.request.codex_default_model.as_deref(),
                 &cursor.request.codex_settings,
@@ -680,6 +984,16 @@ fn execute_agent_step(
                 &materialized,
                 &cursor.request.project_env,
             )?;
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                let delivery =
+                    StepSecretsDelivery::from_resolved(resolved, provider_spawn_env, true);
+                apply_codex_secrets_delivery(
+                    &mut plan,
+                    &delivery,
+                    &cursor.request.codex_settings,
+                    &materialized.bundle.codex_mcp,
+                );
+            }
             plan.to_command()
         }
         ProviderKind::Antigravity => {
@@ -693,6 +1007,11 @@ fn execute_agent_step(
                 &materialized,
                 &cursor.request.project_env,
             );
+            if let Some(resolved) = resolved_secrets_opt.as_ref() {
+                // Antigravity NEVER receives McpOnly secrets (§7).
+                let delivery = StepSecretsDelivery::from_resolved(resolved, BTreeMap::new(), false);
+                apply_antigravity_secrets_delivery(&mut plan, &delivery);
+            }
             // `--print=<prompt>` keeps a prompt that starts with `-` from reading as a flag.
             let prompt = plan.first_message(&materialized.bundle.rendered_prompt);
             plan.args.push(format!("--print={prompt}"));
@@ -782,6 +1101,7 @@ fn execute_agent_step(
 
             match parsed {
                 Some(ParsedStreamEvent::AgentText(text)) => {
+                    let text = cursor.redactor.redact(&text);
                     assistant_chunks.push(text.clone());
                     let banner = if !emitted_banner {
                         emitted_banner = true;
@@ -807,9 +1127,9 @@ fn execute_agent_step(
                     let _ = cursor.tx.send(RunnerEvent::TranscriptAppended {
                         step_index,
                         entry: StepTranscriptEntry::ToolCall {
-                            verb,
-                            target,
-                            status_text,
+                            verb: cursor.redactor.redact(&verb),
+                            target: cursor.redactor.redact(&target),
+                            status_text: cursor.redactor.redact(&status_text),
                             status_tone: tone,
                             output_lines: Vec::new(),
                             expanded: false,
@@ -827,6 +1147,7 @@ fn execute_agent_step(
                         && assistant_chunks.is_empty()
                         && !txt.trim().is_empty()
                     {
+                        let txt = cursor.redactor.redact(&txt);
                         assistant_chunks.push(txt.clone());
                         let _ = cursor.tx.send(RunnerEvent::TranscriptAppended {
                             step_index,
@@ -841,13 +1162,14 @@ fn execute_agent_step(
                 None => {
                     let trimmed = line.trim();
                     if !trimmed.is_empty() && !trimmed.starts_with('{') {
-                        assistant_chunks.push(trimmed.to_owned());
+                        let redacted = cursor.redactor.redact(trimmed);
+                        assistant_chunks.push(redacted.clone());
                         let _ = cursor.tx.send(RunnerEvent::TranscriptAppended {
                             step_index,
                             entry: StepTranscriptEntry::AgentTurn {
                                 badge: badge.clone(),
                                 attempt_banner: None,
-                                body: trimmed.to_owned(),
+                                body: redacted,
                             },
                         });
                     }
@@ -858,15 +1180,18 @@ fn execute_agent_step(
 
     let status = wait_child_with_cancel(&mut child, cursor.control)?;
     cursor.control.clear_active_pid();
-    let (stderr_text, codex_failures) = stderr_handle.join().unwrap_or_default();
+    let (raw_stderr_text, codex_failures) = stderr_handle.join().unwrap_or_default();
+    let stderr_text = cursor.redactor.redact(&raw_stderr_text);
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let mut late_failures = codex_failures;
-    if provider == ProviderKind::Antigravity
-        && let Ok(log) =
-            std::fs::read_to_string(materialized.runtime_dir.join(ANTIGRAVITY_LOG_FILE))
-    {
-        late_failures.extend(antigravity_log_failures(&log));
+    if provider == ProviderKind::Antigravity {
+        let log_path = materialized.runtime_dir.join(ANTIGRAVITY_LOG_FILE);
+        if let Ok(log) = std::fs::read_to_string(&log_path) {
+            late_failures.extend(antigravity_log_failures(&log));
+        }
+        // Delete antigravity.log immediately after parsing MCP failures (§7).
+        let _ = std::fs::remove_file(&log_path);
     }
     for failure in &late_failures {
         if let Some(problem) = mcp_tracker.record(&materialized.bundle.mcp, failure) {
@@ -883,7 +1208,7 @@ fn execute_agent_step(
         }
     }
     if !mcp_blocking.is_empty() && !cursor.control.is_stopped() {
-        let summary = mcp_blocking.join("; ");
+        let summary = cursor.redactor.redact(&mcp_blocking.join("; "));
         let _ = cursor.tx.send(RunnerEvent::StepFinished {
             step_index,
             status: RunStepStatus::Failed,
@@ -903,13 +1228,22 @@ fn execute_agent_step(
     cursor.total_tokens = cursor.total_tokens.saturating_add(tokens_used);
     cursor.total_cost_cents = cursor.total_cost_cents.saturating_add(cost_cents);
 
+    // Scrub raw_stdout before recording into TemplateContext.step_outputs (§7).
+    let redacted_raw_stdout = cursor.redactor.redact(&raw_stdout);
     let output = if !assistant_chunks.is_empty() {
         assistant_chunks.join("\n")
     } else {
-        raw_stdout.clone()
+        redacted_raw_stdout.clone()
     };
     let exit_code = status.code().unwrap_or(-1);
-    record_step_outputs(ctx, &step.id, exit_code, &raw_stdout, &stderr_text, &output);
+    record_step_outputs(
+        ctx,
+        &step.id,
+        exit_code,
+        &redacted_raw_stdout,
+        &stderr_text,
+        &output,
+    );
     emit_live_diffs(cursor);
 
     let step_status = if cursor.control.is_stopped() {
@@ -947,10 +1281,30 @@ fn execute_agent_step(
 
     Ok(StepOutputCapture {
         exit_code,
-        stdout: raw_stdout,
+        stdout: redacted_raw_stdout,
         stderr: stderr_text,
         output,
     })
+}
+
+/// Shows a secret problem in the step's transcript and passes it on for notifications.
+fn report_secret_problem(
+    cursor: &ExecutionCursor<'_>,
+    step_index: usize,
+    step_title: &str,
+    problem: SecretProblem,
+) {
+    let _ = cursor.tx.send(RunnerEvent::TranscriptAppended {
+        step_index,
+        entry: StepTranscriptEntry::SecretProblem {
+            problem: problem.clone(),
+        },
+    });
+    let _ = cursor.tx.send(RunnerEvent::SecretProblem {
+        step_index: Some(step_index),
+        step_title: step_title.to_owned(),
+        problem,
+    });
 }
 
 /// Shows an MCP problem in the step's transcript and passes it on for notifications.
@@ -1004,11 +1358,54 @@ fn execute_shell_step(
         git_info: Box::new(current_git_info(cursor)),
     });
 
+    // Shell steps receive plain project vars + `AgentAndSteps` secrets ONLY, and explicitly strip
+    // all `McpOnly`, excluded, unshared, `Internal`, `GH_TOKEN`, and `OP_*` vars (§7).
+    let (shell_env, shell_env_remove) =
+        if let Some(resolver) = cursor.request.secret_resolver.as_ref() {
+            let resolved = resolver.resolve_for_execution(
+                cursor.request.project_id,
+                &BTreeSet::new(),
+                true,
+                &mut cursor.secrets_cache,
+                cursor.control.cancellation_token(),
+            );
+            if !resolved.failures.is_empty() {
+                let mut msgs = Vec::new();
+                for failure in resolved.failures.values() {
+                    let problem = failure.to_problem(Some(cursor.request.project_id));
+                    msgs.push(problem.title());
+                    report_secret_problem(cursor, step_index, &step.name, problem);
+                }
+                let summary = msgs.join("; ");
+                let _ = cursor.tx.send(RunnerEvent::StepFinished {
+                    step_index,
+                    status: RunStepStatus::Failed,
+                    duration_ms: started.elapsed().as_millis() as u64,
+                    output_preview: truncate_for_prompt(&summary, 240),
+                    tokens_used: 0,
+                    cost_cents: 0,
+                });
+                return Err(RunnerError::Secret(format!(
+                    "shell step '{}' cannot run due to secret failure: {summary}",
+                    step.name
+                )));
+            }
+            cursor.refresh_redactor(Some(&resolved));
+            let mut strip = resolved.strip_from_child_env.clone();
+            strip.extend(resolved.mcp_only_secret_names());
+            (resolved.agent_and_steps_env(), strip)
+        } else {
+            (cursor.request.project_env.clone(), BTreeSet::new())
+        };
+
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c")
         .arg(&rendered_cmd)
-        .current_dir(cursor.working_dir)
-        .envs(&cursor.request.project_env)
+        .current_dir(cursor.working_dir);
+    for key in &shell_env_remove {
+        cmd.env_remove(key);
+    }
+    cmd.envs(&shell_env)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1043,10 +1440,18 @@ fn execute_shell_step(
     let duration_ms = started.elapsed().as_millis() as u64;
 
     let exit_code = status.code().unwrap_or(-1);
-    let stdout_str = stdout_lines.join("\n");
-    let stderr_str = stderr_lines.join("\n");
+    let redacted_stdout_lines: Vec<String> = stdout_lines
+        .iter()
+        .map(|l| cursor.redactor.redact(l))
+        .collect();
+    let redacted_stderr_lines: Vec<String> = stderr_lines
+        .iter()
+        .map(|l| cursor.redactor.redact(l))
+        .collect();
+    let stdout_str = redacted_stdout_lines.join("\n");
+    let stderr_str = redacted_stderr_lines.join("\n");
 
-    let mut terminal_lines: Vec<TerminalLine> = stdout_lines
+    let mut terminal_lines: Vec<TerminalLine> = redacted_stdout_lines
         .iter()
         .take(80)
         .map(|line| TerminalLine {
@@ -1056,7 +1461,7 @@ fn execute_shell_step(
             muted_suffix: None,
         })
         .collect();
-    for err_line in stderr_lines.iter().take(40) {
+    for err_line in redacted_stderr_lines.iter().take(40) {
         terminal_lines.push(TerminalLine {
             badge: Some("ERR".to_owned()),
             badge_tone: TerminalBadgeTone::Fail,
@@ -1069,7 +1474,7 @@ fn execute_shell_step(
         step_index,
         entry: StepTranscriptEntry::ToolCall {
             verb: "Run".to_owned(),
-            target: rendered_cmd.clone(),
+            target: cursor.redactor.redact(&rendered_cmd),
             status_text: if exit_code == 0 {
                 "exit 0".to_owned()
             } else {
@@ -1169,7 +1574,8 @@ fn execute_approval_gate(
         git_info: Box::new(current_git_info(cursor)),
     });
 
-    let diffs = collect_git_diffs(cursor.working_dir);
+    let mut diffs = collect_git_diffs(cursor.working_dir);
+    cursor.redactor.redact_diffs(&mut diffs);
     let diff_summary: Vec<ReviewFileStat> = diffs
         .iter()
         .map(|d| ReviewFileStat {
@@ -1185,11 +1591,15 @@ fn execute_approval_gate(
         gate_id: gate_id.clone(),
         step_index,
         step_title: step_name.to_owned(),
-        prompt: rendered_prompt.clone(),
+        prompt: cursor.redactor.redact(&rendered_prompt),
         branch_name: cursor.branch_name.to_owned(),
         base_branch: cursor.request.default_branch.clone(),
         diff_summary,
     });
+
+    // Clear and zeroize RunSecrets immediately before suspending at an ApprovalGate (§4)
+    // so decrypted credentials never sit in RAM while waiting for human review.
+    cursor.secrets_cache.clear_and_zeroize();
 
     let decision = cursor.control.wait_for_gate(&gate_id);
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1408,7 +1818,7 @@ fn execute_comment_on_issue(
     let step_index = cursor.next_step_index;
     cursor.next_step_index += 1;
     let started = Instant::now();
-    let body = ctx.render(&step.body);
+    let body = cursor.redactor.redact(&ctx.render(&step.body));
 
     let _ = cursor.tx.send(RunnerEvent::StepStarted {
         step_index,
@@ -1429,14 +1839,15 @@ fn execute_comment_on_issue(
         git_info: Box::new(current_git_info(cursor)),
     });
 
+    let resolved_auth = cursor.resolve_github_auth_for_step()?;
     let outcome = if let (Some(repo), Some(issue_no), Some(auth)) = (
         cursor.request.github_repo.as_deref(),
         cursor.request.issue_number,
-        cursor.request.github_auth.as_ref(),
+        resolved_auth.as_ref(),
     ) {
         comment_on_github_issue(repo, issue_no, &body, auth, None)
             .map(|()| format!("Posted comment on {repo}#{issue_no}"))
-            .map_err(|err| RunnerError::Process(err.to_string()))
+            .map_err(|err| RunnerError::Process(cursor.redactor.redact(&err.to_string())))
     } else {
         Ok(format!("Comment prepared (no linked GitHub issue): {body}"))
     };
@@ -1499,10 +1910,11 @@ fn execute_set_issue_status(
         git_info: Box::new(current_git_info(cursor)),
     });
 
+    let resolved_auth = cursor.resolve_github_auth_for_step()?;
     if let (Some(repo), Some(issue_no), Some(auth)) = (
         cursor.request.github_repo.as_deref(),
         cursor.request.issue_number,
-        cursor.request.github_auth.as_ref(),
+        resolved_auth.as_ref(),
     ) {
         for label in &step.add_labels {
             let _ = add_github_issue_label(repo, issue_no, label, auth, None);
@@ -1533,8 +1945,8 @@ fn execute_open_pr(
     cursor.next_step_index += 1;
     let started = Instant::now();
 
-    let title = ctx.render(&step.title);
-    let mut body = ctx.render(&step.body);
+    let title = cursor.redactor.redact(&ctx.render(&step.title));
+    let mut body = cursor.redactor.redact(&ctx.render(&step.body));
     if cursor.request.link_pr_closes_issue
         && let Some(issue_no) = cursor.request.issue_number
         && !body.contains(&format!("#{issue_no}"))
@@ -1561,6 +1973,7 @@ fn execute_open_pr(
         git_info: Box::new(current_git_info(cursor)),
     });
 
+    let resolved_auth = cursor.resolve_github_auth_for_step()?;
     let pr_result = match resolve_gh_binary(None) {
         Ok(gh_bin) => {
             let mut cmd = Command::new(gh_bin);
@@ -1569,22 +1982,34 @@ fn execute_open_pr(
             if step.draft.unwrap_or(cursor.request.open_prs_as_draft) {
                 cmd.arg("--draft");
             }
-            if let Some(GitHubAuth::PersonalToken(tok)) = cursor.request.github_auth.as_ref() {
+            if let Some(GitHubAuth::PersonalToken(tok)) = resolved_auth.as_ref() {
                 cmd.env("GH_TOKEN", tok);
             }
             cmd.output()
-                .map_err(|err| RunnerError::Process(format!("failed to run gh pr create: {err}")))
+                .map_err(|err| {
+                    RunnerError::Process(
+                        cursor
+                            .redactor
+                            .redact(&format!("failed to run gh pr create: {err}")),
+                    )
+                })
                 .and_then(|out| {
                     if out.status.success() {
-                        Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+                        Ok(cursor
+                            .redactor
+                            .redact(String::from_utf8_lossy(&out.stdout).trim()))
                     } else {
                         Err(RunnerError::Process(
-                            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+                            cursor
+                                .redactor
+                                .redact(String::from_utf8_lossy(&out.stderr).trim()),
                         ))
                     }
                 })
         }
-        Err(err) => Err(RunnerError::Process(err.to_string())),
+        Err(err) => Err(RunnerError::Process(
+            cursor.redactor.redact(&err.to_string()),
+        )),
     };
 
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -1714,7 +2139,8 @@ fn current_git_info(cursor: &ExecutionCursor<'_>) -> StepGitInfo {
 }
 
 fn emit_live_diffs(cursor: &ExecutionCursor<'_>) {
-    let diffs = collect_git_diffs(cursor.working_dir);
+    let mut diffs = collect_git_diffs(cursor.working_dir);
+    cursor.redactor.redact_diffs(&mut diffs);
     if !diffs.is_empty() {
         let _ = cursor.tx.send(RunnerEvent::DiffUpdated { diffs });
     }
@@ -2233,7 +2659,9 @@ pub fn apply_runner_event_to_view_data(
                 view.budget_guard.spent_cents.saturating_add(*cost_cents);
         }
         // The transcript entry sent alongside it carries the problem into the view.
-        RunnerEvent::McpProblem { .. } | RunnerEvent::McpServersReady { .. } => {}
+        RunnerEvent::McpProblem { .. }
+        | RunnerEvent::SecretProblem { .. }
+        | RunnerEvent::McpServersReady { .. } => {}
         RunnerEvent::DiffUpdated { diffs } => {
             view.diffs = diffs.clone();
         }
@@ -2522,6 +2950,9 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             issue_number: None,
             github_repo: None,
             github_auth: None,
+            github_auth_mode: IssueSourceAuthMode::GitHubCli,
+            github_pat_secret_id: None,
+            secret_resolver: None,
             default_provider: ProviderKind::Claude,
             default_sandbox: ProjectSandboxMode::WorkspaceWrite,
             model_override: None,
@@ -2652,6 +3083,9 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
             issue_number: None,
             github_repo: None,
             github_auth: None,
+            github_auth_mode: IssueSourceAuthMode::GitHubCli,
+            github_pat_secret_id: None,
+            secret_resolver: None,
             default_provider: ProviderKind::Claude,
             default_sandbox: ProjectSandboxMode::WorkspaceWrite,
             model_override: None,
