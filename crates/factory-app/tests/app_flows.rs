@@ -3572,8 +3572,9 @@ case " $* " in
         sleep 3
         ;;
     esac
+    echo '{{"type":"assistant","message":{{"content":[{{"type":"thinking","thinking":"Auth lives in src/auth.rs, check it first."}}]}}}}'
     echo '{{"type":"assistant","message":{{"content":[{{"type":"tool_use","id":"toolu_1","name":"Read","input":{{"file_path":"src/auth.rs"}}}}]}}}}'
-    echo '{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"fn login()"}}]}}}}'
+    echo '{{"type":"user","message":{{"content":[{{"type":"tool_result","tool_use_id":"toolu_1","content":"fn login()\\n    check_password()"}}]}}}}'
     echo "{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"Reply to: $prompt\"}}]}}}}"
     echo '{{"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.02,"usage":{{"input_tokens":1200,"output_tokens":34}},"model_usage_since_last_result":{{"claude-test":{{"inputTokens":1200,"outputTokens":34,"costUSD":0.02}}}}}}'
     ;;
@@ -3615,6 +3616,19 @@ esac
         app.press("id:chat-send-btn").unwrap();
         app.wait_for("Reply to: Where is auth handled").unwrap();
         assert!(app.screen().shows("src/auth.rs"));
+        // Tool calls and thinking start folded; opening one shows all it took and gave back.
+        assert!(app.screen().shows("Thinking"));
+        assert!(!app.screen().shows("fn login()"));
+        assert!(!app.screen().matches("id:chat-tool-2-details").unwrap());
+        app.press("id:chat-tool-2").unwrap();
+        app.wait_for("id:chat-tool-2-details").unwrap();
+        assert!(app.screen().shows("file_path: src/auth.rs"));
+        assert!(app.screen().shows("fn login()\n    check_password()"));
+        app.press("id:chat-tool-2").unwrap();
+        assert!(!app.screen().matches("id:chat-tool-2-details").unwrap());
+        app.press("id:chat-reasoning-1").unwrap();
+        app.wait_for("Auth lives in src/auth.rs, check it first.")
+            .unwrap();
         app.wait_for("Claude · 1 message · 1K tokens · $0.02")
             .unwrap();
         assert!(

@@ -61,7 +61,10 @@ Each message runs one non-interactive turn of the provider CLI and resumes the p
 session (`claude --resume <id>`, `codex exec … resume <id>`, `agy --conversation <id>`), so the agent keeps the whole
 conversation. Turns get the same user-context isolation as workflow steps: only the chosen agent
 and the skills and subagents it declares, plus the repository's own instructions. Replies stream
-in as Markdown, with tool calls shown inline; transcripts are kept in `bruk.db`.
+in as Markdown. Each tool call and each bit of the agent's thinking is a folded line in the
+transcript; opening it shows the whole command or input and everything the tool gave back, so
+every step can be audited (output past 256K characters keeps its start and end). Transcripts
+are kept in `bruk.db`.
 
 **Attachments**: drop files on the chat, paste them into the composer (a screenshot, or files
 copied in Finder), or pick them with the paper clip. Any file up to 100 MB can go with a message.

@@ -1594,6 +1594,7 @@ fn chat_entry_view(row: ReadSignal<ChatEntryRow>) -> AnyElement {
         ChatEntry::User { .. } => user_message(row).into_element(),
         ChatEntry::Assistant { .. } => assistant_message(row, first.provider).into_element(),
         ChatEntry::Tool { .. } => tool_call_row(row).into_element(),
+        ChatEntry::Reasoning { .. } => reasoning_row(row).into_element(),
         ChatEntry::Notice { .. } => notice_row(row).into_element(),
         ChatEntry::McpProblem { problem } => view()
             .ml(px(34.0))
@@ -1807,43 +1808,51 @@ fn provider_badge(provider: ProviderKind) -> impl IntoElement {
         )
 }
 
+/// One tool call: a folded line (status, tool, what it works on) that opens to everything the
+/// agent passed the tool and everything it gave back, so the step can be audited in full.
 fn tool_call_row(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {
+    let open = signal(false);
+    let first = row.get_untracked();
+    let index = first.index;
+    let label = match &first.entry {
+        ChatEntry::Tool { verb, target, .. } => format!("{verb} {target}").trim().to_owned(),
+        _ => String::new(),
+    };
     let tool = move || match row.get().entry {
         ChatEntry::Tool {
             verb,
             target,
             status,
             detail,
+            input,
+            output,
             ..
-        } => (verb, target, status, detail),
-        _ => (
-            String::new(),
-            String::new(),
-            ChatToolStatus::Running,
-            String::new(),
-        ),
+        } => ToolView {
+            verb,
+            target,
+            status,
+            detail,
+            input,
+            output,
+        },
+        _ => ToolView::default(),
     };
 
-    view()
-        .flex_row()
-        .items_center()
-        .gap(px(8.0))
-        .pl(px(34.0))
-        .min_w(px(0.0))
-        .child(dynamic(move || match tool().2 {
+    let summary = step_summary()
+        .child(dynamic(move || match tool().status {
             ChatToolStatus::Running => icons::status_running(palette::link_blue()).into_element(),
             ChatToolStatus::Succeeded => icons::check(palette::success_text()).into_element(),
             ChatToolStatus::Failed => icons::close_x(palette::destructive_text()).into_element(),
         }))
         .child(
-            text(move || tool().0)
+            text(move || tool().verb)
                 .flex_shrink_0()
                 .text_size(px(12.0))
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(palette::text_secondary()),
         )
         .child(
-            text(move || tool().1)
+            text(move || tool().target)
                 .flex_1()
                 .min_w(px(0.0))
                 .truncate()
@@ -1853,17 +1862,233 @@ fn tool_call_row(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {
         )
         .child(when(
             move || {
-                let (_, _, status, detail) = tool();
-                status == ChatToolStatus::Failed && !detail.is_empty()
+                let tool = tool();
+                tool.status == ChatToolStatus::Failed && !tool.detail.is_empty()
             },
             move || {
-                text(move || tool().3)
+                text(move || tool().detail)
                     .max_w(px(260.0))
                     .truncate()
                     .text_size(px(11.0))
                     .text_color(palette::destructive_text())
             },
+        ));
+
+    view()
+        .pl(px(34.0))
+        .min_w(px(0.0))
+        .gap(px(6.0))
+        .child(step_header(
+            &format!("chat-tool-{index}"),
+            label,
+            open,
+            summary,
         ))
+        .child(when(
+            move || open.get(),
+            move || {
+                view()
+                    .test_id(&format!("chat-tool-{index}-details"))
+                    .ml(px(22.0))
+                    .min_w(px(0.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(palette::divider_color())
+                    .bg(palette::card_inset_bg())
+                    .overflow_hidden()
+                    .child(step_section(
+                        move || {
+                            if is_command_tool(&tool().verb) {
+                                "Command"
+                            } else {
+                                "Input"
+                            }
+                        },
+                        move || {
+                            let tool = tool();
+                            if !tool.input.is_empty() {
+                                tool.input
+                            } else if !tool.target.is_empty() {
+                                // Older chats kept only this one-line summary.
+                                tool.target
+                            } else {
+                                "(none)".to_owned()
+                            }
+                        },
+                        false,
+                    ))
+                    .child(step_section(
+                        || "Output",
+                        move || {
+                            let tool = tool();
+                            if !tool.output.is_empty() {
+                                tool.output
+                            } else if tool.status == ChatToolStatus::Running {
+                                "Running…".to_owned()
+                            } else if !tool.detail.is_empty() {
+                                tool.detail
+                            } else {
+                                "(no output)".to_owned()
+                            }
+                        },
+                        true,
+                    ))
+            },
+        ))
+}
+
+/// What a tool call row shows.
+#[derive(Clone, Default, PartialEq)]
+struct ToolView {
+    verb: String,
+    target: String,
+    status: ChatToolStatus,
+    detail: String,
+    input: String,
+    output: String,
+}
+
+/// Tools whose input is a command line.
+fn is_command_tool(verb: &str) -> bool {
+    matches!(verb, "Bash" | "Shell" | "BashOutput" | "PowerShell")
+}
+
+/// The agent's reasoning: folded under "Thinking", opening to the whole text.
+fn reasoning_row(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {
+    let open = signal(false);
+    let index = row.get_untracked().index;
+    let text_of = move || match row.get().entry {
+        ChatEntry::Reasoning { text } => text,
+        _ => String::new(),
+    };
+    let summary = step_summary()
+        .child(icons::question_bubble(palette::text_muted()))
+        .child(
+            text("Thinking")
+                .flex_shrink_0()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_secondary()),
+        )
+        .child(
+            text(move || first_line(&text_of()))
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(11.5))
+                .text_color(palette::text_muted()),
+        );
+
+    view()
+        .pl(px(34.0))
+        .min_w(px(0.0))
+        .gap(px(6.0))
+        .child(step_header(
+            &format!("chat-reasoning-{index}"),
+            "Thinking".to_owned(),
+            open,
+            summary,
+        ))
+        .child(when(
+            move || open.get(),
+            move || {
+                view()
+                    .test_id(&format!("chat-reasoning-{index}-details"))
+                    .ml(px(22.0))
+                    .min_w(px(0.0))
+                    .px(px(11.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .border_1()
+                    .border_color(palette::divider_color())
+                    .bg(palette::card_inset_bg())
+                    .child(
+                        text(text_of)
+                            .w_full()
+                            .min_w(px(0.0))
+                            .selectable(true)
+                            .text_size(px(12.0))
+                            .text_color(palette::text_secondary()),
+                    )
+            },
+        ))
+}
+
+fn first_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default()
+        .to_owned()
+}
+
+/// The row a folded step's summary is laid out in.
+fn step_summary() -> View {
+    view()
+        .flex_1()
+        .min_w(px(0.0))
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+}
+
+/// The pressable line of a folded transcript step: a disclosure chevron, then its summary.
+/// Pressing it opens or closes the step's details.
+fn step_header(
+    test_id: &str,
+    label: String,
+    open: Signal<bool>,
+    summary: impl IntoElement + 'static,
+) -> impl IntoElement {
+    button()
+        .test_id(test_id)
+        .accessibility_label(label)
+        .on_press(move || open.update(|open| *open = !*open))
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .min_w(px(0.0))
+        .py(px(2.0))
+        .rounded(px(5.0))
+        .hover(|s| s.opacity(0.8))
+        .child(dynamic(move || {
+            if open.get() {
+                icons::chevron_down(palette::text_muted()).into_element()
+            } else {
+                icons::chevron_right(palette::text_muted()).into_element()
+            }
+        }))
+        .child(summary)
+}
+
+/// A labelled block of a step's details, monospaced and selectable so it can be copied.
+fn step_section(
+    title: impl Fn() -> &'static str + 'static,
+    body: impl Fn() -> String + 'static,
+    divided: bool,
+) -> impl IntoElement {
+    let section = view().min_w(px(0.0)).gap(px(4.0)).px(px(11.0)).py(px(8.0));
+    let section = if divided {
+        section.border_t_1().border_color(palette::divider_color())
+    } else {
+        section
+    };
+    section
+        .child(
+            text(title)
+                .text_size(px(10.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_muted()),
+        )
+        .child(
+            text(body)
+                .w_full()
+                .min_w(px(0.0))
+                .selectable(true)
+                .app_class("font-mono")
+                .text_size(px(11.5))
+                .text_color(palette::text_primary()),
+        )
 }
 
 fn notice_row(row: ReadSignal<ChatEntryRow>) -> impl IntoElement {

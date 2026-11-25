@@ -62,6 +62,9 @@ const TITLE_MAX_CHARS: usize = 60;
 const PREVIEW_MAX_CHARS: usize = 90;
 const TOOL_TARGET_MAX_CHARS: usize = 160;
 const TOOL_DETAIL_MAX_CHARS: usize = 200;
+/// The most of a tool call's full input or output a transcript keeps (characters). Longer
+/// text keeps its start and its end, with a note saying how much was left out between them.
+const TOOL_FULL_MAX_CHARS: usize = 256 * 1024;
 const ERROR_MAX_CHARS: usize = 600;
 const BRANCH_SLUG_MAX_CHARS: usize = 40;
 const CONTEXT_GROUP_MAX_ITEMS: usize = 50;
@@ -139,7 +142,15 @@ pub enum ChatEntry {
         status: ChatToolStatus,
         #[serde(default)]
         detail: String,
+        /// Everything the agent passed the tool (the whole command, the file and its edit).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        input: String,
+        /// Everything the tool gave back.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        output: String,
     },
+    /// The agent's reasoning between replies and tool calls, as the provider reports it.
+    Reasoning { text: String },
     /// Something Bruk reports about the turn (an error, a stop).
     Notice {
         text: String,
@@ -762,27 +773,57 @@ impl ChatSession {
                 tool_id,
                 verb,
                 target,
+                input,
             } => {
                 self.finish_streaming();
-                let known = tool_id.as_ref().is_some_and(|id| {
-                    self.entries.iter().any(|entry| {
+                let known = tool_id.as_ref().and_then(|id| {
+                    self.entries.iter_mut().find(|entry| {
                         matches!(entry, ChatEntry::Tool { tool_id: Some(existing), .. } if existing == id)
                     })
                 });
-                if !known {
-                    self.entries.push(ChatEntry::Tool {
+                match known {
+                    // A provider can repeat the call when it finishes, sometimes saying more.
+                    Some(ChatEntry::Tool {
+                        input: known_input, ..
+                    }) => {
+                        if !input.is_empty() {
+                            *known_input = keep_full_text(input);
+                        }
+                    }
+                    _ => self.entries.push(ChatEntry::Tool {
                         tool_id: tool_id.clone(),
                         verb: verb.clone(),
                         target: target.clone(),
                         status: ChatToolStatus::Running,
                         detail: String::new(),
-                    });
+                        input: keep_full_text(input),
+                        output: String::new(),
+                    }),
+                }
+            }
+            ChatEvent::Reasoning { text } => {
+                if text.trim().is_empty() {
+                    return delta;
+                }
+                let entry = ChatEntry::Reasoning {
+                    text: text.trim().to_owned(),
+                };
+                // Reasoning comes before the reply it leads to.
+                match self.entries.last() {
+                    Some(ChatEntry::Assistant {
+                        streaming: true, ..
+                    }) => {
+                        let at = self.entries.len() - 1;
+                        self.entries.insert(at, entry);
+                    }
+                    _ => self.entries.push(entry),
                 }
             }
             ChatEvent::ToolFinished {
                 tool_id,
                 success,
                 detail,
+                output,
             } => {
                 let found = self.entries.iter_mut().rev().find(|entry| match entry {
                     ChatEntry::Tool {
@@ -797,6 +838,7 @@ impl ChatSession {
                 if let Some(ChatEntry::Tool {
                     status,
                     detail: entry_detail,
+                    output: entry_output,
                     ..
                 }) = found
                 {
@@ -806,6 +848,7 @@ impl ChatSession {
                         ChatToolStatus::Failed
                     };
                     *entry_detail = single_line(detail, TOOL_DETAIL_MAX_CHARS);
+                    *entry_output = keep_full_text(output);
                 }
             }
             ChatEvent::Usage {
@@ -910,6 +953,23 @@ fn single_line(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Text kept whole for the transcript, up to [`TOOL_FULL_MAX_CHARS`]: past that, its start and
+/// its end with a note of how many characters were left out between them.
+fn keep_full_text(text: &str) -> String {
+    let text = text.trim_end();
+    let total = text.chars().count();
+    if total <= TOOL_FULL_MAX_CHARS {
+        return text.to_owned();
+    }
+    let half = TOOL_FULL_MAX_CHARS / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(total - half).collect();
+    format!(
+        "{head}\n\n[… {} characters not kept …]\n\n{tail}",
+        total - 2 * half
+    )
+}
+
 /// Events of one running chat turn, in order, for the UI and persistence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatEvent {
@@ -930,11 +990,19 @@ pub enum ChatEvent {
         tool_id: Option<String>,
         verb: String,
         target: String,
+        /// Everything the agent passed the tool.
+        input: String,
     },
     ToolFinished {
         tool_id: Option<String>,
         success: bool,
         detail: String,
+        /// Everything the tool gave back.
+        output: String,
+    },
+    /// The agent's reasoning, shown folded away in the transcript.
+    Reasoning {
+        text: String,
     },
     /// Tokens and cost (millionths of a dollar) as the provider reported them.
     Usage {
@@ -987,12 +1055,18 @@ pub enum ChatStreamItem {
         id: Option<String>,
         verb: String,
         target: String,
+        /// Everything the agent passed the tool, readable.
+        input: String,
     },
     ToolResult {
         id: Option<String>,
         is_error: bool,
         detail: String,
+        /// Everything the tool gave back.
+        output: String,
     },
+    /// The agent's reasoning (Claude's thinking, Codex's reasoning summaries).
+    Reasoning(String),
     /// The window holds this many tokens as of the latest model request (prompt, cache and
     /// what the reply has written so far).
     ContextTokens(u64),
@@ -1104,7 +1178,18 @@ pub fn parse_claude_chat_line(line: &str) -> Vec<ChatStreamItem> {
                             .unwrap_or("Tool")
                             .to_owned(),
                         target: claude_tool_target(block.get("input")),
+                        input: block
+                            .get("input")
+                            .map(format_tool_input)
+                            .unwrap_or_default(),
                     }),
+                    Some("thinking") => {
+                        if let Some(text) = block.get("thinking").and_then(Value::as_str)
+                            && !text.trim().is_empty()
+                        {
+                            items.push(ChatStreamItem::Reasoning(text.to_owned()));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1124,6 +1209,7 @@ pub fn parse_claude_chat_line(line: &str) -> Vec<ChatStreamItem> {
                         .and_then(Value::as_bool)
                         .unwrap_or(false),
                     detail: tool_result_text(block.get("content")),
+                    output: tool_result_full_text(block.get("content")),
                 })
                 .collect()
         }
@@ -1322,6 +1408,10 @@ pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {
                 Some("error") => string_field(item, "message")
                     .map(|m| vec![ChatStreamItem::Error(m)])
                     .unwrap_or_default(),
+                Some("reasoning") => string_field(item, "text")
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| vec![ChatStreamItem::Reasoning(t)])
+                    .unwrap_or_default(),
                 _ => {
                     let Some(tool_use) = codex_tool_use(item) else {
                         return Vec::new();
@@ -1341,6 +1431,7 @@ pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {
                             id: string_field(item, "id"),
                             is_error: failed,
                             detail,
+                            output: codex_tool_output(item),
                         },
                     ]
                 }
@@ -1435,10 +1526,11 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
                     let info = step.get("tool_info");
                     let error = info.and_then(|i| i.get("error")).filter(|e| has_content(e));
                     let failed = !matches!(state, "DONE" | "") || error.is_some();
-                    let detail = error
-                        .or_else(|| info.and_then(|i| i.get("output")))
+                    let result = error.or_else(|| info.and_then(|i| i.get("output")));
+                    let detail = result
                         .map(|v| tool_result_text(Some(v)))
                         .unwrap_or_default();
+                    let output = result.map(format_tool_output).unwrap_or_default();
                     let id = tool_use_id(&tool_use);
                     vec![
                         tool_use,
@@ -1446,6 +1538,7 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
                             id,
                             is_error: failed,
                             detail,
+                            output,
                         },
                     ]
                 }
@@ -1544,7 +1637,8 @@ fn antigravity_tool_use(step: &Value) -> Option<ChatStreamItem> {
         .get("tool_name")
         .and_then(Value::as_str)
         .or_else(|| info.and_then(|i| i.get("name")).and_then(Value::as_str))?;
-    let (verb, target) = antigravity_tool_label(name, info.and_then(|i| i.get("parameters")));
+    let parameters = info.and_then(|i| i.get("parameters"));
+    let (verb, target) = antigravity_tool_label(name, parameters);
     let id = step
         .get("step_index")
         .and_then(Value::as_u64)
@@ -1553,6 +1647,7 @@ fn antigravity_tool_use(step: &Value) -> Option<ChatStreamItem> {
         id,
         verb,
         target: single_line(&target, TOOL_TARGET_MAX_CHARS),
+        input: parameters.map(format_tool_input).unwrap_or_default(),
     })
 }
 
@@ -1614,38 +1709,85 @@ pub(crate) fn antigravity_tool_label(name: &str, parameters: Option<&Value>) -> 
 }
 
 fn codex_tool_use(item: &Value) -> Option<ChatStreamItem> {
-    let (verb, target) = match item.get("type").and_then(Value::as_str)? {
-        "command_execution" => ("Shell", string_field(item, "command").unwrap_or_default()),
+    let (verb, target, input) = match item.get("type").and_then(Value::as_str)? {
+        "command_execution" => {
+            let command = string_field(item, "command").unwrap_or_default();
+            ("Shell", command.clone(), command)
+        }
         "file_change" => {
-            let paths = item
+            let changes = item
                 .get("changes")
                 .and_then(Value::as_array)
-                .map(|changes| {
-                    changes
-                        .iter()
-                        .filter_map(|c| string_field(c, "path"))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                })
+                .cloned()
                 .unwrap_or_default();
-            ("Edit", paths)
+            let paths = changes
+                .iter()
+                .filter_map(|c| string_field(c, "path"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let listed = changes
+                .iter()
+                .filter_map(|c| {
+                    let path = string_field(c, "path")?;
+                    Some(match string_field(c, "kind") {
+                        Some(kind) => format!("{kind} {path}"),
+                        None => path,
+                    })
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            ("Edit", paths, listed)
         }
         "mcp_tool_call" => {
             let server = string_field(item, "server").unwrap_or_default();
             let tool = string_field(item, "tool").unwrap_or_default();
-            ("MCP", [server, tool].join("."))
+            let arguments = item
+                .get("arguments")
+                .filter(|a| has_content(a))
+                .map(format_tool_input)
+                .unwrap_or_default();
+            ("MCP", [server, tool].join("."), arguments)
         }
-        "web_search" => (
-            "Web search",
-            string_field(item, "query").unwrap_or_default(),
-        ),
+        "web_search" => {
+            let query = string_field(item, "query").unwrap_or_default();
+            ("Web search", query.clone(), query)
+        }
         _ => return None,
     };
     Some(ChatStreamItem::ToolUse {
         id: string_field(item, "id"),
         verb: verb.to_owned(),
         target: single_line(&target, TOOL_TARGET_MAX_CHARS),
+        input,
     })
+}
+
+/// Everything a finished Codex item gave back: a command's output and exit code, an MCP
+/// call's result or error.
+fn codex_tool_output(item: &Value) -> String {
+    let mut parts = Vec::new();
+    if let Some(output) = item
+        .get("aggregated_output")
+        .and_then(Value::as_str)
+        .filter(|o| !o.trim().is_empty())
+    {
+        parts.push(output.trim_end().to_owned());
+    }
+    if let Some(result) = item.get("result").filter(|r| has_content(r)) {
+        let content = result.get("content").filter(|c| has_content(c));
+        parts.push(match content {
+            Some(content) => tool_result_full_text(Some(content)),
+            None => format_tool_output(result),
+        });
+    }
+    if let Some(error) = item.get("error").filter(|e| has_content(e)) {
+        parts.push(string_field(error, "message").unwrap_or_else(|| format_tool_output(error)));
+    }
+    if let Some(code) = item.get("exit_code").and_then(Value::as_i64) {
+        parts.push(format!("[exit code {code}]"));
+    }
+    parts.retain(|p| !p.trim().is_empty());
+    parts.join("\n")
 }
 
 fn message_content(val: &Value) -> Option<&Vec<Value>> {
@@ -1695,6 +1837,64 @@ fn tool_result_text(content: Option<&Value>) -> String {
             .unwrap_or_default(),
         _ => String::new(),
     }
+}
+
+/// Every text block of a tool result (a string, or blocks), whole; other blocks (an image)
+/// are named.
+fn tool_result_full_text(content: Option<&Value>) -> String {
+    match content {
+        Some(Value::String(text)) => text.trim_end().to_owned(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .map(|block| match block.get("text").and_then(Value::as_str) {
+                Some(text) => text.trim_end().to_owned(),
+                None => match block.get("type").and_then(Value::as_str) {
+                    Some(kind) => format!("[{kind}]"),
+                    None => format_tool_output(block),
+                },
+            })
+            .filter(|t| !t.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => format_tool_output(other),
+    }
+}
+
+/// A tool's output as text: strings as they are, anything else as indented JSON.
+fn format_tool_output(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.trim_end().to_owned(),
+        Value::Null => String::new(),
+        other => serde_json::to_string_pretty(other).unwrap_or_default(),
+    }
+}
+
+/// What the agent passed a tool, one `name: value` line per argument. Multi-line text (a
+/// script, a file's new contents, an edit) goes under its name as it is, so it reads the way
+/// the tool gets it.
+fn format_tool_input(input: &Value) -> String {
+    let Value::Object(fields) = input else {
+        return format_tool_output(input);
+    };
+    let mut out = String::new();
+    for (name, value) in fields {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        match value {
+            Value::String(text) if text.contains('\n') => {
+                out.push_str(&format!("{name}:\n{}", text.trim_end()));
+            }
+            Value::String(text) => out.push_str(&format!("{name}: {text}")),
+            Value::Array(_) | Value::Object(_) => {
+                let json = serde_json::to_string_pretty(value).unwrap_or_default();
+                out.push_str(&format!("{name}: {json}"));
+            }
+            other => out.push_str(&format!("{name}: {other}")),
+        }
+    }
+    out
 }
 
 /// Errors that keep a chat turn from starting.
@@ -2211,20 +2411,29 @@ fn run_chat_turn(
                         saw_text = true;
                         ChatEvent::AssistantMessage { text }
                     }
-                    ChatStreamItem::ToolUse { id, verb, target } => ChatEvent::ToolStarted {
+                    ChatStreamItem::ToolUse {
+                        id,
+                        verb,
+                        target,
+                        input,
+                    } => ChatEvent::ToolStarted {
                         tool_id: id,
                         verb,
                         target,
+                        input,
                     },
                     ChatStreamItem::ToolResult {
                         id,
                         is_error,
                         detail,
+                        output,
                     } => ChatEvent::ToolFinished {
                         tool_id: id,
                         success: !is_error,
                         detail,
+                        output,
                     },
+                    ChatStreamItem::Reasoning(text) => ChatEvent::Reasoning { text },
                     ChatStreamItem::Result {
                         text,
                         is_error,
@@ -2958,6 +3167,52 @@ mod tests {
     }
 
     #[test]
+    fn tool_steps_keep_their_whole_input_and_output() {
+        assert_eq!(keep_full_text("line 1\nline 2\n"), "line 1\nline 2");
+        let long: String = "a".repeat(TOOL_FULL_MAX_CHARS) + &"b".repeat(10);
+        let kept = keep_full_text(&long);
+        assert!(kept.starts_with(&"a".repeat(TOOL_FULL_MAX_CHARS / 2)));
+        assert!(kept.ends_with(&"b".repeat(10)));
+        assert!(kept.contains("[… 10 characters not kept …]"));
+
+        assert_eq!(
+            format_tool_input(&serde_json::json!({
+                "file_path": "src/a.rs",
+                "old_string": "fn a() {\n}",
+                "replace_all": false,
+            })),
+            "file_path: src/a.rs\nold_string:\nfn a() {\n}\nreplace_all: false"
+        );
+
+        // Reasoning that lands while a reply streams goes before the reply.
+        let mut chat = session();
+        chat.apply_event(
+            &ChatEvent::AssistantDelta {
+                text: "Hi".to_owned(),
+            },
+            101,
+        );
+        chat.apply_event(
+            &ChatEvent::Reasoning {
+                text: "  think  ".to_owned(),
+            },
+            101,
+        );
+        assert_eq!(
+            chat.entries,
+            vec![
+                ChatEntry::Reasoning {
+                    text: "think".to_owned()
+                },
+                ChatEntry::Assistant {
+                    text: "Hi".to_owned(),
+                    streaming: true,
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn parses_claude_stream_json_for_chat_turns() {
         assert_eq!(
             parse_claude_chat_line(
@@ -2981,6 +3236,7 @@ mod tests {
                     id: Some("toolu_1".to_owned()),
                     verb: "Bash".to_owned(),
                     target: "ls -la …".to_owned(),
+                    input: "command:\nls -la\nwc -l\ndescription: List".to_owned(),
                 },
             ]
         );
@@ -2992,6 +3248,7 @@ mod tests {
                 id: Some("toolu_1".to_owned()),
                 is_error: true,
                 detail: "No such file …".to_owned(),
+                output: "No such file\nmore".to_owned(),
             }]
         );
         assert_eq!(
@@ -3049,6 +3306,14 @@ mod tests {
                 cost_micros: UsageCount::SessionTotal(0),
             }]
         );
+        assert_eq!(
+            parse_claude_chat_line(
+                r#"{"type":"assistant","message":{"content":[{"type":"thinking","thinking":"Check the config first.","signature":"x"},{"type":"thinking","thinking":""}]}}"#
+            ),
+            vec![ChatStreamItem::Reasoning(
+                "Check the config first.".to_owned()
+            )]
+        );
         // A subagent's messages belong to its Task tool call, not the chat.
         assert!(
             parse_claude_chat_line(
@@ -3069,6 +3334,7 @@ mod tests {
             id: Some("item_1".to_owned()),
             verb: "Shell".to_owned(),
             target: "bash -lc 'cargo test'".to_owned(),
+            input: "bash -lc 'cargo test'".to_owned(),
         };
         assert_eq!(
             parse_codex_chat_line(
@@ -3086,6 +3352,7 @@ mod tests {
                     id: Some("item_1".to_owned()),
                     is_error: true,
                     detail: "exit 101".to_owned(),
+                    output: "boom\n[exit code 101]".to_owned(),
                 },
             ]
         );
@@ -3167,6 +3434,7 @@ mod tests {
                     tool_id: Some("t1".to_owned()),
                     verb: "Bash".to_owned(),
                     target: "cargo test".to_owned(),
+                    input: "cargo test --workspace".to_owned(),
                 },
                 105,
             );
@@ -3176,6 +3444,7 @@ mod tests {
                 tool_id: None,
                 verb: "Read".to_owned(),
                 target: "src/lib.rs".to_owned(),
+                input: String::new(),
             },
             105,
         );
@@ -3184,6 +3453,7 @@ mod tests {
                 tool_id: Some("t1".to_owned()),
                 success: false,
                 detail: "1 failed".to_owned(),
+                output: "running 2 tests\ntest a ... ok\ntest b ... FAILED\n".to_owned(),
             },
             106,
         );
@@ -3231,6 +3501,8 @@ mod tests {
                     target: "cargo test".to_owned(),
                     status: ChatToolStatus::Failed,
                     detail: "1 failed".to_owned(),
+                    input: "cargo test --workspace".to_owned(),
+                    output: "running 2 tests\ntest a ... ok\ntest b ... FAILED".to_owned(),
                 },
                 ChatEntry::Tool {
                     tool_id: None,
@@ -3238,6 +3510,8 @@ mod tests {
                     target: "src/lib.rs".to_owned(),
                     status: ChatToolStatus::Succeeded,
                     detail: String::new(),
+                    input: String::new(),
+                    output: String::new(),
                 },
             ]
         );
@@ -3251,6 +3525,7 @@ mod tests {
                 tool_id: Some("t2".to_owned()),
                 verb: "Bash".to_owned(),
                 target: "make".to_owned(),
+                input: "make".to_owned(),
             },
             111,
         );
@@ -4004,6 +4279,7 @@ echo '{{"event":"result","result":{{"conversation_id":"agy-conv-3","status":"SUC
                 id: Some("agy-step-5".to_owned()),
                 verb: "Shell".to_owned(),
                 target: "cargo test".to_owned(),
+                input: "CommandLine: cargo test\nCwd: /repo".to_owned(),
             }]
         );
         assert_eq!(
@@ -4015,11 +4291,13 @@ echo '{{"event":"result","result":{{"conversation_id":"agy-conv-3","status":"SUC
                     id: Some("agy-step-6".to_owned()),
                     verb: "Read".to_owned(),
                     target: "/repo/f.txt".to_owned(),
+                    input: "Path: /repo/f.txt".to_owned(),
                 },
                 ChatStreamItem::ToolResult {
                     id: Some("agy-step-6".to_owned()),
                     is_error: false,
                     detail: "1 lines, 6 bytes".to_owned(),
+                    output: "1 lines, 6 bytes".to_owned(),
                 },
             ]
         );
