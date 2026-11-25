@@ -460,12 +460,7 @@ fn tokens_chart_view(snap: &DashboardSnapshot) -> impl IntoElement {
                         .child(bars_row),
                 ),
         )
-        .child(
-            view()
-                .flex_row()
-                .pl(px(CHART_AXIS_WIDTH))
-                .child(x_axis_row),
-        )
+        .child(view().flex_row().pl(px(CHART_AXIS_WIDTH)).child(x_axis_row))
 }
 
 fn axis_tick(label: String) -> impl IntoElement {
