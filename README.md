@@ -206,3 +206,30 @@ cargo test --workspace
 nsh run --target macos
 nsh package --target macos
 ```
+
+## System Logging
+
+Bruk writes structured diagnostics to macOS Unified Logging (`os_log`) and Instruments (`os_signpost`)
+under subsystem `dev.frithuz.bruk`, grouped by category (`boot`, `app`, `storage`, `projects`,
+`providers`, `chat`, `workflow`, `mcp`, `secrets`, `github`, `work_queue`, `inbox`, `machines`,
+`preferences`, `runtime`). Panics are recorded at `fault` level so `.app` crashes leave a trace in
+Console.app. Secret values and raw credentials are never logged.
+
+```sh
+# Stream live operational logs across all categories
+log stream --predicate 'subsystem == "dev.frithuz.bruk"'
+
+# Include verbose debug and trace records
+log stream --info --debug --predicate 'subsystem == "dev.frithuz.bruk"'
+
+# Focus on specific subsystems
+log stream --predicate 'subsystem == "dev.frithuz.bruk" && category IN {"workflow", "chat", "secrets"}'
+
+# Inspect recent logs or errors from the last 10 minutes
+log show --predicate 'subsystem == "dev.frithuz.bruk"' --last 10m
+log show --predicate 'subsystem == "dev.frithuz.bruk" && messageType >= error' --last 10m
+```
+
+When running from a terminal with `RUST_LOG` set (for example `RUST_LOG=debug cargo run`), matching
+records are also echoed to `stderr`. Headless tests do not initialize the system logger, keeping OS
+logs quiet during `cargo test`.

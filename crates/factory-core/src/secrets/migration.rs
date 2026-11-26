@@ -126,12 +126,14 @@ pub fn migrate_plaintext_secrets(
     match store.status() {
         StoreStatus::Available => {}
         StoreStatus::Locked => {
+            log::warn!("secrets.migration.aborted reason=keychain_locked");
             report.aborted_reason = Some(
                 "OS Keychain is locked. Unlock your Keychain so Bruk can migrate existing credentials out of plaintext SQLite.".to_owned(),
             );
             return Ok(report);
         }
         StoreStatus::Unavailable(msg) => {
+            log::warn!("secrets.migration.aborted reason=keychain_unavailable detail={msg}");
             report.aborted_reason = Some(format!(
                 "OS Keychain is unavailable ({msg}). Bruk aborted credential migration without modifying your database."
             ));
@@ -597,6 +599,13 @@ pub fn migrate_plaintext_secrets(
         report.disk_cleanup_completed = true;
     }
 
+    log::info!(
+        "secrets.migration.completed migrated={} scrubbed={} openrouter_needs_value={} disk_cleanup={} had_failures={had_value_bearing_failure}",
+        report.migrated_names.len(),
+        report.scrubbed_records,
+        report.openrouter_needs_value.len(),
+        report.disk_cleanup_completed,
+    );
     Ok(report)
 }
 

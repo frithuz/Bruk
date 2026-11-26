@@ -594,9 +594,10 @@ impl SecretResolver {
             // Level 1: Project P's own scope (SecretRecord wins on tie over plain var).
             if let Some(rec) = project_secrets_by_lower.get(&lower) {
                 if plain_by_lower.contains_key(&lower) {
-                    eprintln!(
-                        "warning: project {} has both a SecretRecord and a plain env var named '{}'; SecretRecord wins",
-                        project, rec.name
+                    log::warn!(
+                        "secret.shadowed project_id={} name={:?} winner=SecretRecord",
+                        project,
+                        rec.name
                     );
                 }
                 let exposure = match rec.kind {

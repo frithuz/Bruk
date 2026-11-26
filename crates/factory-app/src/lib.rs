@@ -4,6 +4,7 @@ pub mod boot_log;
 mod fonts;
 mod menu;
 mod store;
+pub mod system_log;
 mod ui;
 
 use std::{ffi::OsString, path::PathBuf};

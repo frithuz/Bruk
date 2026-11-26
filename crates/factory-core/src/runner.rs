@@ -381,6 +381,17 @@ pub fn execute_workflow_blocking(
         prepare_checkout(&request, &runtime_root);
 
     let planned = collect_planned_steps(&request.workflow.nodes, &request.catalog);
+    log::info!(
+        "workflow.run.start run_id={} run_number={} project={:?} workflow={:?} steps={} branch={} isolated_worktree={} issue={:?}",
+        request.run_id,
+        request.run_number,
+        request.project_name,
+        request.workflow.name,
+        planned.len(),
+        branch_name,
+        is_isolated_worktree,
+        request.issue_number,
+    );
     let _ = tx.send(RunnerEvent::RunStarted {
         run_id: request.run_id.clone(),
         run_number: request.run_number,
@@ -457,6 +468,27 @@ pub fn execute_workflow_blocking(
             )
         }
     };
+
+    match (&status, &error) {
+        (RunExecutionState::Failed, Some(err)) => log::error!(
+            "workflow.run.finished run_id={} workflow={:?} status=Failed steps={} duration_ms={} tokens={} cost_cents={} err={err}",
+            request.run_id,
+            request.workflow.name,
+            steps_executed,
+            total_duration_ms,
+            total_tokens,
+            total_cost_cents,
+        ),
+        _ => log::info!(
+            "workflow.run.finished run_id={} workflow={:?} status={status:?} steps={} duration_ms={} tokens={} cost_cents={}",
+            request.run_id,
+            request.workflow.name,
+            steps_executed,
+            total_duration_ms,
+            total_tokens,
+            total_cost_cents,
+        ),
+    }
 
     let _ = tx.send(RunnerEvent::RunFinished {
         status,
@@ -1262,6 +1294,12 @@ fn execute_agent_step(
         tokens_used,
         cost_cents,
     });
+    log::info!(
+        "workflow.step.agent_finished run_id={} step_index={} step={:?} status={step_status:?} exit_code={exit_code} duration_ms={duration_ms} tokens={tokens_used} cost_cents={cost_cents}",
+        cursor.request.run_id,
+        step_index,
+        step.name,
+    );
 
     if cursor.control.is_stopped() {
         return Err(RunnerError::Stopped);
@@ -1523,6 +1561,12 @@ fn execute_shell_step(
         tokens_used: 0,
         cost_cents: 0,
     });
+    log::info!(
+        "workflow.step.shell_finished run_id={} step_index={} step={:?} status={step_status:?} exit_code={exit_code} duration_ms={duration_ms}",
+        cursor.request.run_id,
+        step_index,
+        step.name,
+    );
 
     if cursor.control.is_stopped() {
         return Err(RunnerError::Stopped);
@@ -1600,9 +1644,23 @@ fn execute_approval_gate(
     // Clear and zeroize RunSecrets immediately before suspending at an ApprovalGate (§4)
     // so decrypted credentials never sit in RAM while waiting for human review.
     cursor.secrets_cache.clear_and_zeroize();
+    log::info!(
+        "workflow.gate.requested run_id={} gate_id={gate_id} step={:?}",
+        cursor.request.run_id,
+        step_name,
+    );
 
     let decision = cursor.control.wait_for_gate(&gate_id);
     let duration_ms = started.elapsed().as_millis() as u64;
+    let decision_label = match &decision {
+        GateDecision::Approve { .. } => "approve",
+        GateDecision::RequestChanges { .. } => "request_changes",
+        GateDecision::Stop => "stop",
+    };
+    log::info!(
+        "workflow.gate.decided run_id={} gate_id={gate_id} decision={decision_label} wait_ms={duration_ms}",
+        cursor.request.run_id,
+    );
 
     match decision {
         GateDecision::Approve { note } => {
@@ -2096,10 +2154,29 @@ fn prepare_checkout(request: &WorkflowRunRequest, runtime_root: &Path) -> (PathB
             ])
             .current_dir(&request.project_root)
             .output();
-        if let Ok(out) = output
-            && out.status.success()
-        {
-            return (worktree_dir, branch_name, true);
+        match output {
+            Ok(out) if out.status.success() => {
+                log::info!(
+                    "workflow.worktree.created run_id={} branch={branch_name} path={}",
+                    request.run_id,
+                    worktree_dir.display()
+                );
+                return (worktree_dir, branch_name, true);
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                log::warn!(
+                    "workflow.worktree.fallback run_id={} branch={branch_name} err={}",
+                    request.run_id,
+                    stderr.trim()
+                );
+            }
+            Err(err) => {
+                log::warn!(
+                    "workflow.worktree.fallback run_id={} branch={branch_name} err={err}",
+                    request.run_id
+                );
+            }
         }
     }
 

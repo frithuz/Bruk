@@ -499,14 +499,17 @@ impl AppState {
                         None,
                     )
                 }
-                Err(err) => (
-                    None,
-                    "Unavailable".to_owned(),
-                    Vec::new(),
-                    AppPreferences::empty(),
-                    Some(format!("Could not open SQLite database: {err}")),
-                    Some(format!("Database unavailable: {err}")),
-                ),
+                Err(err) => {
+                    log::error!(target: "bruk::storage", "db.open_failed err={err}");
+                    (
+                        None,
+                        "Unavailable".to_owned(),
+                        Vec::new(),
+                        AppPreferences::empty(),
+                        Some(format!("Could not open SQLite database: {err}")),
+                        Some(format!("Database unavailable: {err}")),
+                    )
+                }
             };
 
         let demo_mode = persisted_prefs.demo_mode;
@@ -1331,6 +1334,10 @@ impl AppState {
             && let Ok(db) = db_arc.lock()
             && let Err(err) = db.save_project_settings(project_id, &settings)
         {
+            log::error!(
+                target: "bruk::storage",
+                "db.save_project_settings_failed project_id={project_id} project={project_name:?} err={err}"
+            );
             self.project_settings_error = Some(format!("Could not save project settings: {err}"));
         }
     }
@@ -1349,8 +1356,12 @@ impl AppState {
         };
         if let Some(db_arc) = self.db.as_ref()
             && let Ok(db) = db_arc.lock()
+            && let Err(err) = db.save_project_work_queue(project_id, &queue)
         {
-            let _ = db.save_project_work_queue(project_id, &queue);
+            log::error!(
+                target: "bruk::storage",
+                "db.save_work_queue_failed project_id={project_id} project={project_name:?} err={err}"
+            );
         }
     }
 
@@ -1523,6 +1534,7 @@ impl AppState {
             && let Ok(db) = db_arc.lock()
             && let Err(err) = db.save_preferences(&to_save)
         {
+            log::error!(target: "bruk::storage", "db.save_preferences_failed err={err}");
             self.preferences_error = Some(format!("Could not save preferences: {err}"));
         }
         self.refresh_secrets_state();
@@ -1931,6 +1943,12 @@ pub(crate) fn complete_home_setup() {
     {
         Ok(setup) => {
             let root_display = display_with_tilde(setup.home.root());
+            log::info!(
+                target: "bruk::app",
+                "home_setup.completed root={root_display} adopted_existing={} imported_legacy={}",
+                setup.adopted_existing,
+                setup.imported_from.is_some()
+            );
             let mut loaded =
                 AppState::from_home(setup.home, claude_path_lookup, secret_store, legacy_paths);
             if loaded.status_message.is_none() {
@@ -1947,11 +1965,14 @@ pub(crate) fn complete_home_setup() {
             }
             install_state(loaded);
         }
-        Err(err) => state().update(|s| {
-            if let Some(draft) = s.home_setup.as_mut() {
-                draft.error = Some(err.to_string());
-            }
-        }),
+        Err(err) => {
+            log::warn!(target: "bruk::app", "home_setup.failed err={err}");
+            state().update(|s| {
+                if let Some(draft) = s.home_setup.as_mut() {
+                    draft.error = Some(err.to_string());
+                }
+            });
+        }
     }
 }
 
@@ -2342,6 +2363,7 @@ pub(crate) fn set_demo_mode(enabled: bool) {
         } else {
             Some("Demo Mode disabled".to_owned())
         };
+        log::info!(target: "bruk::app", "demo_mode.changed enabled={enabled}");
 
         let mut next = AppState::build_for_mode(
             db.clone(),
@@ -2722,6 +2744,10 @@ pub(crate) fn toggle_pause_workflow_run() {
                 "Resumed"
             };
             let run_no = run.run_number;
+            log::info!(
+                target: "bruk::workflow",
+                "workflow.run.toggle_pause project={project:?} workflow={workflow:?} run_number={run_no} state={state_label}"
+            );
             s.status_message = Some(format!("{state_label} run #{run_no} ({workflow})"));
         }
     });
@@ -2735,6 +2761,10 @@ pub(crate) fn stop_workflow_run() {
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.stop() {
             let run_no = run.run_number;
+            log::info!(
+                target: "bruk::workflow",
+                "workflow.run.stop_requested project={project:?} workflow={workflow:?} run_number={run_no}"
+            );
             s.status_message = Some(format!("Stopped run #{run_no} ({workflow})"));
         }
     });
@@ -2794,6 +2824,10 @@ pub(crate) fn approve_workflow_run_review_gate() {
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.approve_review_gate() {
             let run_no = run.run_number;
+            log::info!(
+                target: "bruk::workflow",
+                "workflow.run.approve_gate project={project:?} workflow={workflow:?} run_number={run_no}"
+            );
             s.workflow_run_selected_step = run.active_step_index;
             s.status_message = Some(format!("Approved review gate for run #{run_no}"));
         }
@@ -2953,6 +2987,10 @@ fn register_project_with_branch(name: &str, path: &str, default_branch: &str) ->
             }
             Err(err) => {
                 let message = err.to_string();
+                log::warn!(
+                    target: "bruk::projects",
+                    "project.register_failed name={name:?} path={path} err={message}"
+                );
                 s.registration_error = Some(message.clone());
                 s.status_message = Some(message);
             }
@@ -3005,6 +3043,10 @@ pub(crate) fn remove_project(id: ProjectId) {
             && let Ok(db) = db_arc.lock()
         {
             if let Err(err) = db.delete_project(id) {
+                log::error!(
+                    target: "bruk::projects",
+                    "project.remove_failed project_id={id} err={err}"
+                );
                 let message = format!("Failed to remove project: {err}");
                 s.registration_error = Some(message.clone());
                 s.status_message = Some(message);
@@ -3333,8 +3375,12 @@ impl AppState {
         if let Some(session) = self.chat_sessions.get(chat_id)
             && let Some(db_arc) = self.db.as_ref()
             && let Ok(db) = db_arc.lock()
+            && let Err(err) = db.save_chat_session(session)
         {
-            let _ = db.save_chat_session(session);
+            log::error!(
+                target: "bruk::storage",
+                "db.save_chat_session_failed chat_id={chat_id} err={err}"
+            );
         }
     }
 
@@ -4105,6 +4151,10 @@ fn start_chat_turn(chat_id: String, request: ChatTurnRequest) {
                 if let Some(chat) = s.chat_sessions.get_mut(&chat_id)
                     && chat.is_running()
                 {
+                    log::error!(
+                        target: "bruk::chat",
+                        "chat.turn.unexpected_end chat_id={chat_id}"
+                    );
                     chat.apply_event(
                         &ChatEvent::TurnFinished {
                             status: ChatSessionStatus::Failed,
@@ -4230,6 +4280,7 @@ pub(crate) fn stop_active_chat() {
     let Some(id) = active_chat_id() else {
         return;
     };
+    log::info!(target: "bruk::chat", "chat.stop_requested chat_id={id}");
     let control = chat_registry()
         .lock()
         .ok()
@@ -4267,6 +4318,12 @@ pub(crate) fn delete_chat(id: &str) {
         let Some(chat) = s.chat_sessions.remove(id) else {
             return;
         };
+        log::info!(
+            target: "bruk::chat",
+            "chat.deleted chat_id={id} provider={} had_worktree={}",
+            chat.provider.label(),
+            chat.worktree.is_some()
+        );
         if !s.using_sample_projects
             && let Some(db_arc) = s.db.as_ref()
             && let Ok(db) = db_arc.lock()
@@ -4912,8 +4969,22 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
                             s.status_message = Some(summary.clone());
                             s.project_settings_error = None;
                             s.project_settings_feedback = Some(summary);
+                            log::info!(
+                                target: "bruk::work_queue",
+                                "work_queue.github_sync.done project={project_name:?} repo={} open={} ready={} newly_queued={} unmatched={} auto_started={}",
+                                snapshot.repo,
+                                diff.total_open,
+                                diff.ready_count,
+                                diff.newly_queued.len(),
+                                diff.unmatched_count,
+                                auto_started_issues.len()
+                            );
                         }
                         Err(message) => {
+                            log::warn!(
+                                target: "bruk::work_queue",
+                                "work_queue.github_sync.failed project={project_name:?} err={message}"
+                            );
                             if let Some(settings) = s.project_settings.get_mut(&project_name) {
                                 settings.apply_github_sync_error(&message);
                             }
@@ -5544,6 +5615,7 @@ pub(crate) fn inbox_open_selected_run() {
 pub(crate) fn toggle_pause_all_agents() {
     state().update(|s| {
         let paused = s.inbox.toggle_pause_all_agents();
+        log::info!(target: "bruk::inbox", "inbox.pause_all_agents paused={paused}");
         let msg = if paused {
             "Paused all active agents".to_owned()
         } else {
@@ -5557,6 +5629,7 @@ pub(crate) fn toggle_pause_all_agents() {
 pub(crate) fn toggle_snooze_notifications() {
     state().update(|s| {
         let snoozed = s.inbox.toggle_snooze_notifications();
+        log::info!(target: "bruk::inbox", "inbox.snooze_notifications mins={snoozed:?}");
         let msg = if let Some(mins) = snoozed {
             format!("Snoozed notifications for {mins} minutes")
         } else {
@@ -10813,6 +10886,10 @@ pub(crate) fn save_workflow_editor() {
                     });
                 }
                 Err(err) => {
+                    log::error!(
+                        target: "bruk::workflow",
+                        "workflow.editor.save_failed project={project:?} workflow_id={workflow_id:?} err={err}"
+                    );
                     s.status_message = Some(format!("Failed to save workflow: {err}"));
                 }
             }
@@ -11064,6 +11141,10 @@ fn spawn_real_workflow_run(
     });
 
     let Some((request, started_at)) = setup else {
+        log::warn!(
+            target: "bruk::workflow",
+            "workflow.launch.unresolved project={project_name:?} workflow={workflow_id_or_name:?}"
+        );
         if open_run_view {
             state().update(|s| {
                 s.status_message = Some(format!(
@@ -11082,6 +11163,11 @@ fn spawn_real_workflow_run(
         && request.antigravity_binary.is_none()
         && workflow_requires_agent(&request.workflow, &request.catalog)
     {
+        log::warn!(
+            target: "bruk::workflow",
+            "workflow.launch.skipped_no_provider project={project_name:?} workflow={:?}",
+            request.workflow.name
+        );
         return false;
     }
 
@@ -11781,10 +11867,20 @@ pub(crate) fn create_app_keychain_secret(
                 s.secrets_error = None;
                 s.secrets_feedback =
                     Some(format!("Saved app secret '{}' in Keychain.", saved.name));
+                log::info!(
+                    target: "bruk::secrets",
+                    "secrets.created id={} name={:?} scope=app source=keychain",
+                    saved.id,
+                    saved.name
+                );
                 s.refresh_secrets_state();
                 ok = true;
             }
             Some(Err(err)) => {
+                log::warn!(
+                    target: "bruk::secrets",
+                    "secrets.create_failed name={trimmed:?} scope=app source=keychain err={err}"
+                );
                 s.secrets_feedback = None;
                 s.secrets_error = Some(err.to_string());
             }
@@ -11900,10 +11996,21 @@ pub(crate) fn create_project_keychain_secret(
                 s.project_settings_error = None;
                 s.project_settings_feedback =
                     Some(format!("Saved secret '{}' in Keychain.", saved.name));
+                log::info!(
+                    target: "bruk::secrets",
+                    "secrets.created id={} name={:?} scope=project project={pname:?} source=keychain",
+                    saved.id,
+                    saved.name
+                );
                 s.refresh_secrets_state();
                 ok = true;
             }
             Some(Err(err)) => {
+                log::warn!(
+                    target: "bruk::secrets",
+                    "secrets.create_failed name={:?} scope=project project={pname:?} source=keychain err={err}",
+                    name.trim()
+                );
                 s.project_settings_feedback = None;
                 s.project_settings_error = Some(err.to_string());
             }
@@ -12198,9 +12305,17 @@ pub(crate) fn delete_secret_by_id(id: &str) {
                     s.secrets_feedback = Some(format!("Deleted secret '{name}'."));
                     s.project_settings_error = None;
                     s.project_settings_feedback = Some(format!("Deleted secret '{name}'."));
+                    log::info!(
+                        target: "bruk::secrets",
+                        "secrets.deleted id={id} name={name:?}"
+                    );
                     s.refresh_secrets_state();
                 }
                 Err(err) => {
+                    log::error!(
+                        target: "bruk::secrets",
+                        "secrets.delete_failed id={id} name={name:?} err={err}"
+                    );
                     s.secrets_error = Some(err.to_string());
                     s.project_settings_error = Some(err.to_string());
                 }
@@ -12245,6 +12360,7 @@ pub(crate) fn confirm_database_moved() {
         if let Some(res) = outcome {
             match res {
                 Ok(()) => {
+                    log::info!(target: "bruk::secrets", "secrets.db_moved_confirmed");
                     s.db_path_change_pending = None;
                     s.secrets_error = None;
                     s.secrets_feedback =
@@ -12257,6 +12373,10 @@ pub(crate) fn confirm_database_moved() {
                     s.refresh_secrets_state();
                 }
                 Err(err) => {
+                    log::error!(
+                        target: "bruk::secrets",
+                        "secrets.db_moved_failed err={err}"
+                    );
                     s.secrets_error = Some(format!("Could not update database path: {err}"));
                 }
             }
@@ -12278,6 +12398,7 @@ pub(crate) fn confirm_database_cloned() {
         if let Some(res) = outcome {
             match res {
                 Ok(_) => {
+                    log::info!(target: "bruk::secrets", "secrets.db_cloned_confirmed");
                     s.db_path_change_pending = None;
                     s.secrets_error = None;
                     s.secrets_feedback = Some(
@@ -12292,6 +12413,10 @@ pub(crate) fn confirm_database_cloned() {
                     s.refresh_secrets_state();
                 }
                 Err(err) => {
+                    log::error!(
+                        target: "bruk::secrets",
+                        "secrets.db_cloned_failed err={err}"
+                    );
                     s.secrets_error = Some(format!("Could not reset cloned database: {err}"));
                 }
             }
@@ -12307,6 +12432,10 @@ pub(crate) fn delete_legacy_databases_now() {
         }
         match delete_legacy_database_files(&paths) {
             Ok(removed) => {
+                log::info!(
+                    target: "bruk::secrets",
+                    "secrets.legacy_databases_deleted count={removed}"
+                );
                 s.legacy_db_files_found.clear();
                 let cleared = s.inbox.clear_secret_problems(|p| {
                     matches!(p.fix, SecretFix::DeleteLegacyDatabases { .. })
@@ -12317,6 +12446,10 @@ pub(crate) fn delete_legacy_databases_now() {
                 s.secrets_feedback = Some(format!("Deleted {removed} legacy database file(s)."));
             }
             Err(err) => {
+                log::error!(
+                    target: "bruk::secrets",
+                    "secrets.legacy_databases_delete_failed err={err}"
+                );
                 s.secrets_error = Some(format!("Could not delete legacy files: {err}"));
             }
         }

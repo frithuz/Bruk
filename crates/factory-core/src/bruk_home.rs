@@ -321,6 +321,12 @@ impl HomeEnvironment {
         }
 
         self.remember_root(&root)?;
+        log::info!(
+            "bruk_home.set_up root={} adopted_existing={} imported_legacy={}",
+            root.display(),
+            adopted_existing,
+            imported_from.is_some()
+        );
         Ok(HomeSetup {
             home,
             imported_from,
@@ -463,12 +469,41 @@ pub struct ClonedRepository {
     pub default_branch: String,
 }
 
+/// Strips embedded `userinfo@` credentials from URLs before writing them to logs.
+pub fn sanitize_url_for_log(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_owned();
+    };
+    let rest = &url[scheme_end + 3..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    if let Some(at_pos) = authority.rfind('@') {
+        let mut out = String::with_capacity(url.len());
+        out.push_str(&url[..scheme_end + 3]);
+        out.push_str("***@");
+        out.push_str(&rest[at_pos + 1..]);
+        out
+    } else {
+        url.to_owned()
+    }
+}
+
 /// Clones `url` into `destination`, which must not exist or be an empty directory.
 ///
 /// Git never prompts for credentials here (`GIT_TERMINAL_PROMPT=0`), so a repository that
 /// needs them fails fast with git's error instead of hanging the app.
 pub fn clone_repository(url: &str, destination: &Path) -> Result<ClonedRepository, CloneError> {
+    let safe_url = sanitize_url_for_log(url);
+    let started = std::time::Instant::now();
+    log::info!(
+        "git.clone.start url={safe_url} dest={}",
+        destination.display()
+    );
     if destination.exists() && !is_empty_dir(destination) {
+        log::warn!(
+            "git.clone.destination_exists dest={}",
+            destination.display()
+        );
         return Err(CloneError::DestinationExists(destination.to_path_buf()));
     }
     if let Some(parent) = destination.parent() {
@@ -484,20 +519,34 @@ pub fn clone_repository(url: &str, destination: &Path) -> Result<ClonedRepositor
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| CloneError::GitUnavailable(err.to_string()))?;
+        .map_err(|err| {
+            log::error!("git.clone.spawn_failed url={safe_url} err={err}");
+            CloneError::GitUnavailable(err.to_string())
+        })?;
     if !output.status.success() {
         if is_empty_dir(destination) {
             let _ = fs::remove_dir(destination);
         }
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(CloneError::CloneFailed(if stderr.is_empty() {
+        let message = if stderr.is_empty() {
             output.status.to_string()
         } else {
             stderr
-        }));
+        };
+        log::error!(
+            "git.clone.failed url={safe_url} dest={} elapsed_ms={} err={message}",
+            destination.display(),
+            started.elapsed().as_millis()
+        );
+        return Err(CloneError::CloneFailed(message));
     }
 
     let default_branch = current_branch(destination).unwrap_or_else(|| "main".to_owned());
+    log::info!(
+        "git.clone.done url={safe_url} dest={} branch={default_branch} elapsed_ms={}",
+        destination.display(),
+        started.elapsed().as_millis()
+    );
     Ok(ClonedRepository {
         path: destination.to_path_buf(),
         default_branch,
@@ -778,6 +827,12 @@ pub fn init_local_repository(
     }
 
     let default_branch = current_branch(destination).unwrap_or(branch);
+    log::info!(
+        "git.init_local.done dest={} branch={default_branch} readme={} initial_commit={}",
+        destination.display(),
+        options.create_readme,
+        options.initial_commit
+    );
     Ok(InitializedRepository {
         path: destination.to_path_buf(),
         default_branch,
@@ -1208,5 +1263,25 @@ mod tests {
             init_local_repository(&file_dest, &InitRepositoryOptions::default()),
             Err(InitRepositoryError::NotADirectory(_))
         ));
+    }
+
+    #[test]
+    fn sanitize_url_for_log_strips_embedded_credentials() {
+        assert_eq!(
+            sanitize_url_for_log("https://user:ghp_secret123@github.com/org/repo.git"),
+            "https://***@github.com/org/repo.git"
+        );
+        assert_eq!(
+            sanitize_url_for_log("https://token@github.com/org/repo.git"),
+            "https://***@github.com/org/repo.git"
+        );
+        assert_eq!(
+            sanitize_url_for_log("https://github.com/org/repo.git"),
+            "https://github.com/org/repo.git"
+        );
+        assert_eq!(
+            sanitize_url_for_log("git@github.com:org/repo.git"),
+            "git@github.com:org/repo.git"
+        );
     }
 }

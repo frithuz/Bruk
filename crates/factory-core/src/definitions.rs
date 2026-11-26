@@ -1084,6 +1084,25 @@ impl BrukCatalog {
             });
         }
 
+        if catalog.load_diagnostics.is_empty() {
+            log::debug!(
+                "catalog.loaded root={} workflows={} agents={} skills={} modules={}",
+                project_root.display(),
+                catalog.effective_workflows.len(),
+                catalog.effective_agents.len(),
+                catalog.effective_skills.len(),
+                catalog.loaded_modules.len(),
+            );
+        } else {
+            log::warn!(
+                "catalog.loaded_with_diagnostics root={} workflows={} agents={} diagnostics={}",
+                project_root.display(),
+                catalog.effective_workflows.len(),
+                catalog.effective_agents.len(),
+                catalog.load_diagnostics.len(),
+            );
+        }
+
         catalog
     }
 
@@ -1761,6 +1780,11 @@ impl BrukCatalog {
             path: file_path.clone(),
             source,
         })?;
+        log::info!(
+            "catalog.workflow_saved id={:?} path={}",
+            workflow.id,
+            file_path.display()
+        );
         Ok(file_path)
     }
 
@@ -1784,6 +1808,12 @@ impl BrukCatalog {
                 })?;
                 removed = true;
             }
+        }
+        if removed {
+            log::info!(
+                "catalog.workflow_deleted id={workflow_id:?} dir={}",
+                dir.display()
+            );
         }
         Ok(removed)
     }

@@ -800,6 +800,7 @@ dependencies = [
  "dbus-secret-service-keyring-store",
  "dirs",
  "keyring-core",
+ "log",
  "rusqlite",
  "secrecy",
  "security-framework",

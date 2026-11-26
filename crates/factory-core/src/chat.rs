@@ -2414,11 +2414,35 @@ pub fn execute_chat_turn_blocking(
     control: &ChatTurnControl,
     tx: &mpsc::Sender<ChatEvent>,
 ) -> ChatSessionStatus {
+    let started = Instant::now();
+    log::info!(
+        "chat.turn.start provider={} resume={} prompt_chars={} attachments={} worktree={}",
+        request.provider.label(),
+        request.resume_session_id.is_some(),
+        request.prompt.chars().count(),
+        request.attachments.len(),
+        request.worktree.is_some(),
+    );
     let _ = tx.send(ChatEvent::TurnStarted);
     let (status, error) = match run_chat_turn(request, control, tx) {
         Ok(outcome) => outcome,
         Err(err) => (ChatSessionStatus::Failed, Some(err.to_string())),
     };
+    let elapsed_ms = started.elapsed().as_millis();
+    match (&status, &error) {
+        (ChatSessionStatus::Failed, Some(err)) => log::error!(
+            "chat.turn.finished provider={} status={status:?} elapsed_ms={elapsed_ms} err={err}",
+            request.provider.label(),
+        ),
+        (ChatSessionStatus::Stopped, _) => log::info!(
+            "chat.turn.finished provider={} status=Stopped elapsed_ms={elapsed_ms}",
+            request.provider.label(),
+        ),
+        _ => log::info!(
+            "chat.turn.finished provider={} status={status:?} elapsed_ms={elapsed_ms}",
+            request.provider.label(),
+        ),
+    }
     let _ = tx.send(ChatEvent::TurnFinished { status, error });
     status
 }
@@ -2505,8 +2529,15 @@ fn run_chat_turn(
         .stderr(Stdio::piped());
     let provider_label = request.provider.label();
     let mut child = match cmd.spawn() {
-        Ok(child) => child,
+        Ok(child) => {
+            log::debug!(
+                "chat.turn.spawned provider={provider_label} pid={}",
+                child.id()
+            );
+            child
+        }
         Err(err) => {
+            log::error!("chat.turn.spawn_failed provider={provider_label} err={err}");
             return Ok((
                 ChatSessionStatus::Failed,
                 Some(format!("Couldn't start the {provider_label} CLI: {err}")),
@@ -2828,6 +2859,7 @@ impl CodexLiveContext {
 /// model is called); Codex's own record of the thread holds its latest token count. Needs the
 /// provider session (`resume_session_id`) of at least one finished turn.
 pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatContextUsage, String> {
+    let started = Instant::now();
     let session_id = request
         .resume_session_id
         .as_deref()
@@ -2836,14 +2868,28 @@ pub fn query_chat_context(request: &ChatTurnRequest, now: i64) -> Result<ChatCon
         .ok_or_else(|| {
             "Send a message first: the context window fills as the chat goes.".to_owned()
         })?;
-    match request.provider {
+    let result = match request.provider {
         ProviderKind::Claude => query_claude_context(request, now),
         ProviderKind::Codex => read_codex_context(&request.runtime_dir, session_id, now),
         ProviderKind::Antigravity => read_antigravity_chat_context(request, session_id, now),
         ProviderKind::OpenRouter => {
             Err(ChatTurnError::UnsupportedProvider(ProviderKind::OpenRouter.label()).to_string())
         }
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    match &result {
+        Ok(usage) => log::debug!(
+            "chat.context.query provider={} used_tokens={} window_tokens={} elapsed_ms={elapsed_ms}",
+            request.provider.label(),
+            usage.used_tokens,
+            usage.window_tokens
+        ),
+        Err(err) => log::warn!(
+            "chat.context.query_failed provider={} elapsed_ms={elapsed_ms} err={err}",
+            request.provider.label()
+        ),
     }
+    result
 }
 
 fn query_claude_context(request: &ChatTurnRequest, now: i64) -> Result<ChatContextUsage, String> {
@@ -3330,9 +3376,21 @@ fn ensure_chat_worktree(setup: &ChatWorktreeSetup) -> Result<Option<String>, Str
             &setup.project_root,
             &["worktree", "add", "-b", &branch, &path, "HEAD"],
         ) {
-            Ok(_) => return Ok(Some(branch)),
+            Ok(_) => {
+                log::info!(
+                    "chat.worktree.created branch={branch} path={}",
+                    setup.path.display()
+                );
+                return Ok(Some(branch));
+            }
             Err(err) if err.contains("a branch named") => last_error = err,
-            Err(err) => return Err(err),
+            Err(err) => {
+                log::error!(
+                    "chat.worktree.create_failed branch={branch} path={} err={err}",
+                    setup.path.display()
+                );
+                return Err(err);
+            }
         }
     }
     Err(last_error)
@@ -3344,10 +3402,17 @@ pub fn remove_chat_worktree(project_root: &Path, path: &Path) -> Result<(), Stri
     if path.exists() {
         let path_arg = path.to_string_lossy().into_owned();
         if git_in(project_root, &["worktree", "remove", "--force", &path_arg]).is_ok() {
+            log::info!("chat.worktree.removed path={}", path.display());
             return Ok(());
         }
-        std::fs::remove_dir_all(path)
-            .map_err(|err| format!("Couldn't remove {}: {err}", path.display()))?;
+        std::fs::remove_dir_all(path).map_err(|err| {
+            log::warn!(
+                "chat.worktree.remove_failed path={} err={err}",
+                path.display()
+            );
+            format!("Couldn't remove {}: {err}", path.display())
+        })?;
+        log::info!("chat.worktree.removed_fallback path={}", path.display());
     }
     let _ = git_in(project_root, &["worktree", "prune"]);
     Ok(())

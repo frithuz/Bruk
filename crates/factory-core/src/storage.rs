@@ -143,9 +143,10 @@ impl ProjectDatabase {
         let conn = Connection::open(&path)?;
         let db = Self {
             conn,
-            path: Some(path),
+            path: Some(path.clone()),
         };
         db.init_schema()?;
+        log::info!("db.open path={}", path.display());
         Ok(db)
     }
 
@@ -329,6 +330,9 @@ impl ProjectDatabase {
         }
 
         let id = self.conn.last_insert_rowid() as ProjectId;
+        log::info!(
+            "db.register_project id={id} name={name:?} branch={default_branch:?} path={trimmed_path}"
+        );
         Ok(Project {
             id,
             name: name.to_owned(),
@@ -417,10 +421,12 @@ impl ProjectDatabase {
         match outcome {
             Ok(deleted) => {
                 self.conn.execute_batch("COMMIT")?;
+                log::info!("db.delete_project id={id} deleted={deleted}");
                 Ok(deleted)
             }
             Err(err) => {
                 let _ = self.conn.execute_batch("ROLLBACK");
+                log::error!("db.delete_project_failed id={id} err={err}");
                 Err(err)
             }
         }
@@ -877,7 +883,10 @@ impl ProjectDatabase {
                 Ok(None)
             }
             Some(prev) if prev == current_str => Ok(None),
-            Some(prev) => Ok(Some((PathBuf::from(prev), current.to_path_buf()))),
+            Some(prev) => {
+                log::warn!("db.path_change_detected previous={prev} current={current_str}");
+                Ok(Some((PathBuf::from(prev), current.to_path_buf())))
+            }
         }
     }
 
@@ -1219,12 +1228,19 @@ impl ProjectDatabase {
             return Ok(0);
         }
         let mut swept = 0usize;
+        let total = tombstones.len();
         for (id, account_key) in tombstones {
-            if store.delete(&account_key).is_ok() {
-                self.delete_tombstone(&id)?;
-                swept += 1;
+            match store.delete(&account_key) {
+                Ok(()) => {
+                    self.delete_tombstone(&id)?;
+                    swept += 1;
+                }
+                Err(err) => {
+                    log::warn!("db.sweep_tombstone_failed secret_id={id} err={err}");
+                }
             }
         }
+        log::info!("db.sweep_tombstones total={total} swept={swept}");
         Ok(swept)
     }
 

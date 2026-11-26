@@ -5,7 +5,6 @@ fn main() -> impl std::process::Termination {
     use nsh_platform_macos as platform;
 
     factory_app::boot_log::init("cargo_main");
-    env_logger::init();
     let root = factory_app::with_embedded_fonts(platform::Root::of::<factory_app::App>());
     let icon = app_icon_path();
     factory_app::boot_log::event(

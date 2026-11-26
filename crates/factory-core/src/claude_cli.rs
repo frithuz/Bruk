@@ -368,9 +368,13 @@ pub fn resolve_claude_binary_from_env(
 
 /// Probes the `claude` CLI binary and checks whether the system already has an active login.
 pub fn probe_claude_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> ClaudeCliProbe {
+    let started = std::time::Instant::now();
     let binary_path = match resolve_claude_binary(custom_path, path_env) {
         Ok(path) => path,
-        Err(error) => return ClaudeCliProbe::BinaryNotFound { error },
+        Err(error) => {
+            log::debug!("claude.probe binary_not_found err={error}");
+            return ClaudeCliProbe::BinaryNotFound { error };
+        }
     };
 
     let output = match new_claude_command(&binary_path)
@@ -380,6 +384,10 @@ pub fn probe_claude_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> 
     {
         Ok(output) => output,
         Err(err) => {
+            log::warn!(
+                "claude.probe spawn_failed binary={} err={err}",
+                binary_path.display()
+            );
             return ClaudeCliProbe::ProbeFailed {
                 binary_path,
                 message: format!("Failed to run Claude CLI: {err}"),
@@ -389,7 +397,31 @@ pub fn probe_claude_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> 
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    parse_claude_auth_status(binary_path, &stdout, &stderr, output.status.success())
+    let probe = parse_claude_auth_status(binary_path, &stdout, &stderr, output.status.success());
+    let elapsed_ms = started.elapsed().as_millis();
+    match &probe {
+        ClaudeCliProbe::Authenticated {
+            binary_path, plan, ..
+        } => log::info!(
+            "claude.probe outcome=authenticated binary={} plan={plan:?} elapsed_ms={elapsed_ms}",
+            binary_path.display()
+        ),
+        ClaudeCliProbe::NotAuthenticated { binary_path, .. } => log::info!(
+            "claude.probe outcome=not_authenticated binary={} elapsed_ms={elapsed_ms}",
+            binary_path.display()
+        ),
+        ClaudeCliProbe::ProbeFailed {
+            binary_path,
+            message,
+        } => log::warn!(
+            "claude.probe outcome=probe_failed binary={} elapsed_ms={elapsed_ms} err={message}",
+            binary_path.display()
+        ),
+        ClaudeCliProbe::BinaryNotFound { error } => {
+            log::debug!("claude.probe outcome=binary_not_found elapsed_ms={elapsed_ms} err={error}")
+        }
+    }
+    probe
 }
 
 /// Probes the `claude` CLI using the current process's `PATH` environment variable.
@@ -400,28 +432,32 @@ pub fn probe_claude_cli_from_env(custom_path: Option<&str>) -> ClaudeCliProbe {
 
 /// Runs `claude auth login` so the user can authenticate their system Claude CLI account.
 pub fn run_claude_auth_login(binary_path: &Path) -> Result<(), String> {
+    log::info!("claude.login.start binary={}", binary_path.display());
     let output = new_claude_command(binary_path)
         .args(["auth", "login"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("Failed to start Claude sign-in: {err}"))?;
+        .map_err(|err| {
+            log::error!("claude.login.spawn_failed err={err}");
+            format!("Failed to start Claude sign-in: {err}")
+        })?;
 
     if output.status.success() {
+        log::info!("claude.login.succeeded");
         return Ok(());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !stderr.is_empty() {
-        Err(stderr)
+    let message = if !stderr.is_empty() {
+        stderr
     } else if !stdout.is_empty() {
-        Err(stdout)
+        stdout
     } else {
-        Err(format!(
-            "Claude sign-in exited with status {}.",
-            output.status
-        ))
-    }
+        format!("Claude sign-in exited with status {}.", output.status)
+    };
+    log::warn!("claude.login.failed err={message}");
+    Err(message)
 }
 
 const STREAM_INIT_REQUEST_ID: &str = "bruk_init";
@@ -432,6 +468,7 @@ const STREAM_USAGE_REQUEST_ID: &str = "bruk_usage";
 ///
 /// This spends zero inference tokens and uses the CLI's own system authentication.
 pub fn fetch_claude_details(binary_path: &Path) -> ClaudeCliDetails {
+    let started = std::time::Instant::now();
     let mut child = match new_claude_command(binary_path)
         .args([
             "--print",
@@ -450,6 +487,10 @@ pub fn fetch_claude_details(binary_path: &Path) -> ClaudeCliDetails {
     {
         Ok(child) => child,
         Err(err) => {
+            log::warn!(
+                "claude.details.spawn_failed binary={} err={err}",
+                binary_path.display()
+            );
             return ClaudeCliDetails {
                 models: Vec::new(),
                 usage: None,
@@ -470,6 +511,7 @@ pub fn fetch_claude_details(binary_path: &Path) -> ClaudeCliDetails {
     let output = match child.wait_with_output() {
         Ok(output) => output,
         Err(err) => {
+            log::warn!("claude.details.wait_failed err={err}");
             return ClaudeCliDetails {
                 models: Vec::new(),
                 usage: None,
@@ -482,7 +524,22 @@ pub fn fetch_claude_details(binary_path: &Path) -> ClaudeCliDetails {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
-    parse_claude_details_stream(&stdout, &stderr)
+    let details = parse_claude_details_stream(&stdout, &stderr);
+    let elapsed_ms = started.elapsed().as_millis();
+    if let Some(warn) = details.warning.as_deref() {
+        log::warn!(
+            "claude.details.done models={} has_usage={} elapsed_ms={elapsed_ms} warning={warn}",
+            details.models.len(),
+            details.usage.is_some()
+        );
+    } else {
+        log::info!(
+            "claude.details.done models={} has_usage={} elapsed_ms={elapsed_ms}",
+            details.models.len(),
+            details.usage.is_some()
+        );
+    }
+    details
 }
 
 /// Parses NDJSON control responses from `claude --print --input-format stream-json --output-format stream-json`.

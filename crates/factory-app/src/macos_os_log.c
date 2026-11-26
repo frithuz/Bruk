@@ -1,38 +1,51 @@
 #include <os/log.h>
 #include <os/signpost.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <sys/sysctl.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 enum {
-    BRUK_LOG_LEVEL_DEFAULT = 0,
+    BRUK_LOG_LEVEL_DEBUG = 0,
     BRUK_LOG_LEVEL_INFO = 1,
-    BRUK_LOG_LEVEL_ERROR = 2,
+    BRUK_LOG_LEVEL_DEFAULT = 2,
+    BRUK_LOG_LEVEL_ERROR = 3,
+    BRUK_LOG_LEVEL_FAULT = 4,
 };
+
+static os_log_type_t bruk_map_log_type(uint8_t level) {
+    switch (level) {
+        case BRUK_LOG_LEVEL_DEBUG:
+            return OS_LOG_TYPE_DEBUG;
+        case BRUK_LOG_LEVEL_INFO:
+            return OS_LOG_TYPE_INFO;
+        case BRUK_LOG_LEVEL_ERROR:
+            return OS_LOG_TYPE_ERROR;
+        case BRUK_LOG_LEVEL_FAULT:
+            return OS_LOG_TYPE_FAULT;
+        case BRUK_LOG_LEVEL_DEFAULT:
+        default:
+            return OS_LOG_TYPE_DEFAULT;
+    }
+}
 
 os_log_t bruk_os_log_create(const char *subsystem, const char *category) {
     return os_log_create(subsystem, category);
+}
+
+bool bruk_os_log_is_enabled(os_log_t log, uint8_t level) {
+    if (log == NULL) {
+        return false;
+    }
+    return os_log_type_enabled(log, bruk_map_log_type(level));
 }
 
 void bruk_os_log_emit(os_log_t log, uint8_t level, const char *message) {
     if (log == NULL || message == NULL) {
         return;
     }
-    os_log_type_t log_type = OS_LOG_TYPE_DEFAULT;
-    switch (level) {
-        case BRUK_LOG_LEVEL_INFO:
-            log_type = OS_LOG_TYPE_INFO;
-            break;
-        case BRUK_LOG_LEVEL_ERROR:
-            log_type = OS_LOG_TYPE_ERROR;
-            break;
-        case BRUK_LOG_LEVEL_DEFAULT:
-        default:
-            log_type = OS_LOG_TYPE_DEFAULT;
-            break;
-    }
-    os_log_with_type(log, log_type, "%{public}s", message);
+    os_log_with_type(log, bruk_map_log_type(level), "%{public}s", message);
 }
 
 uint64_t bruk_os_signpost_begin(os_log_t log, const char *phase) {

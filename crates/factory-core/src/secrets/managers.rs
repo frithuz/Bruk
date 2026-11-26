@@ -366,18 +366,44 @@ impl SecretManager for OnePasswordManager {
             Err(err) => return ManagerStatus::AuthFailed(err.short_message()),
         };
         match run_subprocess(cmd, None, self.timeout(), cancel, &self.id, self.binary()) {
-            Ok(out) if out.success => ManagerStatus::Ready,
-            Ok(out) => match classify_op_stderr(&self.id, &out.stderr, None) {
-                SecretFailure::ManagerLocked { .. } => ManagerStatus::Locked,
-                SecretFailure::ManagerNotInstalled { .. } => ManagerStatus::NotInstalled,
-                SecretFailure::ManagerAuthFailed { detail, .. } => {
-                    ManagerStatus::AuthFailed(detail)
-                }
-                other => ManagerStatus::AuthFailed(other.short_message()),
-            },
-            Err(SecretFailure::ManagerNotInstalled { .. }) => ManagerStatus::NotInstalled,
-            Err(SecretFailure::ManagerLocked { .. }) => ManagerStatus::Locked,
-            Err(other) => ManagerStatus::AuthFailed(other.short_message()),
+            Ok(out) if out.success => {
+                log::info!("secrets.manager.status manager={} status=ready", self.id);
+                ManagerStatus::Ready
+            }
+            Ok(out) => {
+                let status = match classify_op_stderr(&self.id, &out.stderr, None) {
+                    SecretFailure::ManagerLocked { .. } => ManagerStatus::Locked,
+                    SecretFailure::ManagerNotInstalled { .. } => ManagerStatus::NotInstalled,
+                    SecretFailure::ManagerAuthFailed { detail, .. } => {
+                        ManagerStatus::AuthFailed(detail)
+                    }
+                    other => ManagerStatus::AuthFailed(other.short_message()),
+                };
+                log::warn!(
+                    "secrets.manager.status manager={} status={status:?}",
+                    self.id
+                );
+                status
+            }
+            Err(SecretFailure::ManagerNotInstalled { .. }) => {
+                log::warn!(
+                    "secrets.manager.status manager={} status=NotInstalled",
+                    self.id
+                );
+                ManagerStatus::NotInstalled
+            }
+            Err(SecretFailure::ManagerLocked { .. }) => {
+                log::warn!("secrets.manager.status manager={} status=Locked", self.id);
+                ManagerStatus::Locked
+            }
+            Err(other) => {
+                let msg = other.short_message();
+                log::warn!(
+                    "secrets.manager.status manager={} status=AuthFailed err={msg}",
+                    self.id
+                );
+                ManagerStatus::AuthFailed(msg)
+            }
         }
     }
 

@@ -352,18 +352,46 @@ pub fn load_project_mcp(project_root: &Path) -> ProjectMcpState {
         }
         return match fs::read(&path) {
             Ok(bytes) => match parse_mcp_json(&String::from_utf8_lossy(&bytes)) {
-                Ok((servers, invalid)) => ProjectMcpState::Loaded(ProjectMcpConfig {
+                Ok((servers, invalid)) => {
+                    if !invalid.is_empty() {
+                        log::warn!(
+                            "mcp.project_config.partial path={} servers={} invalid={}",
+                            path.display(),
+                            servers.len(),
+                            invalid.len()
+                        );
+                    } else {
+                        log::debug!(
+                            "mcp.project_config.loaded path={} servers={}",
+                            path.display(),
+                            servers.len()
+                        );
+                    }
+                    ProjectMcpState::Loaded(ProjectMcpConfig {
+                        file,
+                        servers,
+                        invalid,
+                        fingerprint: fingerprint(&bytes),
+                    })
+                }
+                Err(message) => {
+                    log::warn!(
+                        "mcp.project_config.invalid path={} err={message}",
+                        path.display()
+                    );
+                    ProjectMcpState::Invalid { file, message }
+                }
+            },
+            Err(err) => {
+                log::warn!(
+                    "mcp.project_config.read_failed path={} err={err}",
+                    path.display()
+                );
+                ProjectMcpState::Invalid {
                     file,
-                    servers,
-                    invalid,
-                    fingerprint: fingerprint(&bytes),
-                }),
-                Err(message) => ProjectMcpState::Invalid { file, message },
-            },
-            Err(err) => ProjectMcpState::Invalid {
-                file,
-                message: err.to_string(),
-            },
+                    message: err.to_string(),
+                }
+            }
         };
     }
     ProjectMcpState::Absent

@@ -345,14 +345,17 @@ mod macos {
             if status != errSecSuccess {
                 return if status == ERR_SEC_AUTH_FAILED || status == ERR_SEC_INTERACTION_NOT_ALLOWED
                 {
+                    log::warn!("keychain.status locked code={status}");
                     StoreStatus::Locked
                 } else {
+                    log::warn!("keychain.status unavailable code={status}");
                     StoreStatus::Unavailable(format!("SecKeychainGetStatus failed ({status})"))
                 };
             }
             if (flags & K_SEC_UNLOCK_STATE_STATUS) != 0 {
                 StoreStatus::Available
             } else {
+                log::warn!("keychain.status locked flags={flags}");
                 StoreStatus::Locked
             }
         }

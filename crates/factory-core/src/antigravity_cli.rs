@@ -177,11 +177,15 @@ pub fn probe_antigravity_cli(
     custom_path: Option<&str>,
     path_env: Option<&OsStr>,
 ) -> AntigravityCliProbe {
+    let started = Instant::now();
     let binary_path = match resolve_antigravity_binary(custom_path, path_env) {
         Ok(path) => path,
-        Err(error) => return AntigravityCliProbe::BinaryNotFound { error },
+        Err(error) => {
+            log::debug!("antigravity.probe binary_not_found err={error}");
+            return AntigravityCliProbe::BinaryNotFound { error };
+        }
     };
-    match run_models(&binary_path) {
+    let probe = match run_models(&binary_path) {
         Ok((success, stdout, stderr)) => {
             parse_antigravity_models_output(binary_path, success, &stdout, &stderr)
         }
@@ -189,7 +193,34 @@ pub fn probe_antigravity_cli(
             binary_path,
             message,
         },
+    };
+    let elapsed_ms = started.elapsed().as_millis();
+    match &probe {
+        AntigravityCliProbe::Authenticated {
+            binary_path,
+            models,
+            ..
+        } => log::info!(
+            "antigravity.probe outcome=authenticated binary={} models={} elapsed_ms={elapsed_ms}",
+            binary_path.display(),
+            models.len()
+        ),
+        AntigravityCliProbe::NotAuthenticated { binary_path, .. } => log::info!(
+            "antigravity.probe outcome=not_authenticated binary={} elapsed_ms={elapsed_ms}",
+            binary_path.display()
+        ),
+        AntigravityCliProbe::ProbeFailed {
+            binary_path,
+            message,
+        } => log::warn!(
+            "antigravity.probe outcome=probe_failed binary={} elapsed_ms={elapsed_ms} err={message}",
+            binary_path.display()
+        ),
+        AntigravityCliProbe::BinaryNotFound { error } => log::debug!(
+            "antigravity.probe outcome=binary_not_found elapsed_ms={elapsed_ms} err={error}"
+        ),
     }
+    probe
 }
 
 /// Probes `agy` using the current process's `PATH`.
@@ -202,6 +233,7 @@ pub fn probe_antigravity_cli_from_env(custom_path: Option<&str>) -> AntigravityC
 ///
 /// Useful immediately after [`probe_antigravity_cli`], which already fetched the live model list.
 pub fn fetch_antigravity_usage(binary_path: &Path) -> AntigravityCliDetails {
+    let started = Instant::now();
     let mut details = AntigravityCliDetails::default();
     match run_agy(binary_path, &["--output-format", "json", "--print=/usage"]) {
         Ok((_, stdout, stderr)) => match parse_antigravity_usage_output(&stdout) {
@@ -216,6 +248,18 @@ pub fn fetch_antigravity_usage(binary_path: &Path) -> AntigravityCliDetails {
             }
         },
         Err(message) => details.warning = Some(message),
+    }
+    let elapsed_ms = started.elapsed().as_millis();
+    if let Some(warn) = details.warning.as_deref() {
+        log::warn!(
+            "antigravity.usage.done has_usage={} elapsed_ms={elapsed_ms} warning={warn}",
+            details.usage.is_some()
+        );
+    } else {
+        log::info!(
+            "antigravity.usage.done has_usage={} elapsed_ms={elapsed_ms}",
+            details.usage.is_some()
+        );
     }
     details
 }
@@ -311,18 +355,25 @@ pub fn parse_antigravity_usage_output(stdout: &str) -> Option<ClaudeUsageSummary
 /// Signs the user in to Antigravity (`agy acp --login`, which opens Google sign-in in the
 /// browser and exits when it finishes).
 pub fn run_antigravity_login(binary_path: &Path) -> Result<(), String> {
+    log::info!("antigravity.login.start binary={}", binary_path.display());
     let output = new_antigravity_command(binary_path)
         .args(["acp", "--login"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("Failed to start Antigravity sign-in: {err}"))?;
+        .map_err(|err| {
+            log::error!("antigravity.login.spawn_failed err={err}");
+            format!("Failed to start Antigravity sign-in: {err}")
+        })?;
     if output.status.success() {
+        log::info!("antigravity.login.succeeded");
         return Ok(());
     }
     let stderr = strip_terminal_noise(&String::from_utf8_lossy(&output.stderr));
     let stdout = strip_terminal_noise(&String::from_utf8_lossy(&output.stdout));
-    Err(first_non_empty(&[&stderr, &stdout])
-        .unwrap_or_else(|| format!("Antigravity sign-in exited with status {}.", output.status)))
+    let message = first_non_empty(&[&stderr, &stdout])
+        .unwrap_or_else(|| format!("Antigravity sign-in exited with status {}.", output.status));
+    log::warn!("antigravity.login.failed err={message}");
+    Err(message)
 }
 
 /// Reads `agy models` output: one `<id>\t<display name>` line per model.

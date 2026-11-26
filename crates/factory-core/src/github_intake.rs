@@ -1094,6 +1094,7 @@ pub fn fetch_github_open_issues_with_filter(
     auth: &GitHubAuth,
     path_env: Option<&OsStr>,
 ) -> Result<GitHubSyncSnapshot, GitHubIntakeError> {
+    let started = std::time::Instant::now();
     let normalized_repo = normalize_github_repo_slug(repo)?;
     let gh = resolve_gh_binary(path_env)?;
     let mut cmd = build_gh_command(&gh, auth)?;
@@ -1118,23 +1119,34 @@ pub fn fetch_github_open_issues_with_filter(
     }
     cmd.args(["--json", GH_ISSUE_JSON_FIELDS]);
 
-    let output = cmd
-        .output()
-        .map_err(|err| GitHubIntakeError::CommandFailed {
+    let output = cmd.output().map_err(|err| {
+        log::error!("github.issues.spawn_failed repo={normalized_repo} err={err}");
+        GitHubIntakeError::CommandFailed {
             command: "gh issue list".to_owned(),
             message: err.to_string(),
-        })?;
+        }
+    })?;
 
     if !output.status.success() {
-        return Err(classify_gh_failure(
+        let err = classify_gh_failure(
             "gh issue list",
             &String::from_utf8_lossy(&output.stderr),
             &String::from_utf8_lossy(&output.stdout),
-        ));
+        );
+        log::warn!(
+            "github.issues.fetch_failed repo={normalized_repo} elapsed_ms={} err={err}",
+            started.elapsed().as_millis()
+        );
+        return Err(err);
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let open_issues = parse_github_issues_json(&normalized_repo, &stdout)?;
+    log::info!(
+        "github.issues.fetched repo={normalized_repo} count={} server_filtered={server_filtered} elapsed_ms={}",
+        open_issues.len(),
+        started.elapsed().as_millis()
+    );
     Ok(GitHubSyncSnapshot {
         repo: normalized_repo,
         open_issues,
@@ -1173,12 +1185,21 @@ pub fn add_github_issue_label(
         })?;
 
     if !output.status.success() {
-        return Err(classify_gh_failure(
+        let err = classify_gh_failure(
             "gh issue edit",
             &String::from_utf8_lossy(&output.stderr),
             &String::from_utf8_lossy(&output.stdout),
-        ));
+        );
+        log::warn!(
+            "github.label.add_failed repo={normalized_repo} issue=#{issue_number} label={:?} err={err}",
+            label.trim()
+        );
+        return Err(err);
     }
+    log::info!(
+        "github.label.added repo={normalized_repo} issue=#{issue_number} label={:?}",
+        label.trim()
+    );
     Ok(())
 }
 
@@ -1211,12 +1232,21 @@ pub fn remove_github_issue_label(
         })?;
 
     if !output.status.success() {
-        return Err(classify_gh_failure(
+        let err = classify_gh_failure(
             "gh issue edit",
             &String::from_utf8_lossy(&output.stderr),
             &String::from_utf8_lossy(&output.stdout),
-        ));
+        );
+        log::warn!(
+            "github.label.remove_failed repo={normalized_repo} issue=#{issue_number} label={:?} err={err}",
+            label.trim()
+        );
+        return Err(err);
     }
+    log::info!(
+        "github.label.removed repo={normalized_repo} issue=#{issue_number} label={:?}",
+        label.trim()
+    );
     Ok(())
 }
 
@@ -1249,12 +1279,18 @@ pub fn comment_on_github_issue(
         })?;
 
     if !output.status.success() {
-        return Err(classify_gh_failure(
+        let err = classify_gh_failure(
             "gh issue comment",
             &String::from_utf8_lossy(&output.stderr),
             &String::from_utf8_lossy(&output.stdout),
-        ));
+        );
+        log::warn!("github.comment.failed repo={normalized_repo} issue=#{issue_number} err={err}");
+        return Err(err);
     }
+    log::info!(
+        "github.comment.posted repo={normalized_repo} issue=#{issue_number} chars={}",
+        body.chars().count()
+    );
     Ok(())
 }
 

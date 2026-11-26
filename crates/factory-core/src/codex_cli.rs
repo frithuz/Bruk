@@ -142,9 +142,13 @@ pub fn resolve_codex_binary_from_env(
 
 /// Probes the `codex` CLI binary and checks whether the system already has an active login.
 pub fn probe_codex_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> CodexCliProbe {
+    let started = Instant::now();
     let binary_path = match resolve_codex_binary(custom_path, path_env) {
         Ok(path) => path,
-        Err(error) => return CodexCliProbe::BinaryNotFound { error },
+        Err(error) => {
+            log::debug!("codex.probe binary_not_found err={error}");
+            return CodexCliProbe::BinaryNotFound { error };
+        }
     };
 
     let account_req = format!(
@@ -158,6 +162,11 @@ pub fn probe_codex_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> C
     ) {
         Ok(out) => out,
         Err(message) => {
+            log::warn!(
+                "codex.probe outcome=probe_failed binary={} elapsed_ms={} err={message}",
+                binary_path.display(),
+                started.elapsed().as_millis()
+            );
             return CodexCliProbe::ProbeFailed {
                 binary_path,
                 message,
@@ -165,7 +174,31 @@ pub fn probe_codex_cli(custom_path: Option<&str>, path_env: Option<&OsStr>) -> C
         }
     };
 
-    parse_codex_account_stream(binary_path, &stdout, &stderr)
+    let probe = parse_codex_account_stream(binary_path, &stdout, &stderr);
+    let elapsed_ms = started.elapsed().as_millis();
+    match &probe {
+        CodexCliProbe::Authenticated {
+            binary_path, plan, ..
+        } => log::info!(
+            "codex.probe outcome=authenticated binary={} plan={plan:?} elapsed_ms={elapsed_ms}",
+            binary_path.display()
+        ),
+        CodexCliProbe::NotAuthenticated { binary_path, .. } => log::info!(
+            "codex.probe outcome=not_authenticated binary={} elapsed_ms={elapsed_ms}",
+            binary_path.display()
+        ),
+        CodexCliProbe::ProbeFailed {
+            binary_path,
+            message,
+        } => log::warn!(
+            "codex.probe outcome=probe_failed binary={} elapsed_ms={elapsed_ms} err={message}",
+            binary_path.display()
+        ),
+        CodexCliProbe::BinaryNotFound { error } => {
+            log::debug!("codex.probe outcome=binary_not_found elapsed_ms={elapsed_ms} err={error}")
+        }
+    }
+    probe
 }
 
 /// Probes the `codex` CLI using the current process's `PATH` environment variable.
@@ -176,27 +209,31 @@ pub fn probe_codex_cli_from_env(custom_path: Option<&str>) -> CodexCliProbe {
 
 /// Runs `codex login` so the user can authenticate their system Codex CLI account.
 pub fn run_codex_login(binary_path: &Path) -> Result<(), String> {
+    log::info!("codex.login.start binary={}", binary_path.display());
     let output = new_codex_subcommand(binary_path, &["login"])
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("Failed to start Codex sign-in: {err}"))?;
+        .map_err(|err| {
+            log::error!("codex.login.spawn_failed err={err}");
+            format!("Failed to start Codex sign-in: {err}")
+        })?;
 
     if output.status.success() {
+        log::info!("codex.login.succeeded");
         return Ok(());
     }
 
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if !stderr.is_empty() {
-        Err(stderr)
+    let message = if !stderr.is_empty() {
+        stderr
     } else if !stdout.is_empty() {
-        Err(stdout)
+        stdout
     } else {
-        Err(format!(
-            "Codex sign-in exited with status {}.",
-            output.status
-        ))
-    }
+        format!("Codex sign-in exited with status {}.", output.status)
+    };
+    log::warn!("codex.login.failed err={message}");
+    Err(message)
 }
 
 /// Queries the local `codex` CLI for its live available models and plan usage remaining
@@ -205,6 +242,7 @@ pub fn run_codex_login(binary_path: &Path) -> Result<(), String> {
 ///
 /// This spends zero inference tokens and uses the CLI's own system authentication.
 pub fn fetch_codex_details(binary_path: &Path) -> CodexCliDetails {
+    let started = Instant::now();
     let rate_limits_req = format!(
         "{{\"jsonrpc\":\"2.0\",\"id\":{RPC_RATE_LIMITS_ID},\"method\":\"account/rateLimits/read\",\"params\":null}}"
     );
@@ -220,6 +258,11 @@ pub fn fetch_codex_details(binary_path: &Path) -> CodexCliDetails {
     ) {
         Ok(out) => out,
         Err(message) => {
+            log::warn!(
+                "codex.details.failed binary={} elapsed_ms={} err={message}",
+                binary_path.display(),
+                started.elapsed().as_millis()
+            );
             return CodexCliDetails {
                 models: Vec::new(),
                 usage: None,
@@ -228,7 +271,22 @@ pub fn fetch_codex_details(binary_path: &Path) -> CodexCliDetails {
         }
     };
 
-    parse_codex_details_stream(&stdout, &stderr)
+    let details = parse_codex_details_stream(&stdout, &stderr);
+    let elapsed_ms = started.elapsed().as_millis();
+    if let Some(warn) = details.warning.as_deref() {
+        log::warn!(
+            "codex.details.done models={} has_usage={} elapsed_ms={elapsed_ms} warning={warn}",
+            details.models.len(),
+            details.usage.is_some()
+        );
+    } else {
+        log::info!(
+            "codex.details.done models={} has_usage={} elapsed_ms={elapsed_ms}",
+            details.models.len(),
+            details.usage.is_some()
+        );
+    }
+    details
 }
 
 /// Runs a short-lived `codex app-server --stdio` session, sending `initialize`, waiting for its
