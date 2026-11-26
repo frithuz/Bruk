@@ -21,14 +21,24 @@ const CHART_AXIS_WIDTH: f32 = 50.0;
 
 /// Main scrollable Dashboard canvas matching the reference overview layout.
 pub(crate) fn dashboard_view() -> impl IntoElement {
+    static FIRST_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _boot_span = crate::boot_log::once_span("boot.ui.dashboard_first_build", &FIRST_BUILD);
+    // Memoize the dashboard inputs so unrelated AppState updates (such as background provider
+    // probes or usage refreshes completing after boot) do not tear down and rebuild the canvas.
+    let dashboard_state = computed(|| {
+        (
+            store::dashboard_snapshot(),
+            store::tokens_show_table(),
+            store::project_ids().is_empty(),
+        )
+    });
     scroll()
         .flex_1()
         .bg(palette::canvas_bg())
-        .child(dynamic(|| {
-            let snap = store::dashboard_snapshot();
-            let show_table = store::tokens_show_table();
+        .child(dynamic(move || {
+            let (snap, show_table, no_projects) = dashboard_state.get();
 
-            if snap.is_empty() && store::project_ids().is_empty() {
+            if snap.is_empty() && no_projects {
                 return dashboard_empty_state().into_element();
             }
 

@@ -9,6 +9,8 @@ use crate::{store, ui::palette};
 
 /// Full-window first-launch screen shown until a Bruk folder is chosen.
 pub(crate) fn home_setup_view() -> impl IntoElement {
+    static FIRST_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _boot_span = crate::boot_log::once_span("boot.ui.home_setup_first_build", &FIRST_BUILD);
     view()
         .flex_1()
         .bg(palette::canvas_bg())

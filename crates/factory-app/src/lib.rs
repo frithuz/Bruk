@@ -1,5 +1,6 @@
 //! Software Factory macOS desktop UI built with Native Shell (`nsh`).
 
+pub mod boot_log;
 mod fonts;
 mod menu;
 mod store;
@@ -14,6 +15,8 @@ use nsh_core::{element::Root, prelude::*};
 /// Registers this crate's Native Shell UI set (`nsh.json` `"rust"`).
 #[native_module("software-factory/native")]
 fn native(registry: &mut Registry) {
+    boot_log::init("nsh_native_module");
+    let _span = boot_log::span("boot.native_module.register");
     registry.register::<App>().assets(assets!());
 }
 
@@ -23,8 +26,22 @@ fn native(registry: &mut Registry) {
 /// first-launch setup when no folder has been chosen yet.
 #[component]
 pub fn App() -> impl IntoElement {
+    boot_log::init("app_component");
+    let mount_span = boot_log::span("boot.app.mount");
+    if let Some(age_ms) = boot_log::process_age_ms() {
+        boot_log::event("boot.app.mount.enter", &format!("proc_age_ms={age_ms:.1}"));
+    }
     store::init_default();
-    app_surface()
+    let surface = app_surface();
+    boot_log::schedule_main_thread_ready();
+    let summary = format!(
+        "needs_home_setup={} active_view={:?}",
+        store::needs_home_setup(),
+        store::active_view()
+    );
+    mount_span.finish(&summary);
+    boot_log::finish_sync_boot(&summary);
+    surface
 }
 
 /// Builds a Native Shell [`Root`] backed by a specific SQLite database file.
@@ -137,16 +154,26 @@ fn AppWithDb(props: AppWithDbProps) -> impl IntoElement {
 }
 
 fn app_surface() -> impl IntoElement {
-    let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
-    title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
-    title_bar.height = Some(px(54.0));
-    let mut attrs = nsh_core::desktop::WindowAttributes::default();
-    attrs.title_bar = Some(title_bar);
-    nsh_core::element::desktop::current_window().set(attrs);
+    {
+        let _span = boot_log::span("boot.ui.window_attrs");
+        let mut title_bar = nsh_core::desktop::TitleBarOptions::default();
+        title_bar.style = nsh_core::desktop::TitleBarStyle::Hidden;
+        title_bar.height = Some(px(54.0));
+        let mut attrs = nsh_core::desktop::WindowAttributes::default();
+        attrs.title_bar = Some(title_bar);
+        nsh_core::element::desktop::current_window().set(attrs);
+    }
 
-    menu::install_application_menu();
-    ui::menubar::install_menubar_and_attention_surfaces();
+    {
+        let _span = boot_log::span("boot.ui.install_menu");
+        menu::install_application_menu();
+    }
+    {
+        let _span = boot_log::span("boot.ui.install_menubar");
+        ui::menubar::install_menubar_and_attention_surfaces();
+    }
 
+    let _span = boot_log::span("boot.ui.build_root_view");
     view()
         .flex_1()
         .bg(move || theme().background)

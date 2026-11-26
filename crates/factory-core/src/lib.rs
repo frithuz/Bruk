@@ -35,10 +35,10 @@ pub use antigravity_cli::{
     ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,
     ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV, ANTIGRAVITY_DISABLE_AUTO_UPDATE_VALUE,
     AntigravityBinaryError, AntigravityCliDetails, AntigravityCliProbe, AntigravityContextReading,
-    apply_mandatory_antigravity_spawn_env, fetch_antigravity_details, new_antigravity_command,
-    parse_antigravity_models_output, parse_antigravity_usage_output, probe_antigravity_cli,
-    probe_antigravity_cli_from_env, read_antigravity_context, resolve_antigravity_binary,
-    resolve_antigravity_binary_from_env, run_antigravity_login,
+    apply_mandatory_antigravity_spawn_env, fetch_antigravity_details, fetch_antigravity_usage,
+    new_antigravity_command, parse_antigravity_models_output, parse_antigravity_usage_output,
+    probe_antigravity_cli, probe_antigravity_cli_from_env, read_antigravity_context,
+    resolve_antigravity_binary, resolve_antigravity_binary_from_env, run_antigravity_login,
 };
 pub use bruk_home::{
     BRUK_HOME_ENV, BrukHome, CloneError, CloneSource, ClonedRepository, DEFAULT_HOME_DIR_NAME,

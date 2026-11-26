@@ -198,11 +198,10 @@ pub fn probe_antigravity_cli_from_env(custom_path: Option<&str>) -> AntigravityC
     probe_antigravity_cli(custom_path, path_env.as_deref())
 }
 
-/// Lists the models the signed-in Antigravity account may use.
+/// Reads the remaining plan quota with `agy --print=/usage` without re-running `agy models`.
 ///
-/// Also reads the remaining plan quota with `agy --print=/usage`, a slash command the CLI
-/// answers itself: no agent turn starts and no quota is spent.
-pub fn fetch_antigravity_details(binary_path: &Path) -> AntigravityCliDetails {
+/// Useful immediately after [`probe_antigravity_cli`], which already fetched the live model list.
+pub fn fetch_antigravity_usage(binary_path: &Path) -> AntigravityCliDetails {
     let mut details = AntigravityCliDetails::default();
     match run_agy(binary_path, &["--output-format", "json", "--print=/usage"]) {
         Ok((_, stdout, stderr)) => match parse_antigravity_usage_output(&stdout) {
@@ -218,6 +217,15 @@ pub fn fetch_antigravity_details(binary_path: &Path) -> AntigravityCliDetails {
         },
         Err(message) => details.warning = Some(message),
     }
+    details
+}
+
+/// Lists the models the signed-in Antigravity account may use.
+///
+/// Also reads the remaining plan quota with `agy --print=/usage`, a slash command the CLI
+/// answers itself: no agent turn starts and no quota is spent.
+pub fn fetch_antigravity_details(binary_path: &Path) -> AntigravityCliDetails {
+    let mut details = fetch_antigravity_usage(binary_path);
     match run_models(binary_path) {
         Ok((success, stdout, stderr)) => {
             match parse_antigravity_models_output(
@@ -812,5 +820,32 @@ sleep 5
             read_antigravity_context(&agy, temp.path(), "conv-1", &[], &BTreeMap::new()).unwrap();
         assert_eq!(reading.used_tokens, 1200);
         assert_eq!(reading.window_tokens, 1_048_576);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fetch_antigravity_usage_queries_only_usage_without_re_running_models() {
+        let temp = TempDir::new().unwrap();
+        let agy = write_script(
+            temp.path(),
+            "agy",
+            r#"#!/bin/sh
+case "$*" in
+  models)
+    echo "unexpected models call" >&2
+    exit 42
+    ;;
+  *--print=/usage*)
+    echo '{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.8,"reset_time":"2099-11-24T17:15:19Z"}]}]}}}'
+    ;;
+esac
+"#,
+        );
+        let details = fetch_antigravity_usage(&agy);
+        assert!(details.models.is_empty());
+        assert!(details.warning.is_none());
+        let usage = details.usage.expect("expected parsed usage");
+        assert_eq!(usage.windows.len(), 1);
+        assert_eq!(usage.windows[0].remaining_percent, 80);
     }
 }

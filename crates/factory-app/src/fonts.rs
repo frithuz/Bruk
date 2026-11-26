@@ -137,10 +137,18 @@ pub fn default_tokens() -> Tokens {
 /// Attaches all embedded Atkinson Hyperlegible font files and default font tokens to `root`
 /// so they are registered synchronously before the first frame renders.
 pub fn with_embedded_fonts(mut root: Root) -> Root {
+    let span = crate::boot_log::span("boot.embed_fonts");
+    let mut total_bytes = 0usize;
     for font in EMBEDDED_FONTS {
+        total_bytes += font.len();
         root = root.font(*font);
     }
-    root.tokens(default_tokens())
+    let root = root.tokens(default_tokens());
+    span.finish(format!(
+        "count={} bytes={total_bytes}",
+        EMBEDDED_FONTS.len()
+    ));
+    root
 }
 
 /// Applies the active font tokens for `appearance` to the running Native Shell surface.

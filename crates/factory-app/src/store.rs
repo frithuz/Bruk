@@ -6,7 +6,10 @@ use std::{
     future::Future,
     path::Path,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     task::{Context, Poll, Waker},
 };
 
@@ -39,15 +42,15 @@ use factory_core::{
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
     chat_worktree_branch, clone_repository, contains_env_reference, current_unix_seconds,
     default_secret_store, delete_legacy_database_files, detect_git_remote_info, display_with_tilde,
-    expand_tilde, fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
-    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    find_legacy_database_files, init_local_repository, migrate_plaintext_secrets,
-    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
-    provider_effort_levels, query_chat_context, remove_chat_worktree, remove_github_issue_label,
-    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary,
-    resolve_new_repository_destination, run_antigravity_login, run_claude_auth_login,
-    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
-    validate_branch_name,
+    expand_tilde, fetch_antigravity_details, fetch_antigravity_usage, fetch_claude_details,
+    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
+    find_codex_setting_spec, find_legacy_database_files, init_local_repository,
+    migrate_plaintext_secrets, parse_clone_source, probe_antigravity_cli, probe_claude_cli,
+    probe_codex_cli, project_dir_name, provider_effort_levels, query_chat_context,
+    remove_chat_worktree, remove_github_issue_label, resolve_antigravity_binary,
+    resolve_claude_binary, resolve_codex_binary, resolve_new_repository_destination,
+    run_antigravity_login, run_claude_auth_login, run_codex_login, sanitize_env_segment,
+    spawn_chat_turn, spawn_workflow_run, validate_branch_name,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -172,10 +175,13 @@ struct AppState {
     claude_path_lookup: ClaudePathLookup,
     claude_sign_in_in_progress: bool,
     claude_details_loading: bool,
+    claude_probe_seq: Arc<AtomicU64>,
     codex_sign_in_in_progress: bool,
     codex_details_loading: bool,
+    codex_probe_seq: Arc<AtomicU64>,
     antigravity_sign_in_in_progress: bool,
     antigravity_details_loading: bool,
+    antigravity_probe_seq: Arc<AtomicU64>,
     active_view: ActiveView,
     selected_project: Option<ProjectId>,
     expanded_projects: BTreeSet<ProjectId>,
@@ -293,11 +299,43 @@ struct AppState {
 
 impl Default for AppState {
     fn default() -> Self {
-        Self::from_environment(
-            HomeEnvironment::system(),
-            ClaudePathLookup::SystemPath,
-            default_secret_store(),
-        )
+        let _span = crate::boot_log::span("boot.store.default_state");
+        let home_env = {
+            let _s = crate::boot_log::span("boot.store.home_env_system");
+            HomeEnvironment::system()
+        };
+        let secret_store = {
+            let _s = crate::boot_log::span("boot.store.secret_store_init");
+            default_secret_store()
+        };
+        Self::from_environment(home_env, ClaudePathLookup::SystemPath, secret_store)
+    }
+}
+
+fn claude_probe_outcome(probe: &ClaudeCliProbe) -> &'static str {
+    match probe {
+        ClaudeCliProbe::Authenticated { .. } => "authenticated",
+        ClaudeCliProbe::NotAuthenticated { .. } => "not_authenticated",
+        ClaudeCliProbe::BinaryNotFound { .. } => "binary_not_found",
+        ClaudeCliProbe::ProbeFailed { .. } => "probe_failed",
+    }
+}
+
+fn codex_probe_outcome(probe: &CodexCliProbe) -> &'static str {
+    match probe {
+        CodexCliProbe::Authenticated { .. } => "authenticated",
+        CodexCliProbe::NotAuthenticated { .. } => "not_authenticated",
+        CodexCliProbe::BinaryNotFound { .. } => "binary_not_found",
+        CodexCliProbe::ProbeFailed { .. } => "probe_failed",
+    }
+}
+
+fn antigravity_probe_outcome(probe: &AntigravityCliProbe) -> &'static str {
+    match probe {
+        AntigravityCliProbe::Authenticated { .. } => "authenticated",
+        AntigravityCliProbe::NotAuthenticated { .. } => "not_authenticated",
+        AntigravityCliProbe::BinaryNotFound { .. } => "binary_not_found",
+        AntigravityCliProbe::ProbeFailed { .. } => "probe_failed",
     }
 }
 
@@ -320,7 +358,13 @@ impl AppState {
         match environment {
             Ok(environment) => {
                 let legacy_paths = environment.legacy_database_paths.clone();
-                match environment.resolve() {
+                let resolve_span = crate::boot_log::span("boot.store.home_resolve");
+                let resolution = environment.resolve();
+                resolve_span.finish(match &resolution {
+                    HomeResolution::Ready(_) => "resolution=ready",
+                    HomeResolution::NeedsSetup { .. } => "resolution=needs_setup",
+                });
+                match resolution {
                     HomeResolution::Ready(home) => {
                         Self::from_home(home, claude_path_lookup, secret_store, legacy_paths)
                     }
@@ -332,13 +376,16 @@ impl AppState {
                     ),
                 }
             }
-            Err(err) => Self::from_database_result_with_path(
-                Err(StorageError::Home(err)),
-                None,
-                claude_path_lookup,
-                secret_store,
-                Vec::new(),
-            ),
+            Err(err) => {
+                crate::boot_log::error("boot.store.home_env_error", &format!("{err}"));
+                Self::from_database_result_with_path(
+                    Err(StorageError::Home(err)),
+                    None,
+                    claude_path_lookup,
+                    secret_store,
+                    Vec::new(),
+                )
+            }
         }
     }
 
@@ -348,7 +395,13 @@ impl AppState {
         secret_store: Arc<dyn SecretStore>,
         legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
+        let db_span = crate::boot_log::span("boot.store.db_open");
         let result = ProjectDatabase::open_home(&home);
+        if result.is_ok() {
+            db_span.finish("ok=true");
+        } else {
+            db_span.finish_error("ok=false");
+        }
         Self::from_database_result_with_path(
             result,
             Some(home),
@@ -403,18 +456,38 @@ impl AppState {
                         .path()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| ":memory:".to_owned());
-                    let (projects, mut status_message) = match db.list_projects() {
-                        Ok(projects) => (projects, None),
-                        Err(err) => (Vec::new(), Some(format!("Failed to load projects: {err}"))),
-                    };
-                    let preferences = match db.load_preferences() {
-                        Ok(Some(prefs)) => prefs,
-                        Ok(None) => AppPreferences::empty(),
-                        Err(err) => {
-                            if status_message.is_none() {
-                                status_message = Some(format!("Failed to load preferences: {err}"));
+                    let (projects, mut status_message) = {
+                        let span = crate::boot_log::span("boot.store.db_list_projects");
+                        match db.list_projects() {
+                            Ok(projects) => {
+                                span.finish(format!("count={}", projects.len()));
+                                (projects, None)
                             }
-                            AppPreferences::empty()
+                            Err(err) => {
+                                span.finish_error("ok=false");
+                                (Vec::new(), Some(format!("Failed to load projects: {err}")))
+                            }
+                        }
+                    };
+                    let preferences = {
+                        let span = crate::boot_log::span("boot.store.db_load_preferences");
+                        match db.load_preferences() {
+                            Ok(Some(prefs)) => {
+                                span.finish(format!("found=true demo_mode={}", prefs.demo_mode));
+                                prefs
+                            }
+                            Ok(None) => {
+                                span.finish("found=false demo_mode=false");
+                                AppPreferences::empty()
+                            }
+                            Err(err) => {
+                                span.finish_error("ok=false");
+                                if status_message.is_none() {
+                                    status_message =
+                                        Some(format!("Failed to load preferences: {err}"));
+                                }
+                                AppPreferences::empty()
+                            }
                         }
                     };
                     (
@@ -466,7 +539,18 @@ impl AppState {
         secret_store: Arc<dyn SecretStore>,
         legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
-        let secrets_store_status = secret_store.status();
+        let build_span = crate::boot_log::span("boot.store.build_for_mode");
+        let secrets_store_status = {
+            let span = crate::boot_log::span("boot.store.secret_store_status");
+            let status = secret_store.status();
+            let label = match &status {
+                StoreStatus::Available => "available",
+                StoreStatus::Locked => "locked",
+                StoreStatus::Unavailable(_) => "unavailable",
+            };
+            span.finish(format!("status={label}"));
+            status
+        };
         let mut db_path_change_pending = None;
         let mut startup_secret_problems: Vec<(String, SecretProblem)> = Vec::new();
         let mut secrets_error = None;
@@ -476,7 +560,12 @@ impl AppState {
             && let Some(db_arc) = db.as_ref()
             && let Ok(guard) = db_arc.lock()
         {
-            match guard.check_database_path_change() {
+            let checks_span = crate::boot_log::span("boot.store.secrets_startup_checks");
+            let path_check_result = {
+                let _s = crate::boot_log::span("boot.store.db_path_change_check");
+                guard.check_database_path_change()
+            };
+            match path_check_result {
                 Ok(Some((old_path, new_path))) => {
                     db_path_change_pending = Some((old_path.clone(), new_path.clone()));
                     startup_secret_problems.push((
@@ -497,7 +586,11 @@ impl AppState {
                     ));
                 }
                 Ok(None) => {
-                    match migrate_plaintext_secrets(&guard, secret_store.as_ref(), false, false) {
+                    let migration_result = {
+                        let _s = crate::boot_log::span("boot.store.migrate_plaintext_secrets");
+                        migrate_plaintext_secrets(&guard, secret_store.as_ref(), false, false)
+                    };
+                    match migration_result {
                         Ok(report) => {
                             if report.has_user_notice() {
                                 startup_secret_problems.push((
@@ -513,7 +606,11 @@ impl AppState {
                                     },
                                 ));
                             }
-                            if let Ok(Some(reloaded)) = guard.load_preferences() {
+                            let reloaded = {
+                                let _s = crate::boot_log::span("boot.store.reload_preferences");
+                                guard.load_preferences()
+                            };
+                            if let Ok(Some(reloaded)) = reloaded {
                                 persisted_prefs = reloaded;
                             }
                         }
@@ -534,14 +631,20 @@ impl AppState {
                             ));
                         }
                     }
-                    let _ = guard.sweep_secret_tombstones(secret_store.as_ref(), false);
+                    // Secret tombstone sweeping is deferred to `sweep_secret_tombstones_async`
+                    // so Keychain I/O does not block GUI boot.
                 }
                 Err(err) => {
                     secrets_error = Some(format!("Database path check failed: {err}"));
                 }
             }
 
-            let legacy_found = find_legacy_database_files(&legacy_database_paths);
+            let legacy_found = {
+                let span = crate::boot_log::span("boot.store.find_legacy_databases");
+                let found = find_legacy_database_files(&legacy_database_paths);
+                span.finish(format!("count={}", found.len()));
+                found
+            };
             if !legacy_found.is_empty() {
                 let paths_list = legacy_found
                     .iter()
@@ -566,6 +669,11 @@ impl AppState {
                 ));
                 legacy_db_files_found = legacy_found;
             }
+            checks_span.finish(format!(
+                "path_changed={} legacy_files={}",
+                db_path_change_pending.is_some(),
+                legacy_db_files_found.len()
+            ));
         }
         let (preferences, saved_real_preferences) = if demo_mode {
             let mut real_copy = persisted_prefs.clone();
@@ -580,24 +688,11 @@ impl AppState {
             sample.advanced = persisted_prefs.advanced;
             (sample, Some(real_copy))
         } else {
+            // Provider CLI probes (`claude`, `codex`, `agy`) run in parallel on background
+            // threads via `probe_providers_async` after mount so subprocesses do not block
+            // the first GUI frame.
             let mut clean = persisted_prefs;
             clean.demo_mode = false;
-            let path_env = claude_path_lookup.resolve_path_env();
-            let probe =
-                probe_claude_cli(clean.claude.custom_cli_path.as_deref(), path_env.as_deref());
-            clean.apply_claude_probe(&probe, false);
-            if let Some(codex) = &clean.codex {
-                let codex_probe =
-                    probe_codex_cli(codex.custom_cli_path.as_deref(), path_env.as_deref());
-                clean.apply_codex_probe(&codex_probe, false);
-            }
-            if let Some(antigravity) = &clean.antigravity {
-                let probe = probe_antigravity_cli(
-                    antigravity.custom_cli_path.as_deref(),
-                    path_env.as_deref(),
-                );
-                clean.apply_antigravity_probe(&probe, false);
-            }
             (clean, None)
         };
 
@@ -623,67 +718,99 @@ impl AppState {
         let mut catalogs = BTreeMap::new();
         let mut workflows_overviews = BTreeMap::new();
         let mut project_settings = BTreeMap::new();
-        for project in factory.projects() {
-            let path_str = project.root_path.display().to_string();
-            if demo_mode {
-                work_queues.insert(
-                    project.name.clone(),
-                    ProjectWorkQueue::for_project(&project.name),
-                );
-                workflows_overviews.insert(
-                    project.name.clone(),
-                    ProjectWorkflowsOverview::for_project(&project.name),
-                );
-                project_settings.insert(
-                    project.name.clone(),
-                    ProjectSettings::for_project(&project.name, &path_str, &project.default_branch),
-                );
-            } else {
-                let loaded_settings = db
-                    .as_ref()
-                    .and_then(|arc| arc.lock().ok())
-                    .and_then(|guard| guard.load_project_settings(project.id).ok().flatten());
-                let mut settings = loaded_settings.unwrap_or_else(|| {
-                    ProjectSettings::empty(&project.name, &path_str, &project.default_branch)
-                });
-                if (settings.git_remote.trim().is_empty() || settings.github_repo.trim().is_empty())
-                    && let Some(detected) = detect_git_remote_info(&project.root_path)
-                {
-                    let before_repo = settings.github_repo.clone();
-                    let before_remote = settings.git_remote.clone();
-                    settings.apply_detected_git_remote(&detected);
-                    if (settings.github_repo != before_repo || settings.git_remote != before_remote)
-                        && let Some(db_arc) = db.as_ref()
-                        && let Ok(guard) = db_arc.lock()
+        {
+            let projects_span = crate::boot_log::span("boot.store.load_projects_data");
+            for project in factory.projects() {
+                let path_str = project.root_path.display().to_string();
+                if demo_mode {
+                    work_queues.insert(
+                        project.name.clone(),
+                        ProjectWorkQueue::for_project(&project.name),
+                    );
+                    workflows_overviews.insert(
+                        project.name.clone(),
+                        ProjectWorkflowsOverview::for_project(&project.name),
+                    );
+                    project_settings.insert(
+                        project.name.clone(),
+                        ProjectSettings::for_project(
+                            &project.name,
+                            &path_str,
+                            &project.default_branch,
+                        ),
+                    );
+                } else {
+                    let project_span = crate::boot_log::span("boot.store.project_load");
+                    let t_settings = std::time::Instant::now();
+                    let loaded_settings = db
+                        .as_ref()
+                        .and_then(|arc| arc.lock().ok())
+                        .and_then(|guard| guard.load_project_settings(project.id).ok().flatten());
+                    let mut settings = loaded_settings.unwrap_or_else(|| {
+                        ProjectSettings::empty(&project.name, &path_str, &project.default_branch)
+                    });
+                    let settings_ms = t_settings.elapsed().as_secs_f64() * 1000.0;
+
+                    let t_git = std::time::Instant::now();
+                    let mut probed_git = false;
+                    if (settings.git_remote.trim().is_empty()
+                        || settings.github_repo.trim().is_empty())
+                        && {
+                            probed_git = true;
+                            true
+                        }
+                        && let Some(detected) = detect_git_remote_info(&project.root_path)
                     {
-                        let _ = guard.save_project_settings(project.id, &settings);
+                        let before_repo = settings.github_repo.clone();
+                        let before_remote = settings.git_remote.clone();
+                        settings.apply_detected_git_remote(&detected);
+                        if (settings.github_repo != before_repo
+                            || settings.git_remote != before_remote)
+                            && let Some(db_arc) = db.as_ref()
+                            && let Ok(guard) = db_arc.lock()
+                        {
+                            let _ = guard.save_project_settings(project.id, &settings);
+                        }
                     }
+                    let git_remote_ms = t_git.elapsed().as_secs_f64() * 1000.0;
+
+                    let t_catalog = std::time::Instant::now();
+                    let catalog = load_catalog(home.as_ref(), &project.root_path);
+                    settings.sync_workflows_from_catalog(&catalog);
+                    let catalog_ms = t_catalog.elapsed().as_secs_f64() * 1000.0;
+
+                    let t_queue = std::time::Instant::now();
+                    let loaded_queue = db
+                        .as_ref()
+                        .and_then(|arc| arc.lock().ok())
+                        .and_then(|guard| guard.load_project_work_queue(project.id).ok().flatten());
+                    let mut queue =
+                        loaded_queue.unwrap_or_else(|| ProjectWorkQueue::empty(&project.name));
+                    if !settings.github_repo.trim().is_empty()
+                        || !settings.intake_filters.is_empty()
+                        || !settings.intake_rules.is_empty()
+                    {
+                        apply_project_settings_to_queue(&settings, &mut queue);
+                    }
+                    let queue_ms = t_queue.elapsed().as_secs_f64() * 1000.0;
+
+                    work_queues.insert(project.name.clone(), queue);
+                    workflows_overviews.insert(
+                        project.name.clone(),
+                        ProjectWorkflowsOverview::from_catalog(&project.name, &catalog),
+                    );
+                    catalogs.insert(project.name.clone(), catalog);
+                    project_settings.insert(project.name.clone(), settings);
+                    project_span.finish(format!(
+                        "project_id={} settings_ms={settings_ms:.1} git_remote_ms={git_remote_ms:.1} git_probed={probed_git} catalog_ms={catalog_ms:.1} queue_ms={queue_ms:.1}",
+                        project.id
+                    ));
                 }
-
-                let catalog = load_catalog(home.as_ref(), &project.root_path);
-                settings.sync_workflows_from_catalog(&catalog);
-
-                let loaded_queue = db
-                    .as_ref()
-                    .and_then(|arc| arc.lock().ok())
-                    .and_then(|guard| guard.load_project_work_queue(project.id).ok().flatten());
-                let mut queue =
-                    loaded_queue.unwrap_or_else(|| ProjectWorkQueue::empty(&project.name));
-                if !settings.github_repo.trim().is_empty()
-                    || !settings.intake_filters.is_empty()
-                    || !settings.intake_rules.is_empty()
-                {
-                    apply_project_settings_to_queue(&settings, &mut queue);
-                }
-
-                work_queues.insert(project.name.clone(), queue);
-                workflows_overviews.insert(
-                    project.name.clone(),
-                    ProjectWorkflowsOverview::from_catalog(&project.name, &catalog),
-                );
-                catalogs.insert(project.name.clone(), catalog);
-                project_settings.insert(project.name.clone(), settings);
             }
+            projects_span.finish(format!(
+                "projects={} demo_mode={demo_mode}",
+                factory.projects().len()
+            ));
         }
 
         let work_queue_selected_issue = selected_project
@@ -728,17 +855,30 @@ impl AppState {
                 WorkflowRunViewData::sample_deploy_watch(),
             )
         } else {
-            let persisted_runs = db
-                .as_ref()
-                .and_then(|arc| arc.lock().ok())
-                .and_then(|guard| guard.list_all_workflow_runs().ok())
-                .unwrap_or_default();
-            let chat_usage = db
-                .as_ref()
-                .and_then(|arc| arc.lock().ok())
-                .and_then(|guard| guard.list_chat_usage().ok())
-                .unwrap_or_default();
-            let dashboard = DashboardDataset::from_usage(&persisted_runs, &chat_usage);
+            let persisted_runs = {
+                let span = crate::boot_log::span("boot.store.load_workflow_runs");
+                let runs = db
+                    .as_ref()
+                    .and_then(|arc| arc.lock().ok())
+                    .and_then(|guard| guard.list_all_workflow_runs().ok())
+                    .unwrap_or_default();
+                span.finish(format!("count={}", runs.len()));
+                runs
+            };
+            let chat_usage = {
+                let span = crate::boot_log::span("boot.store.load_chat_usage");
+                let usage = db
+                    .as_ref()
+                    .and_then(|arc| arc.lock().ok())
+                    .and_then(|guard| guard.list_chat_usage().ok())
+                    .unwrap_or_default();
+                span.finish(format!("count={}", usage.len()));
+                usage
+            };
+            let dashboard = {
+                let _span = crate::boot_log::span("boot.store.build_dashboard_dataset");
+                DashboardDataset::from_usage(&persisted_runs, &chat_usage)
+            };
             let mut runs_detail = BTreeMap::new();
             let mut active_key = (String::new(), String::new());
             for run in &persisted_runs {
@@ -799,7 +939,10 @@ impl AppState {
         let chat_sessions = if using_sample_projects {
             BTreeMap::new()
         } else {
-            load_chat_sessions(db.as_ref())
+            let span = crate::boot_log::span("boot.store.load_chat_sessions");
+            let sessions = load_chat_sessions(db.as_ref());
+            span.finish(format!("count={}", sessions.len()));
+            sessions
         };
 
         let (secrets, secrets_snapshot) = if demo_mode {
@@ -807,10 +950,12 @@ impl AppState {
         } else if let Some(db_arc) = db.as_ref()
             && let Ok(guard) = db_arc.lock()
         {
+            let span = crate::boot_log::span("boot.store.load_secrets_metadata");
             let records = guard.list_secrets().unwrap_or_default();
             let snapshot = guard
                 .build_secrets_metadata_snapshot(&preferences)
                 .unwrap_or_default();
+            span.finish(format!("count={}", records.len()));
             (records, snapshot)
         } else {
             (Vec::new(), SecretsMetadataSnapshot::default())
@@ -845,10 +990,13 @@ impl AppState {
             claude_path_lookup,
             claude_sign_in_in_progress: false,
             claude_details_loading: false,
+            claude_probe_seq: Arc::new(AtomicU64::new(0)),
             codex_sign_in_in_progress: false,
             codex_details_loading: false,
+            codex_probe_seq: Arc::new(AtomicU64::new(0)),
             antigravity_sign_in_in_progress: false,
             antigravity_details_loading: false,
+            antigravity_probe_seq: Arc::new(AtomicU64::new(0)),
             active_view,
             selected_project,
             expanded_projects,
@@ -967,6 +1115,10 @@ impl AppState {
                 &problem,
             );
         }
+        build_span.finish(format!(
+            "demo_mode={demo_mode} projects={}",
+            app.factory.projects().len()
+        ));
         app
     }
 
@@ -1377,6 +1529,7 @@ impl AppState {
     }
 
     fn refresh_claude_status(&mut self, explicit_test: bool) -> ClaudeCliProbe {
+        self.claude_probe_seq.fetch_add(1, Ordering::AcqRel);
         let path_env = self.claude_path_lookup.resolve_path_env();
         let probe = probe_claude_cli(
             self.preferences.claude.custom_cli_path.as_deref(),
@@ -1387,6 +1540,7 @@ impl AppState {
     }
 
     fn refresh_codex_status(&mut self, explicit_test: bool) -> Option<CodexCliProbe> {
+        self.codex_probe_seq.fetch_add(1, Ordering::AcqRel);
         let custom_path = self.preferences.codex.as_ref()?.custom_cli_path.clone();
         let path_env = self.claude_path_lookup.resolve_path_env();
         let probe = probe_codex_cli(custom_path.as_deref(), path_env.as_deref());
@@ -1395,6 +1549,7 @@ impl AppState {
     }
 
     fn refresh_antigravity_status(&mut self, explicit_test: bool) -> Option<AntigravityCliProbe> {
+        self.antigravity_probe_seq.fetch_add(1, Ordering::AcqRel);
         let custom_path = self
             .preferences
             .antigravity
@@ -1470,11 +1625,16 @@ fn state() -> Signal<AppState> {
 
 /// Initializes the per-surface store from the Bruk folder configured on this machine.
 pub(crate) fn init_default() {
+    let init_span = crate::boot_log::span("boot.store.init_default");
     let appearance = state().with_untracked(|s| s.preferences.appearance.clone());
-    apply_appearance_settings(&appearance);
-    refresh_claude_details_async();
-    refresh_codex_details_async();
-    refresh_antigravity_details_async();
+    {
+        let span = crate::boot_log::span("boot.store.apply_appearance");
+        apply_appearance_settings(&appearance);
+        span.finish(format!("mode={:?}", appearance.mode));
+    }
+    sweep_secret_tombstones_async();
+    probe_providers_async();
+    init_span.finish("");
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
@@ -1515,9 +1675,180 @@ fn install_state(loaded: AppState) {
     let appearance = loaded.preferences.appearance.clone();
     state().set(loaded);
     apply_appearance_settings(&appearance);
-    refresh_claude_details_async();
-    refresh_codex_details_async();
-    refresh_antigravity_details_async();
+    sweep_secret_tombstones_async();
+    probe_providers_async();
+}
+
+/// Retries outstanding secret deletion tombstones on a background thread so Keychain I/O
+/// never blocks application boot.
+fn sweep_secret_tombstones_async() {
+    let job = state().with_untracked(|s| {
+        if s.demo_mode || s.db_path_change_pending.is_some() {
+            return None;
+        }
+        s.db.as_ref()
+            .map(|db| (Arc::clone(db), Arc::clone(&s.secret_store)))
+    });
+    let Some((db, secret_store)) = job else {
+        return;
+    };
+    let boot_span = crate::boot_log::span("boot.async.sweep_secret_tombstones");
+    Owner::detached().run(|| {
+        spawn(async move {
+            let swept = spawn_blocking_task(move || {
+                db.lock()
+                    .ok()
+                    .and_then(|guard| {
+                        guard
+                            .sweep_secret_tombstones(secret_store.as_ref(), false)
+                            .ok()
+                    })
+                    .unwrap_or(0)
+            })
+            .await;
+            boot_span.finish(format!("swept={swept}"));
+        });
+    });
+}
+
+/// Probes all configured provider CLIs in parallel on background threads and chains into each
+/// authenticated provider's live usage/model refresh without blocking GUI startup.
+fn probe_providers_async() {
+    let from_boot = crate::boot_log::is_booting();
+    probe_claude_async(from_boot);
+    probe_codex_async(from_boot);
+    probe_antigravity_async(from_boot);
+}
+
+fn probe_claude_async(from_boot: bool) {
+    let job = state().with_untracked(|s| {
+        if s.demo_mode {
+            return None;
+        }
+        let expected_seq = s.claude_probe_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        Some((
+            expected_seq,
+            s.preferences.claude.custom_cli_path.clone(),
+            s.claude_path_lookup.resolve_path_env(),
+        ))
+    });
+    let Some((expected_seq, custom_path, path_env)) = job else {
+        return;
+    };
+    let boot_span = crate::boot_log::async_span("boot.async.probe_claude_cli", from_boot);
+    Owner::detached().run(|| {
+        spawn(async move {
+            let probe = spawn_blocking_task(move || {
+                probe_claude_cli(custom_path.as_deref(), path_env.as_deref())
+            })
+            .await;
+            let outcome = claude_probe_outcome(&probe);
+            let mut should_refresh_details = false;
+            state().update(|s| {
+                if s.demo_mode
+                    || s.claude_probe_seq.load(Ordering::Acquire) != expected_seq
+                    || s.claude_sign_in_in_progress
+                {
+                    return;
+                }
+                s.preferences.apply_claude_probe(&probe, false);
+                should_refresh_details = matches!(probe, ClaudeCliProbe::Authenticated { .. });
+            });
+            boot_span.finish(format!("outcome={outcome}"));
+            if should_refresh_details {
+                refresh_claude_details_async_inner(from_boot);
+            }
+        });
+    });
+}
+
+fn probe_codex_async(from_boot: bool) {
+    let job = state().with_untracked(|s| {
+        if s.demo_mode {
+            return None;
+        }
+        let codex = s.preferences.codex.as_ref()?;
+        let expected_seq = s.codex_probe_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        Some((
+            expected_seq,
+            codex.custom_cli_path.clone(),
+            s.claude_path_lookup.resolve_path_env(),
+        ))
+    });
+    let Some((expected_seq, custom_path, path_env)) = job else {
+        return;
+    };
+    let boot_span = crate::boot_log::async_span("boot.async.probe_codex_cli", from_boot);
+    Owner::detached().run(|| {
+        spawn(async move {
+            let probe = spawn_blocking_task(move || {
+                probe_codex_cli(custom_path.as_deref(), path_env.as_deref())
+            })
+            .await;
+            let outcome = codex_probe_outcome(&probe);
+            let mut should_refresh_details = false;
+            state().update(|s| {
+                if s.demo_mode
+                    || s.codex_probe_seq.load(Ordering::Acquire) != expected_seq
+                    || s.codex_sign_in_in_progress
+                    || s.preferences.codex.is_none()
+                {
+                    return;
+                }
+                s.preferences.apply_codex_probe(&probe, false);
+                should_refresh_details = matches!(probe, CodexCliProbe::Authenticated { .. });
+            });
+            boot_span.finish(format!("outcome={outcome}"));
+            if should_refresh_details {
+                refresh_codex_details_async_inner(from_boot);
+            }
+        });
+    });
+}
+
+fn probe_antigravity_async(from_boot: bool) {
+    let job = state().with_untracked(|s| {
+        if s.demo_mode {
+            return None;
+        }
+        let antigravity = s.preferences.antigravity.as_ref()?;
+        let expected_seq = s.antigravity_probe_seq.fetch_add(1, Ordering::AcqRel) + 1;
+        Some((
+            expected_seq,
+            antigravity.custom_cli_path.clone(),
+            s.claude_path_lookup.resolve_path_env(),
+        ))
+    });
+    let Some((expected_seq, custom_path, path_env)) = job else {
+        return;
+    };
+    let boot_span = crate::boot_log::async_span("boot.async.probe_antigravity_cli", from_boot);
+    Owner::detached().run(|| {
+        spawn(async move {
+            let probe = spawn_blocking_task(move || {
+                probe_antigravity_cli(custom_path.as_deref(), path_env.as_deref())
+            })
+            .await;
+            let outcome = antigravity_probe_outcome(&probe);
+            let mut should_refresh_usage = false;
+            state().update(|s| {
+                if s.demo_mode
+                    || s.antigravity_probe_seq.load(Ordering::Acquire) != expected_seq
+                    || s.antigravity_sign_in_in_progress
+                    || s.preferences.antigravity.is_none()
+                {
+                    return;
+                }
+                s.preferences.apply_antigravity_probe(&probe, false);
+                should_refresh_usage = matches!(probe, AntigravityCliProbe::Authenticated { .. });
+            });
+            boot_span.finish(format!("outcome={outcome}"));
+            if should_refresh_usage {
+                // `probe_antigravity_cli` already ran `agy models`; only fetch usage quota here.
+                refresh_antigravity_usage_async_inner(from_boot);
+            }
+        });
+    });
 }
 
 // --- Bruk folder ------------------------------------------------------------------------
@@ -2061,9 +2392,8 @@ pub(crate) fn set_demo_mode(enabled: bool) {
         apply_appearance_settings(&appearance);
     }
     if !enabled {
-        refresh_claude_details_async();
-        refresh_codex_details_async();
-        refresh_antigravity_details_async();
+        sweep_secret_tombstones_async();
+        probe_providers_async();
     }
 }
 
@@ -6126,6 +6456,7 @@ pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
 pub(crate) fn remove_codex_account() {
     state().update(|s| match s.preferences.remove_codex_account() {
         Ok(next_selected) => {
+            s.codex_probe_seq.fetch_add(1, Ordering::AcqRel);
             s.codex_details_loading = false;
             s.codex_sign_in_in_progress = false;
             s.selected_provider_id = next_selected;
@@ -6141,7 +6472,7 @@ pub(crate) fn remove_codex_account() {
 
 pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> bool {
     let mut added = false;
-    let mut should_refresh_details = false;
+    let mut should_refresh_usage = false;
     state().update(|s| {
         match s
             .preferences
@@ -6153,7 +6484,7 @@ pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> 
                     && let Some(AntigravityCliProbe::Authenticated { .. }) =
                         s.refresh_antigravity_status(false)
                 {
-                    should_refresh_details = true;
+                    should_refresh_usage = true;
                 }
                 s.preferences_error = None;
                 s.preferences_feedback = Some("Added Antigravity CLI account.".to_owned());
@@ -6165,8 +6496,8 @@ pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> 
             }
         }
     });
-    if should_refresh_details {
-        refresh_antigravity_details_async();
+    if should_refresh_usage {
+        refresh_antigravity_usage_async();
     }
     added
 }
@@ -6174,6 +6505,7 @@ pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> 
 pub(crate) fn remove_antigravity_account() {
     state().update(|s| match s.preferences.remove_antigravity_account() {
         Ok(next_selected) => {
+            s.antigravity_probe_seq.fetch_add(1, Ordering::AcqRel);
             s.antigravity_details_loading = false;
             s.antigravity_sign_in_in_progress = false;
             s.selected_provider_id = next_selected;
@@ -6195,8 +6527,22 @@ pub(crate) fn antigravity_details_loading() -> bool {
     state().with(|s| s.antigravity_details_loading)
 }
 
-/// Lists the signed-in Antigravity account's models on a background thread.
+/// Lists the signed-in Antigravity account's models and quota on a background thread.
 pub(crate) fn refresh_antigravity_details_async() {
+    refresh_antigravity_async_inner(false, false);
+}
+
+/// Fetches only the signed-in Antigravity account's quota on a background thread (used right
+/// after `probe_antigravity_cli`, which already fetched the live model list).
+fn refresh_antigravity_usage_async() {
+    refresh_antigravity_async_inner(true, false);
+}
+
+fn refresh_antigravity_usage_async_inner(from_boot: bool) {
+    refresh_antigravity_async_inner(true, from_boot);
+}
+
+fn refresh_antigravity_async_inner(usage_only: bool, from_boot: bool) {
     let mut binary_to_query = None;
     state().update(|s| {
         if s.demo_mode || s.antigravity_details_loading {
@@ -6219,10 +6565,25 @@ pub(crate) fn refresh_antigravity_details_async() {
 
     if let Some(binary_path) = binary_to_query {
         let expected_binary = binary_path.display().to_string();
+        let phase = if usage_only {
+            "boot.async.antigravity_usage"
+        } else {
+            "boot.async.antigravity_details"
+        };
+        let boot_span = crate::boot_log::async_span(phase, from_boot);
         Owner::detached().run(|| {
             spawn(async move {
-                let details =
-                    spawn_blocking_task(move || fetch_antigravity_details(&binary_path)).await;
+                let details = spawn_blocking_task(move || {
+                    if usage_only {
+                        fetch_antigravity_usage(&binary_path)
+                    } else {
+                        fetch_antigravity_details(&binary_path)
+                    }
+                })
+                .await;
+                let models_count = details.models.len();
+                let has_usage = details.usage.is_some();
+                let has_warning = details.warning.is_some();
                 state().update(|s| {
                     s.antigravity_details_loading = false;
                     let still_matching = !s.demo_mode
@@ -6234,6 +6595,9 @@ pub(crate) fn refresh_antigravity_details_async() {
                         s.preferences.apply_antigravity_details(details);
                     }
                 });
+                boot_span.finish(format!(
+                    "usage={has_usage} models={models_count} has_warning={has_warning}"
+                ));
             });
         });
     }
@@ -6292,7 +6656,7 @@ pub(crate) fn update_antigravity_cli_path(raw_path: &str) -> bool {
         updated = true;
     });
     if should_refresh_details {
-        refresh_antigravity_details_async();
+        refresh_antigravity_usage_async();
     }
     updated
 }
@@ -6389,7 +6753,7 @@ pub(crate) fn sign_in_antigravity() {
                     s.persist_preferences();
                 });
                 if should_refresh_details {
-                    refresh_antigravity_details_async();
+                    refresh_antigravity_usage_async();
                 }
             });
         });
@@ -6415,6 +6779,10 @@ pub(crate) fn codex_details_loading() -> bool {
 /// Fetches the live model catalog and remaining plan usage from the authenticated `codex` CLI
 /// on a background thread without blocking the UI.
 pub(crate) fn refresh_codex_details_async() {
+    refresh_codex_details_async_inner(false);
+}
+
+fn refresh_codex_details_async_inner(from_boot: bool) {
     let mut binary_to_query = None;
     state().update(|s| {
         if s.demo_mode || s.codex_details_loading {
@@ -6437,9 +6805,12 @@ pub(crate) fn refresh_codex_details_async() {
 
     if let Some(binary_path) = binary_to_query {
         let expected_binary = binary_path.display().to_string();
+        let boot_span = crate::boot_log::async_span("boot.async.codex_details", from_boot);
         Owner::detached().run(|| {
             spawn(async move {
                 let details = spawn_blocking_task(move || fetch_codex_details(&binary_path)).await;
+                let models_count = details.models.len();
+                let has_warning = details.warning.is_some();
                 state().update(|s| {
                     s.codex_details_loading = false;
                     let still_matching = !s.demo_mode
@@ -6452,6 +6823,7 @@ pub(crate) fn refresh_codex_details_async() {
                     }
                     s.preferences.apply_codex_details(details);
                 });
+                boot_span.finish(format!("models={models_count} has_warning={has_warning}"));
             });
         });
     }
@@ -6460,6 +6832,10 @@ pub(crate) fn refresh_codex_details_async() {
 /// Fetches the live model catalog and remaining plan usage from the authenticated `claude` CLI
 /// on a background thread without blocking the UI.
 pub(crate) fn refresh_claude_details_async() {
+    refresh_claude_details_async_inner(false);
+}
+
+fn refresh_claude_details_async_inner(from_boot: bool) {
     let mut binary_to_query = None;
     state().update(|s| {
         if s.demo_mode || !s.preferences.claude.connected || s.claude_details_loading {
@@ -6476,9 +6852,12 @@ pub(crate) fn refresh_claude_details_async() {
 
     if let Some(binary_path) = binary_to_query {
         let expected_binary = binary_path.display().to_string();
+        let boot_span = crate::boot_log::async_span("boot.async.claude_details", from_boot);
         Owner::detached().run(|| {
             spawn(async move {
                 let details = spawn_blocking_task(move || fetch_claude_details(&binary_path)).await;
+                let models_count = details.models.len();
+                let has_warning = details.warning.is_some();
                 state().update(|s| {
                     s.claude_details_loading = false;
                     if s.demo_mode
@@ -6489,6 +6868,7 @@ pub(crate) fn refresh_claude_details_async() {
                     }
                     s.preferences.apply_claude_details(details);
                 });
+                boot_span.finish(format!("models={models_count} has_warning={has_warning}"));
             });
         });
     }

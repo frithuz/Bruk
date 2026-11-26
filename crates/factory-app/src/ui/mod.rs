@@ -34,6 +34,8 @@ const ALL_PROJECTS_VALUE: &str = "__all_projects__";
 
 /// Top-level macOS shell matching the reference Dashboard layout.
 pub(crate) fn shell() -> impl IntoElement {
+    static FIRST_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let _boot_span = crate::boot_log::once_span("boot.ui.shell_first_build", &FIRST_BUILD);
     view()
         .flex_1()
         .bg(palette::canvas_bg())

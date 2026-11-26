@@ -771,8 +771,10 @@ dependencies = [
 name = "factory-app"
 version = "0.1.0"
 dependencies = [
+ "cc",
  "env_logger",
  "factory-core",
+ "log",
  "nsh-base",
  "nsh-core",
  "nsh-engine",

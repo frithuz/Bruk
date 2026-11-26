@@ -1201,13 +1201,17 @@ impl ProjectDatabase {
     }
 
     /// Launch sweep retrying outstanding tombstones (§5).
-    /// Skips when store is unavailable/locked, when `store.is_memory()` (unless `allow_memory`),
-    /// or when a database path change has not yet been confirmed.
+    /// Skips when no tombstones exist, when store is unavailable/locked, when `store.is_memory()`
+    /// (unless `allow_memory`), or when a database path change has not yet been confirmed.
     pub fn sweep_secret_tombstones(
         &self,
         store: &dyn SecretStore,
         allow_memory: bool,
     ) -> Result<usize, StorageError> {
+        let tombstones = self.list_tombstones()?;
+        if tombstones.is_empty() {
+            return Ok(0);
+        }
         if !store.status().is_available() || (!allow_memory && store.is_memory()) {
             return Ok(0);
         }
@@ -1215,7 +1219,7 @@ impl ProjectDatabase {
             return Ok(0);
         }
         let mut swept = 0usize;
-        for (id, account_key) in self.list_tombstones()? {
+        for (id, account_key) in tombstones {
             if store.delete(&account_key).is_ok() {
                 self.delete_tombstone(&id)?;
                 swept += 1;

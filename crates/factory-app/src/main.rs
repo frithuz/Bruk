@@ -4,14 +4,19 @@
 fn main() -> impl std::process::Termination {
     use nsh_platform_macos as platform;
 
+    factory_app::boot_log::init("cargo_main");
     env_logger::init();
+    let root = factory_app::with_embedded_fonts(platform::Root::of::<factory_app::App>());
+    let icon = app_icon_path();
+    factory_app::boot_log::event(
+        "boot.run_app.enter",
+        &format!("has_icon={}", icon.is_some()),
+    );
     platform::run_app(
-        platform::AppSource::Rust(factory_app::with_embedded_fonts(platform::Root::of::<
-            factory_app::App,
-        >())),
+        platform::AppSource::Rust(root),
         platform::AppOptions {
             title: "Bruk".to_owned(),
-            icon: app_icon_path(),
+            icon,
             size: (1360, 920),
             ..Default::default()
         },
