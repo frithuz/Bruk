@@ -1,6 +1,6 @@
-//! Project registration: clone a repository into the Bruk folder, or link an existing clone.
+//! Project registration: clone a repository, create a new local repository, or link an existing clone.
 
-use factory_core::ProjectId;
+use factory_core::{ProjectId, display_with_tilde};
 use nsh_base::{button, input, theme};
 use nsh_core::{file_dialog::OpenDialog, prelude::*};
 
@@ -10,6 +10,8 @@ use crate::{store, ui::palette};
 enum RegisterMode {
     /// Clone a remote into `<Bruk folder>/projects/<name>`.
     Clone,
+    /// Create and initialize a new local git repository.
+    Create,
     /// Track a clone that already exists elsewhere on disk.
     Link,
 }
@@ -38,7 +40,7 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                                     .text_color(palette::text_primary()),
                             )
                             .child(
-                                text("Clone a repository into your Bruk folder, or link a clone you already have.")
+                                text("Clone a repository, create a new local repository, or link a clone you already have.")
                                     .text_size(px(12.5))
                                     .text_color(palette::text_muted()),
                             ),
@@ -81,12 +83,22 @@ pub(crate) fn register_project_view() -> impl IntoElement {
                     ))
                     .child(mode_button(
                         mode,
+                        RegisterMode::Create,
+                        "register-mode-create",
+                        "New local repository",
+                    ))
+                    .child(mode_button(
+                        mode,
                         RegisterMode::Link,
                         "register-mode-link",
                         "Link existing clone",
                     )),
             )
             .child(when(move || mode.get() == RegisterMode::Clone, clone_card))
+            .child(when(
+                move || mode.get() == RegisterMode::Create,
+                create_card,
+            ))
             .child(when(move || mode.get() == RegisterMode::Link, link_card))
             .child(tracked_projects_card()),
     )
@@ -231,6 +243,175 @@ fn clone_card() -> impl IntoElement {
         )
 }
 
+fn create_card() -> impl IntoElement {
+    let browse_location = move || {
+        let mut dialog = OpenDialog::folders()
+            .title("Select Parent Folder")
+            .button_label("Use Folder");
+        if let Some(dir) = store::create_browse_start_dir() {
+            dialog = dialog.directory(dir);
+        }
+        let answer = pick_paths(dialog);
+        spawn(async move {
+            if let Ok(Some(paths)) = answer.await
+                && let Some(chosen) = paths.into_iter().next()
+            {
+                store::set_create_location_input(&display_with_tilde(&chosen));
+            }
+        });
+    };
+
+    form_card()
+        .child(
+            view().gap(px(6.0)).child(field_label("Project Name")).child(
+                text_input()
+                    .test_id("register-create-name")
+                    .value(store::create_name_input)
+                    .on_change(store::set_create_name_input)
+                    .on_submit(|_: &str| store::create_local_repository_project())
+                    .placeholder("Project name"),
+            ),
+        )
+        .child(
+            view()
+                .gap(px(6.0))
+                .child(field_label("Location"))
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.0))
+                        .child(
+                            text_input()
+                                .test_id("register-create-location")
+                                .value(store::create_location_input)
+                                .on_change(store::set_create_location_input)
+                                .on_submit(|_: &str| store::create_local_repository_project())
+                                .placeholder("Default projects folder")
+                                .flex_1(),
+                        )
+                        .child(
+                            button()
+                                .test_id("register-create-browse")
+                                .on_press(browse_location)
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(palette::border_color())
+                                .bg(palette::control_bg())
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .active(|s| s.opacity(0.75))
+                                .child(
+                                    text("Browse...")
+                                        .text_size(px(12.5))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::text_primary()),
+                                ),
+                        ),
+                )
+                .child(
+                    text(store::create_destination_caption)
+                        .text_size(px(11.5))
+                        .text_color(palette::text_muted()),
+                ),
+        )
+        .child(
+            view()
+                .gap(px(6.0))
+                .child(field_label("Default Branch"))
+                .child(
+                    text_input()
+                        .test_id("register-create-branch")
+                        .value(store::create_branch_input)
+                        .on_change(store::set_create_branch_input)
+                        .on_submit(|_: &str| store::create_local_repository_project())
+                        .placeholder("main"),
+                ),
+        )
+        .child(
+            button()
+                .test_id("register-create-readme")
+                .accessibility_label("Create a starter README.md")
+                .on_press(store::toggle_create_readme)
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .p(px(12.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .child(
+                    view()
+                        .w(px(16.0))
+                        .h(px(16.0))
+                        .flex_shrink_0()
+                        .rounded(px(4.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .items_center()
+                        .justify_center()
+                        .bg(move || {
+                            if store::create_readme() {
+                                palette::nav_active_bg()
+                            } else {
+                                palette::control_bg()
+                            }
+                        })
+                        .child(when(store::create_readme, || {
+                            text("✓")
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::BOLD)
+                                .text_color(palette::nav_active_fg())
+                        })),
+                )
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(2.0))
+                        .child(
+                            text("Create a starter README.md")
+                                .text_size(px(12.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(
+                            text("Includes README.md in the initial commit so git worktrees are ready immediately.")
+                                .text_size(px(11.5))
+                                .text_color(palette::text_muted()),
+                        ),
+                ),
+        )
+        .child(registration_error_text())
+        .child(
+            view().flex_row().items_center().justify_end().child(
+                button()
+                    .test_id("register-create-submit")
+                    .accessibility_label("Create Repository")
+                    .disabled(|| {
+                        store::create_in_progress()
+                            || store::create_name_input().trim().is_empty()
+                    })
+                    .on_press(store::create_local_repository_project)
+                    .px(px(14.0))
+                    .py(px(8.0))
+                    .rounded(px(8.0))
+                    .bg(palette::nav_active_bg())
+                    .active(|s| s.opacity(0.8))
+                    .disabled_style(|s| s.opacity(0.4))
+                    .child(primary_button_label(|| {
+                        if store::create_in_progress() {
+                            "Creating…".to_owned()
+                        } else {
+                            "Create Repository".to_owned()
+                        }
+                    })),
+            ),
+        )
+}
+
 fn link_card() -> impl IntoElement {
     let project_name = signal(String::new());
     let repo_path = signal(String::new());
@@ -369,7 +550,7 @@ fn tracked_projects_card() -> impl IntoElement {
         .child(when(
             || store::tracked_project_ids().is_empty(),
             || {
-                text("No projects yet. Clone a repository or link an existing clone above.")
+                text("No projects yet. Clone a repository, create a new local repository, or link an existing clone above.")
                     .text_size(px(12.5))
                     .text_color(palette::text_muted())
             },

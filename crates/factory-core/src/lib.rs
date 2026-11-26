@@ -42,8 +42,10 @@ pub use antigravity_cli::{
 };
 pub use bruk_home::{
     BRUK_HOME_ENV, BrukHome, CloneError, CloneSource, ClonedRepository, DEFAULT_HOME_DIR_NAME,
-    HOME_DATABASE_FILE, HomeEnvironment, HomeError, HomeResolution, HomeSetup, clone_repository,
-    display_with_tilde, parse_clone_source, project_dir_name, resolve_system_home,
+    HOME_DATABASE_FILE, HomeEnvironment, HomeError, HomeResolution, HomeSetup, InitRepositoryError,
+    InitRepositoryOptions, InitializedRepository, clone_repository, display_with_tilde,
+    init_local_repository, parse_clone_source, project_dir_name,
+    resolve_new_repository_destination, resolve_system_home, validate_branch_name,
 };
 pub use chat::{
     ChatContextCategory, ChatContextGroup, ChatContextItem, ChatContextKind, ChatContextUsage,

@@ -2800,7 +2800,7 @@ fn general_tab() -> impl IntoElement {
                             .child(card_divider())
                             .child(setting_row(
                                 "Default projects directory",
-                                "Where Bruk clones new projects. Clear it to use projects/ in your Bruk folder.",
+                                "Where Bruk clones or creates new projects. Clear it to use projects/ in your Bruk folder.",
                                 view()
                                     .flex_row()
                                     .items_center()

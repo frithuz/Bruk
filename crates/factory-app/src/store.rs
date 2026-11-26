@@ -23,10 +23,10 @@ use factory_core::{
     DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
     DeployWatchEntry, DryRunExecutor, EditorSelection, EnvScope, ExitField, ExitOperator, Exposure,
     FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment,
-    HomeError, HomeResolution, InboxFilter, InboxState, IntakeRule, InternalPurpose,
-    IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
-    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore,
-    NewMachineDraft, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager,
+    HomeError, HomeResolution, InboxFilter, InboxState, InitRepositoryOptions, IntakeRule,
+    InternalPurpose, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
+    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, ManagerId,
+    MemoryStore, NewMachineDraft, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager,
     PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
     ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
     RecentRunStatus, ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId,
@@ -39,14 +39,15 @@ use factory_core::{
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
     chat_worktree_branch, clone_repository, contains_env_reference, current_unix_seconds,
     default_secret_store, delete_legacy_database_files, detect_git_remote_info, display_with_tilde,
-    fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
+    expand_tilde, fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
     fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    find_legacy_database_files, migrate_plaintext_secrets, parse_clone_source,
-    probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
+    find_legacy_database_files, init_local_repository, migrate_plaintext_secrets,
+    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
     provider_effort_levels, query_chat_context, remove_chat_worktree, remove_github_issue_label,
-    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary, run_antigravity_login,
-    run_claude_auth_login, run_codex_login, sanitize_env_segment, spawn_chat_turn,
-    spawn_workflow_run,
+    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary,
+    resolve_new_repository_destination, run_antigravity_login, run_claude_auth_login,
+    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
+    validate_branch_name,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -160,6 +161,11 @@ struct AppState {
     clone_source_input: String,
     clone_name_input: String,
     clone_in_progress: bool,
+    create_name_input: String,
+    create_location_input: String,
+    create_branch_input: String,
+    create_readme: bool,
+    create_in_progress: bool,
     demo_mode: bool,
     using_sample_projects: bool,
     saved_real_preferences: Option<AppPreferences>,
@@ -828,6 +834,11 @@ impl AppState {
             clone_source_input: String::new(),
             clone_name_input: String::new(),
             clone_in_progress: false,
+            create_name_input: String::new(),
+            create_location_input: String::new(),
+            create_branch_input: "main".to_owned(),
+            create_readme: true,
+            create_in_progress: false,
             demo_mode,
             using_sample_projects,
             saved_real_preferences,
@@ -1763,6 +1774,182 @@ pub(crate) fn clone_and_register_project() {
                         state().update(|s| {
                             s.clone_source_input.clear();
                             s.clone_name_input.clear();
+                        });
+                    }
+                }
+                Err(err) => state().update(|s| {
+                    let message = err.to_string();
+                    s.registration_error = Some(message.clone());
+                    s.status_message = Some(message);
+                }),
+            }
+        });
+    });
+}
+
+// --- Creating new local repositories ----------------------------------------------------
+
+pub(crate) fn create_name_input() -> String {
+    state().with(|s| s.create_name_input.clone())
+}
+
+pub(crate) fn set_create_name_input(value: &str) {
+    state().update(|s| s.create_name_input = value.to_owned());
+}
+
+pub(crate) fn create_location_input() -> String {
+    state().with(|s| s.create_location_input.clone())
+}
+
+pub(crate) fn set_create_location_input(value: &str) {
+    state().update(|s| s.create_location_input = value.to_owned());
+}
+
+pub(crate) fn create_branch_input() -> String {
+    state().with(|s| s.create_branch_input.clone())
+}
+
+pub(crate) fn set_create_branch_input(value: &str) {
+    state().update(|s| s.create_branch_input = value.to_owned());
+}
+
+pub(crate) fn create_readme() -> bool {
+    state().with(|s| s.create_readme)
+}
+
+pub(crate) fn toggle_create_readme() {
+    state().update(|s| s.create_readme = !s.create_readme);
+}
+
+pub(crate) fn create_in_progress() -> bool {
+    state().with(|s| s.create_in_progress)
+}
+
+/// Directory to open the folder picker at when choosing where to create a new local repository.
+pub(crate) fn create_browse_start_dir() -> Option<std::path::PathBuf> {
+    state().with_untracked(|s| {
+        let location = s.create_location_input.trim();
+        if !location.is_empty() {
+            let expanded = expand_tilde(location);
+            if expanded.is_dir() {
+                return Some(expanded);
+            }
+        }
+        s.projects_dir().filter(|dir| dir.is_dir())
+    })
+}
+
+pub(crate) fn create_destination_caption() -> String {
+    state().with(|s| {
+        let location = s.create_location_input.trim();
+        let parent = if location.is_empty() {
+            let Some(projects_dir) = s.home.as_ref().and(s.projects_dir()) else {
+                return "The Bruk folder is not available.".to_owned();
+            };
+            projects_dir
+        } else {
+            let expanded = expand_tilde(location);
+            if !expanded.is_absolute() {
+                return "Enter an absolute folder path, or leave blank for the default folder."
+                    .to_owned();
+            }
+            expanded
+        };
+        let name = s.create_name_input.trim();
+        if name.is_empty() {
+            format!("Creates in {}/", display_with_tilde(&parent))
+        } else {
+            format!(
+                "Creates {}",
+                display_with_tilde(&parent.join(project_dir_name(name)))
+            )
+        }
+    })
+}
+
+/// Creates and initializes a new local git repository on a background thread, then registers
+/// it as a project with the initialized default branch.
+pub(crate) fn create_local_repository_project() {
+    let mut job = None;
+    state().update(|s| {
+        if s.create_in_progress {
+            return;
+        }
+        let name = s.create_name_input.trim().to_owned();
+        if name.is_empty() {
+            s.registration_error = Some("enter a project name".to_owned());
+            return;
+        }
+        let default_projects_dir = match s.home.as_ref().and(s.projects_dir()) {
+            Some(dir) => dir,
+            None if !s.create_location_input.trim().is_empty() => std::path::PathBuf::new(),
+            None => {
+                s.registration_error = Some("The Bruk folder is not available.".to_owned());
+                return;
+            }
+        };
+        let destination = match resolve_new_repository_destination(
+            &s.create_location_input,
+            &default_projects_dir,
+            &name,
+        ) {
+            Ok(destination) => destination,
+            Err(err) => {
+                s.registration_error = Some(err.to_string());
+                return;
+            }
+        };
+        let default_branch = match validate_branch_name(&s.create_branch_input) {
+            Ok(branch) => branch,
+            Err(err) => {
+                s.registration_error = Some(err.to_string());
+                return;
+            }
+        };
+        if !s.using_sample_projects
+            && s.factory
+                .projects()
+                .iter()
+                .any(|project| project.root_path == destination)
+        {
+            s.registration_error = Some(format!(
+                "A project is already registered at '{}'.",
+                destination.display()
+            ));
+            return;
+        }
+        let options = InitRepositoryOptions {
+            default_branch,
+            create_readme: s.create_readme,
+            project_name: name.clone(),
+            initial_commit: true,
+        };
+        s.create_in_progress = true;
+        s.registration_error = None;
+        s.status_message = Some(format!(
+            "Creating repository at {}…",
+            display_with_tilde(&destination)
+        ));
+        job = Some((name, destination, options));
+    });
+
+    let Some((name, destination, options)) = job else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result =
+                spawn_blocking_task(move || init_local_repository(&destination, &options)).await;
+            state().update(|s| s.create_in_progress = false);
+            match result {
+                Ok(initialized) => {
+                    let path = initialized.path.display().to_string();
+                    if register_project_with_branch(&name, &path, &initialized.default_branch) {
+                        state().update(|s| {
+                            s.create_name_input.clear();
+                            s.create_location_input.clear();
+                            s.create_branch_input = "main".to_owned();
+                            s.create_readme = true;
                         });
                     }
                 }

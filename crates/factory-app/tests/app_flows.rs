@@ -3534,6 +3534,110 @@ fn default_projects_dir_follows_bruk_folder_and_redirects_clones_when_changed() 
     .unwrap();
 }
 
+#[test]
+fn creates_new_local_repository_in_bruk_folder_and_custom_location() {
+    use std::process::{Command, Stdio};
+
+    let temp = TempDir::new().unwrap();
+    let home_root = temp.path().join("Bruk");
+    let db_path = home_root.join("bruk.db");
+    let custom_dir = temp.path().join("my-repos");
+    std::fs::create_dir_all(&custom_dir).unwrap();
+
+    let default_repo = home_root.join("projects").join("local-tool");
+    let custom_repo = custom_dir.join("scratch-pad");
+
+    let mut app = start_with_db(db_path.clone());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-create").unwrap();
+    app.wait_for(&format!(
+        "Creates in {}/",
+        factory_core::display_with_tilde(&home_root.join("projects"))
+    ))
+    .unwrap();
+    assert!(!app.screen().enabled("id:register-create-submit").unwrap());
+
+    // Create a local repository in the default Bruk projects folder on a custom default branch.
+    app.type_text("id:register-create-name", "local-tool")
+        .unwrap();
+    app.wait_for(&format!(
+        "Creates {}",
+        factory_core::display_with_tilde(&default_repo)
+    ))
+    .unwrap();
+    app.clear("id:register-create-branch").unwrap();
+    app.type_text("id:register-create-branch", "trunk").unwrap();
+    app.press("id:register-create-submit").unwrap();
+    app.wait_for("Registered project 'local-tool'").unwrap();
+    assert!(app.screen().shows("In Bruk folder"));
+    assert!(default_repo.join(".git").is_dir());
+    assert_eq!(
+        std::fs::read_to_string(default_repo.join("README.md")).unwrap(),
+        "# local-tool\n"
+    );
+    assert!(
+        Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&default_repo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    // Creating a second repository with the same name in the same location is refused.
+    app.type_text("id:register-create-name", "local-tool")
+        .unwrap();
+    app.press("id:register-create-submit").unwrap();
+    app.wait_for(&format!(
+        "A project is already registered at '{}'.",
+        default_repo.display()
+    ))
+    .unwrap();
+
+    // Create another local repository in a custom folder without a starter README.
+    app.clear("id:register-create-name").unwrap();
+    app.type_text("id:register-create-name", "scratch-pad")
+        .unwrap();
+    app.type_text(
+        "id:register-create-location",
+        &custom_dir.display().to_string(),
+    )
+    .unwrap();
+    app.wait_for(&format!(
+        "Creates {}",
+        factory_core::display_with_tilde(&custom_repo)
+    ))
+    .unwrap();
+    app.press("id:register-create-readme").unwrap();
+    app.press("id:register-create-submit").unwrap();
+    app.wait_for("Registered project 'scratch-pad'").unwrap();
+    assert!(custom_repo.join(".git").is_dir());
+    assert!(!custom_repo.join("README.md").exists());
+    assert!(
+        Command::new("git")
+            .args(["rev-parse", "--verify", "HEAD"])
+            .current_dir(&custom_repo)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let projects = db.list_projects().unwrap();
+    assert_eq!(projects.len(), 2);
+    assert_eq!(projects[0].name, "local-tool");
+    assert_eq!(projects[0].root_path, default_repo);
+    assert_eq!(projects[0].default_branch, "trunk");
+    assert_eq!(projects[1].name, "scratch-pad");
+    assert_eq!(projects[1].root_path, custom_repo);
+    assert_eq!(projects[1].default_branch, "main");
+}
+
 #[cfg(unix)]
 #[test]
 fn chat_sessions_stream_replies_resume_the_agent_session_and_persist() {

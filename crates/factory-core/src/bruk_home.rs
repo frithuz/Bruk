@@ -519,6 +519,282 @@ fn is_empty_dir(path: &Path) -> bool {
     fs::read_dir(path).is_ok_and(|mut entries| entries.next().is_none())
 }
 
+// --- Creating new local repositories ----------------------------------------------------
+
+/// Errors raised while creating and initializing a new local git repository.
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum InitRepositoryError {
+    #[error("enter a project name")]
+    EmptyProjectName,
+    #[error("'{0}' is not a valid branch name")]
+    InvalidBranchName(String),
+    #[error("'{0}' is not an absolute path")]
+    RelativePath(PathBuf),
+    #[error("'{0}' is a file, not a folder")]
+    NotADirectory(PathBuf),
+    #[error("'{0}' already exists. Link it as an existing clone or choose another project name.")]
+    DestinationExists(PathBuf),
+    #[error("failed to create '{path}': {message}")]
+    CreateDir { path: PathBuf, message: String },
+    #[error("failed to write '{path}': {message}")]
+    WriteFile { path: PathBuf, message: String },
+    #[error("failed to run git: {0}")]
+    GitUnavailable(String),
+    #[error("git init failed: {0}")]
+    InitFailed(String),
+    #[error("initial commit failed: {0}")]
+    InitialCommitFailed(String),
+}
+
+/// Options for initializing a new local git repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitRepositoryOptions {
+    /// Initial branch name (defaults to `"main"` when blank).
+    pub default_branch: String,
+    /// Create a starter `README.md` with `# <project_name>`.
+    pub create_readme: bool,
+    /// Project title used for the starter `README.md`.
+    pub project_name: String,
+    /// Create an initial commit so `HEAD` exists right away (required for git worktrees).
+    pub initial_commit: bool,
+}
+
+impl Default for InitRepositoryOptions {
+    fn default() -> Self {
+        Self {
+            default_branch: "main".to_owned(),
+            create_readme: true,
+            project_name: String::new(),
+            initial_commit: true,
+        }
+    }
+}
+
+/// A newly created and initialized local git repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InitializedRepository {
+    pub path: PathBuf,
+    /// Initial branch checked out in the new repository.
+    pub default_branch: String,
+}
+
+/// Validates and normalizes an initial git branch name (blank defaults to `"main"`).
+pub fn validate_branch_name(raw: &str) -> Result<String, InitRepositoryError> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok("main".to_owned());
+    }
+    let invalid = trimmed == "@"
+        || trimmed == "HEAD"
+        || trimmed.starts_with('-')
+        || trimmed.starts_with('/')
+        || trimmed.ends_with('/')
+        || trimmed.ends_with('.')
+        || trimmed.contains("..")
+        || trimmed.contains("//")
+        || trimmed.contains("@{")
+        || trimmed.chars().any(|ch| {
+            ch.is_control()
+                || ch.is_whitespace()
+                || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\')
+        })
+        || trimmed
+            .split('/')
+            .any(|seg| seg.is_empty() || seg.starts_with('.') || seg.ends_with(".lock"));
+    if invalid {
+        return Err(InitRepositoryError::InvalidBranchName(trimmed.to_owned()));
+    }
+    Ok(trimmed.to_owned())
+}
+
+/// Resolves the directory where a new local repository will be created.
+///
+/// When `parent_input` is blank, the repository lands inside `default_projects_dir`.
+pub fn resolve_new_repository_destination(
+    parent_input: &str,
+    default_projects_dir: &Path,
+    project_name: &str,
+) -> Result<PathBuf, InitRepositoryError> {
+    let name = project_name.trim();
+    if name.is_empty() {
+        return Err(InitRepositoryError::EmptyProjectName);
+    }
+    let parent = match parent_input.trim() {
+        "" => default_projects_dir.to_path_buf(),
+        custom => {
+            let expanded = expand_tilde(custom);
+            if !expanded.is_absolute() {
+                return Err(InitRepositoryError::RelativePath(expanded));
+            }
+            if expanded.exists() && !expanded.is_dir() {
+                return Err(InitRepositoryError::NotADirectory(expanded));
+            }
+            expanded
+        }
+    };
+    Ok(parent.join(project_dir_name(name)))
+}
+
+/// Creates `destination`, initializes a local git repository there, and optionally creates a
+/// starter `README.md` and initial commit so git worktrees work immediately.
+pub fn init_local_repository(
+    destination: &Path,
+    options: &InitRepositoryOptions,
+) -> Result<InitializedRepository, InitRepositoryError> {
+    if !destination.is_absolute() {
+        return Err(InitRepositoryError::RelativePath(destination.to_path_buf()));
+    }
+    if destination.exists() {
+        if !destination.is_dir() {
+            return Err(InitRepositoryError::NotADirectory(
+                destination.to_path_buf(),
+            ));
+        }
+        if !is_empty_dir(destination) {
+            return Err(InitRepositoryError::DestinationExists(
+                destination.to_path_buf(),
+            ));
+        }
+    }
+
+    let branch = validate_branch_name(&options.default_branch)?;
+    let existed = destination.exists();
+    fs::create_dir_all(destination).map_err(|err| InitRepositoryError::CreateDir {
+        path: destination.to_path_buf(),
+        message: err.to_string(),
+    })?;
+
+    let cleanup = || {
+        if !existed {
+            let _ = fs::remove_dir_all(destination);
+        } else {
+            let _ = fs::remove_dir_all(destination.join(".git"));
+            let _ = fs::remove_file(destination.join("README.md"));
+        }
+    };
+
+    let init_output = Command::new("git")
+        .args(["init", "--quiet", "-b", &branch])
+        .current_dir(destination)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| {
+            cleanup();
+            InitRepositoryError::GitUnavailable(err.to_string())
+        })?;
+    if !init_output.status.success() {
+        cleanup();
+        let stderr = String::from_utf8_lossy(&init_output.stderr)
+            .trim()
+            .to_owned();
+        return Err(InitRepositoryError::InitFailed(if stderr.is_empty() {
+            init_output.status.to_string()
+        } else {
+            stderr
+        }));
+    }
+
+    if options.create_readme {
+        let title = match options.project_name.trim() {
+            "" => destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("Project"),
+            name => name,
+        };
+        let readme_path = destination.join("README.md");
+        if let Err(err) = fs::write(&readme_path, format!("# {title}\n")) {
+            cleanup();
+            return Err(InitRepositoryError::WriteFile {
+                path: readme_path,
+                message: err.to_string(),
+            });
+        }
+    }
+
+    if options.initial_commit {
+        if options.create_readme {
+            let add_output = Command::new("git")
+                .args(["add", "--", "README.md"])
+                .current_dir(destination)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .stdin(Stdio::null())
+                .output()
+                .map_err(|err| {
+                    cleanup();
+                    InitRepositoryError::GitUnavailable(err.to_string())
+                })?;
+            if !add_output.status.success() {
+                cleanup();
+                let stderr = String::from_utf8_lossy(&add_output.stderr)
+                    .trim()
+                    .to_owned();
+                return Err(InitRepositoryError::InitialCommitFailed(
+                    if stderr.is_empty() {
+                        add_output.status.to_string()
+                    } else {
+                        stderr
+                    },
+                ));
+            }
+        }
+
+        let mut commit_cmd = Command::new("git");
+        commit_cmd
+            .current_dir(destination)
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .stdin(Stdio::null())
+            .args(["-c", "commit.gpgsign=false"]);
+        if git_config_value(destination, "user.name").is_none() {
+            commit_cmd.args(["-c", "user.name=Bruk"]);
+        }
+        if git_config_value(destination, "user.email").is_none() {
+            commit_cmd.args(["-c", "user.email=bruk@localhost"]);
+        }
+        commit_cmd.args(["commit", "--quiet"]);
+        if !options.create_readme {
+            commit_cmd.arg("--allow-empty");
+        }
+        commit_cmd.args(["-m", "Initial commit"]);
+
+        let commit_output = commit_cmd.output().map_err(|err| {
+            cleanup();
+            InitRepositoryError::GitUnavailable(err.to_string())
+        })?;
+        if !commit_output.status.success() {
+            cleanup();
+            let stderr = String::from_utf8_lossy(&commit_output.stderr)
+                .trim()
+                .to_owned();
+            return Err(InitRepositoryError::InitialCommitFailed(
+                if stderr.is_empty() {
+                    commit_output.status.to_string()
+                } else {
+                    stderr
+                },
+            ));
+        }
+    }
+
+    let default_branch = current_branch(destination).unwrap_or(branch);
+    Ok(InitializedRepository {
+        path: destination.to_path_buf(),
+        default_branch,
+    })
+}
+
+fn git_config_value(repo: &Path, key: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["config", "--get", key])
+        .current_dir(repo)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    let value = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !value.is_empty()).then_some(value)
+}
+
 #[cfg(test)]
 mod tests {
     use tempfile::TempDir;
@@ -770,5 +1046,167 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, CloneError::CloneFailed(_)), "{err:?}");
         assert!(!missing.exists());
+    }
+
+    #[test]
+    fn validates_branch_names_for_new_repositories() {
+        assert_eq!(validate_branch_name("").unwrap(), "main");
+        assert_eq!(validate_branch_name("   ").unwrap(), "main");
+        assert_eq!(validate_branch_name("trunk").unwrap(), "trunk");
+        assert_eq!(validate_branch_name("release/v1").unwrap(), "release/v1");
+
+        for bad in [
+            "-b",
+            "my branch",
+            "a..b",
+            "foo.lock",
+            "@",
+            "HEAD",
+            "a//b",
+            "a/.hidden",
+            "feat~1",
+            "trailing/",
+            "trailing.",
+        ] {
+            assert!(
+                matches!(
+                    validate_branch_name(bad),
+                    Err(InitRepositoryError::InvalidBranchName(_))
+                ),
+                "expected '{bad}' to be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_new_repository_destinations() {
+        let temp = TempDir::new().unwrap();
+        let default_dir = temp.path().join("Bruk").join("projects");
+        let custom_dir = temp.path().join("Code");
+        fs::create_dir_all(&custom_dir).unwrap();
+        let file_path = temp.path().join("not-a-dir");
+        fs::write(&file_path, "x").unwrap();
+
+        assert_eq!(
+            resolve_new_repository_destination("", &default_dir, "My Service").unwrap(),
+            default_dir.join("My-Service")
+        );
+        assert_eq!(
+            resolve_new_repository_destination(
+                &custom_dir.display().to_string(),
+                &default_dir,
+                "My Service",
+            )
+            .unwrap(),
+            custom_dir.join("My-Service")
+        );
+        assert_eq!(
+            resolve_new_repository_destination("", &default_dir, "   "),
+            Err(InitRepositoryError::EmptyProjectName)
+        );
+        assert!(matches!(
+            resolve_new_repository_destination("relative/path", &default_dir, "app"),
+            Err(InitRepositoryError::RelativePath(_))
+        ));
+        assert!(matches!(
+            resolve_new_repository_destination(
+                &file_path.display().to_string(),
+                &default_dir,
+                "app",
+            ),
+            Err(InitRepositoryError::NotADirectory(_))
+        ));
+    }
+
+    #[test]
+    fn initializes_local_repository_with_and_without_readme() {
+        let temp = TempDir::new().unwrap();
+        let home = BrukHome::at(temp.path().join("Bruk"));
+
+        // Default options with custom branch and starter README.
+        let dest = home.managed_project_dir("Local Tool");
+        let initialized = init_local_repository(
+            &dest,
+            &InitRepositoryOptions {
+                default_branch: "trunk".to_owned(),
+                create_readme: true,
+                project_name: "Local Tool".to_owned(),
+                initial_commit: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(initialized.path, dest);
+        assert_eq!(initialized.default_branch, "trunk");
+        assert!(dest.join(".git").is_dir());
+        assert_eq!(
+            fs::read_to_string(dest.join("README.md")).unwrap(),
+            "# Local Tool\n"
+        );
+        // HEAD resolves immediately so worktrees work out of the box.
+        git(&dest, &["rev-parse", "--verify", "HEAD"]);
+        let status_out = Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&dest)
+            .output()
+            .unwrap();
+        assert!(status_out.status.success());
+        assert!(
+            String::from_utf8_lossy(&status_out.stdout)
+                .trim()
+                .is_empty()
+        );
+
+        // Creating again into the occupied directory is refused.
+        assert_eq!(
+            init_local_repository(&dest, &InitRepositoryOptions::default()),
+            Err(InitRepositoryError::DestinationExists(dest.clone()))
+        );
+
+        // Creating without README still creates an empty initial commit with HEAD.
+        let bare_dest = temp.path().join("existing-empty");
+        fs::create_dir_all(&bare_dest).unwrap();
+        let initialized_empty = init_local_repository(
+            &bare_dest,
+            &InitRepositoryOptions {
+                default_branch: String::new(),
+                create_readme: false,
+                project_name: "No Readme".to_owned(),
+                initial_commit: true,
+            },
+        )
+        .unwrap();
+        assert_eq!(initialized_empty.default_branch, "main");
+        assert!(bare_dest.join(".git").is_dir());
+        assert!(!bare_dest.join("README.md").exists());
+        git(&bare_dest, &["rev-parse", "--verify", "HEAD"]);
+
+        // Invalid branch leaves no directory behind.
+        let bad_dest = home.managed_project_dir("bad-branch-repo");
+        assert!(matches!(
+            init_local_repository(
+                &bad_dest,
+                &InitRepositoryOptions {
+                    default_branch: "bad branch".to_owned(),
+                    ..InitRepositoryOptions::default()
+                },
+            ),
+            Err(InitRepositoryError::InvalidBranchName(_))
+        ));
+        assert!(!bad_dest.exists());
+
+        // Relative destination and file destination are rejected.
+        assert!(matches!(
+            init_local_repository(
+                Path::new("relative/repo"),
+                &InitRepositoryOptions::default()
+            ),
+            Err(InitRepositoryError::RelativePath(_))
+        ));
+        let file_dest = temp.path().join("plain-file");
+        fs::write(&file_dest, "hi").unwrap();
+        assert!(matches!(
+            init_local_repository(&file_dest, &InitRepositoryOptions::default()),
+            Err(InitRepositoryError::NotADirectory(_))
+        ));
     }
 }
