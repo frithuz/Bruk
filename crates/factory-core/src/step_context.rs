@@ -659,6 +659,23 @@ pub fn default_step_runtime_dir(run_id: &str, step_index: usize) -> PathBuf {
     base.join(format!("step-{step_index:03}"))
 }
 
+/// Effort levels `claude --effort` takes.
+pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+/// Effort levels Codex's `model_reasoning_effort` takes.
+pub const CODEX_EFFORT_LEVELS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+/// Effort levels `agy --effort` takes.
+pub const ANTIGRAVITY_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// The reasoning effort levels a provider's CLI accepts, lowest first.
+pub fn provider_effort_levels(provider: ProviderKind) -> &'static [&'static str] {
+    match provider {
+        ProviderKind::Claude => &CLAUDE_EFFORT_LEVELS,
+        ProviderKind::Codex => &CODEX_EFFORT_LEVELS,
+        ProviderKind::Antigravity => &ANTIGRAVITY_EFFORT_LEVELS,
+        ProviderKind::OpenRouter => &[],
+    }
+}
+
 /// Builds a user-context-isolated [`ClaudeSpawnPlan`] for one materialized workflow step.
 ///
 /// Enforces:
@@ -712,6 +729,17 @@ pub fn build_isolated_claude_spawn_plan(
             .insert(at + 1, mcp_file.to_string_lossy().into_owned());
     }
     push_bool_flag_if_missing(&mut plan.args, "--disable-slash-commands");
+
+    // The agent's (or chat's) effort wins over the one in Claude spawn settings.
+    if let Some(effort) = materialized
+        .bundle
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| CLAUDE_EFFORT_LEVELS.contains(e))
+    {
+        set_or_push_flag(&mut plan.args, "--effort", effort);
+    }
 
     // Permission mode derived from resolved agent/project sandbox if not overridden.
     if !has_flag(&plan.args, "--permission-mode") {
@@ -974,7 +1002,7 @@ pub fn build_isolated_antigravity_spawn_plan(
         .reasoning_effort
         .as_deref()
         .map(str::trim)
-        .filter(|e| ["low", "medium", "high", "xhigh", "max"].contains(e))
+        .filter(|e| ANTIGRAVITY_EFFORT_LEVELS.contains(e))
     {
         args.push("--effort".to_owned());
         args.push(effort.to_owned());

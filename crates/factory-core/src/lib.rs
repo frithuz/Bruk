@@ -169,7 +169,7 @@ pub use step_context::{
     AntigravitySpawnPlan, MaterializedStepContext, StepContextBundle, StepContextError,
     SubagentContextSpec, TemplateContext, build_isolated_antigravity_spawn_plan,
     build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
-    default_step_runtime_dir, materialize_step_context,
+    default_step_runtime_dir, materialize_step_context, provider_effort_levels,
 };
 pub use storage::{PersistedChatUsage, PersistedWorkflowRun, ProjectDatabase, StorageError};
 pub use work_queue::{

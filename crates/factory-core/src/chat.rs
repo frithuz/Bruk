@@ -486,6 +486,10 @@ pub struct ChatSession {
     /// provider default.
     #[serde(default)]
     pub model: Option<String>,
+    /// Reasoning effort override for the chat (`low`, `high`, …); `None` falls back to the
+    /// agent, then the provider's own setting.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
     /// What the agent may do in the checkout; applies from the next turn when changed.
     #[serde(default)]
     pub sandbox: ProjectSandboxMode,
@@ -562,6 +566,7 @@ impl ChatSession {
             agent: agent.filter(|a| !a.trim().is_empty()),
             agent_name: agent_name.filter(|a| !a.trim().is_empty()),
             model: None,
+            reasoning_effort: None,
             sandbox,
             provider_session_id: None,
             entries: Vec::new(),
@@ -1939,6 +1944,8 @@ pub struct ChatTurnRequest {
     pub provider: ProviderKind,
     pub agent: Option<String>,
     pub model: Option<String>,
+    /// Reasoning effort override; wins over the agent's.
+    pub reasoning_effort: Option<String>,
     pub sandbox: ProjectSandboxMode,
     /// The provider session to resume; `None` starts the conversation.
     pub resume_session_id: Option<String>,
@@ -2203,9 +2210,17 @@ fn build_chat_command(
             secret_problems.push(problem.clone());
         }
     }
-    // The access the user picked for this chat wins over the agent's default.
+    // The access and effort the user picked for this chat win over the agent's defaults.
     bundle.provider = request.provider;
     bundle.sandbox = request.sandbox;
+    if let Some(effort) = request
+        .reasoning_effort
+        .as_deref()
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+    {
+        bundle.reasoning_effort = Some(effort.to_owned());
+    }
     let materialized = materialize_step_context(
         bundle,
         &request.runtime_dir,
@@ -4175,6 +4190,7 @@ mod tests {
             provider,
             agent: Some("implementer".to_owned()),
             model: None,
+            reasoning_effort: None,
             sandbox: ProjectSandboxMode::ReadOnly,
             resume_session_id: None,
             prompt: "Explain {{ inputs.x }} -- please".to_owned(),
@@ -4324,6 +4340,56 @@ echo "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":$((40 * turns))
         );
         // Codex reports the thread's running total (42, then 84): each turn counts once.
         assert_eq!(chat.total_tokens, 84);
+    }
+
+    fn command_args(req: &ChatTurnRequest) -> Vec<String> {
+        build_chat_turn_command(req)
+            .unwrap()
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn chats_pass_the_model_and_effort_picked_for_them() {
+        let temp = TempDir::new().unwrap();
+        let claude = write_script(temp.path(), "claude", "#!/bin/sh\n");
+        let mut req = request(&temp, ProviderKind::Claude, &claude);
+        req.claude_default_model = Some("sonnet".to_owned());
+        let args = command_args(&req);
+        assert!(
+            args.windows(2).any(|w| w == ["--model", "sonnet"]),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "--effort"), "{args:?}");
+
+        req.model = Some("opus".to_owned());
+        req.reasoning_effort = Some("xhigh".to_owned());
+        let args = command_args(&req);
+        assert!(
+            args.windows(2).any(|w| w == ["--model", "opus"]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2).any(|w| w == ["--effort", "xhigh"]),
+            "{args:?}"
+        );
+        assert_eq!(args.iter().filter(|a| *a == "--effort").count(), 1);
+
+        let codex = write_script(temp.path(), "codex", "#!/bin/sh\n");
+        let mut req = request(&temp, ProviderKind::Codex, &codex);
+        req.model = Some("gpt-5.5".to_owned());
+        req.reasoning_effort = Some("minimal".to_owned());
+        let args = command_args(&req);
+        assert!(
+            args.windows(2).any(|w| w == ["--model", "gpt-5.5"]),
+            "{args:?}"
+        );
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["-c", "model_reasoning_effort=\"minimal\""]),
+            "{args:?}"
+        );
     }
 
     fn attach(temp: &TempDir, req: &mut ChatTurnRequest, files: &[(&str, &[u8])]) {

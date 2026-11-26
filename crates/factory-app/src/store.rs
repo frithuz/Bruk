@@ -18,22 +18,22 @@ use factory_core::{
     ChatSession, ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown, ChatTurnControl,
     ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
     ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
-    CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
-    CommandManagerConfig, CompositeDef, CoreUpdatePolicy, DashboardDataset, DashboardGranularity,
-    DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin, DeployWatchEntry,
-    DryRunExecutor, EditorSelection, EnvScope, ExitField, ExitOperator, Exposure, FactoryState,
-    FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError,
-    HomeResolution, InboxFilter, InboxState, IntakeRule, InternalPurpose, IssueSourceAuthMode,
-    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
-    MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore, NewMachineDraft,
-    ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager, PersistedWorkflowRun,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
-    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
-    RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager, SecretProblem,
-    SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState, SecretStore,
-    SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError, StoreStatus,
-    ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
+    CliAccount, CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan,
+    CodexSpawnSettings, CommandManagerConfig, CompositeDef, CoreUpdatePolicy, DashboardDataset,
+    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, EnvScope, ExitField, ExitOperator, Exposure,
+    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment,
+    HomeError, HomeResolution, InboxFilter, InboxState, IntakeRule, InternalPurpose,
+    IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
+    MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore,
+    NewMachineDraft, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager,
+    PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
+    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
+    RecentRunStatus, ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId,
+    RunOutcomeDot, RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager,
+    SecretProblem, SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState,
+    SecretStore, SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError,
+    StoreStatus, ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
     WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
     WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
     WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
@@ -42,10 +42,11 @@ use factory_core::{
     fetch_antigravity_details, fetch_claude_details, fetch_codex_details,
     fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
     find_legacy_database_files, migrate_plaintext_secrets, parse_clone_source,
-    probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name, query_chat_context,
-    remove_chat_worktree, remove_github_issue_label, resolve_antigravity_binary,
-    resolve_claude_binary, resolve_codex_binary, run_antigravity_login, run_claude_auth_login,
-    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
+    probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
+    provider_effort_levels, query_chat_context, remove_chat_worktree, remove_github_issue_label,
+    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary, run_antigravity_login,
+    run_claude_auth_login, run_codex_login, sanitize_env_segment, spawn_chat_turn,
+    spawn_workflow_run,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -251,6 +252,10 @@ struct AppState {
     /// What the next new chat uses; `None` follows the agent, then the project's settings.
     chat_new_provider: Option<ProviderKind>,
     chat_new_agent: Option<String>,
+    /// Model for the next new chat; `None` keeps the agent's, project's or provider's default.
+    chat_new_model: Option<String>,
+    /// Reasoning effort for the next new chat; `None` keeps the agent's or provider's.
+    chat_new_effort: Option<String>,
     chat_new_sandbox: Option<ProjectSandboxMode>,
     chat_new_workspace: Option<ChatWorkspace>,
     /// Files waiting in the composer to go with the next message.
@@ -913,6 +918,8 @@ impl AppState {
             chat_selected: BTreeMap::new(),
             chat_new_provider: None,
             chat_new_agent: None,
+            chat_new_model: None,
+            chat_new_effort: None,
             chat_new_sandbox: None,
             chat_new_workspace: None,
             chat_pending_attachments: Vec::new(),
@@ -2577,6 +2584,9 @@ pub(crate) struct ActiveChatMeta {
     pub(crate) title: String,
     pub(crate) agent_label: String,
     pub(crate) provider: ProviderKind,
+    /// The model and effort picked when the chat started, when not the defaults.
+    pub(crate) model: Option<String>,
+    pub(crate) reasoning_effort: Option<String>,
     pub(crate) sandbox: ProjectSandboxMode,
     pub(crate) status: ChatSessionStatus,
     pub(crate) message_count: usize,
@@ -2710,9 +2720,38 @@ impl AppState {
             .unwrap_or_default()
     }
 
+    /// The picked effort, while the new chat's provider takes it.
+    fn resolved_chat_new_effort(&self) -> Option<String> {
+        self.chat_new_effort.clone().filter(|e| {
+            provider_effort_levels(self.resolved_chat_new_provider()).contains(&e.as_str())
+        })
+    }
+
+    /// The CLI account behind a provider, when it is set up.
+    fn cli_account(&self, provider: ProviderKind) -> Option<&CliAccount> {
+        match provider {
+            ProviderKind::Claude => Some(&self.preferences.claude),
+            ProviderKind::Codex => self.preferences.codex.as_ref(),
+            ProviderKind::Antigravity => self.preferences.antigravity.as_ref(),
+            ProviderKind::OpenRouter => None,
+        }
+    }
+
+    /// Sets the provider for the next new chat; a model or effort picked for another provider
+    /// is dropped.
+    fn choose_chat_new_provider(&mut self, provider: ProviderKind) {
+        if self.resolved_chat_new_provider() != provider {
+            self.chat_new_model = None;
+            self.chat_new_effort = None;
+        }
+        self.chat_new_provider = Some(provider);
+    }
+
     fn reset_chat_composer(&mut self) {
         self.chat_new_provider = None;
         self.chat_new_agent = None;
+        self.chat_new_model = None;
+        self.chat_new_effort = None;
         self.chat_new_sandbox = None;
         self.chat_new_workspace = None;
     }
@@ -2830,6 +2869,8 @@ impl AppState {
                     now,
                 );
                 session.workspace = self.resolved_chat_new_workspace();
+                session.model = self.chat_new_model.clone();
+                session.reasoning_effort = self.resolved_chat_new_effort();
                 self.chat_sessions.insert(id.clone(), session);
                 self.chat_selected.insert(pid, id.clone());
                 self.reset_chat_composer();
@@ -2945,6 +2986,7 @@ impl AppState {
             provider: session.provider,
             agent: session.agent.clone(),
             model: session.model.clone(),
+            reasoning_effort: session.reasoning_effort.clone(),
             sandbox: session.sandbox,
             resume_session_id: session.provider_session_id.clone(),
             prompt: prompt.to_owned(),
@@ -3061,6 +3103,8 @@ pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
             title: chat.display_title(),
             agent_label: chat.agent_label(),
             provider: chat.provider,
+            model: chat.model.clone(),
+            reasoning_effort: chat.reasoning_effort.clone(),
             sandbox: chat.sandbox,
             status: chat.status,
             message_count: chat.message_count(),
@@ -3125,7 +3169,89 @@ pub(crate) fn chat_new_provider() -> ProviderKind {
 }
 
 pub(crate) fn set_chat_new_provider(provider: ProviderKind) {
-    state().update(|s| s.chat_new_provider = Some(provider));
+    state().update(|s| s.choose_chat_new_provider(provider));
+}
+
+/// Models the next new chat's provider offers, as `(value, name)`, from its CLI (the Model
+/// Family Filter applied).
+pub(crate) fn chat_model_options() -> Vec<(String, String)> {
+    state().with(|s| {
+        s.cli_account(s.resolved_chat_new_provider())
+            .map(|account| {
+                account
+                    .visible_available_models()
+                    .into_iter()
+                    .map(|m| {
+                        let name = if m.display_name.trim().is_empty() {
+                            m.value.clone()
+                        } else {
+                            m.display_name.clone()
+                        };
+                        (m.value, name)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+/// What the next new chat uses when no model is picked: its agent's model, the project's
+/// override, or the provider's default.
+pub(crate) fn chat_default_model_label() -> String {
+    state().with(|s| {
+        let provider = s.resolved_chat_new_provider();
+        let agent_model = s
+            .chat_new_agent
+            .as_deref()
+            .and_then(|r| s.active_catalog_clone().resolve_agent(r).ok())
+            .and_then(|a| a.model)
+            .filter(|m| !m.trim().is_empty());
+        let project_model = s
+            .selected_project_settings()
+            .map(|settings| settings.model_override.trim().to_owned())
+            .filter(|m| !m.is_empty());
+        let provider_model = s
+            .cli_account(provider)
+            .map(|a| a.default_model.trim().to_owned())
+            .filter(|m| !m.is_empty());
+        agent_model
+            .or(project_model)
+            .or(provider_model)
+            .unwrap_or_else(|| "provider default".to_owned())
+    })
+}
+
+pub(crate) fn chat_new_model() -> Option<String> {
+    state().with(|s| s.chat_new_model.clone())
+}
+
+pub(crate) fn set_chat_new_model(model: Option<String>) {
+    state().update(|s| s.chat_new_model = model.filter(|m| !m.trim().is_empty()));
+}
+
+/// Effort levels the next new chat's provider takes, lowest first.
+pub(crate) fn chat_effort_options() -> Vec<&'static str> {
+    state().with(|s| provider_effort_levels(s.resolved_chat_new_provider()).to_vec())
+}
+
+/// What the next new chat uses when no effort is picked: its agent's, or the provider's.
+pub(crate) fn chat_default_effort_label() -> String {
+    state().with(|s| {
+        s.chat_new_agent
+            .as_deref()
+            .and_then(|r| s.active_catalog_clone().resolve_agent(r).ok())
+            .and_then(|a| a.reasoning_effort)
+            .filter(|e| !e.trim().is_empty())
+            .unwrap_or_else(|| "provider default".to_owned())
+    })
+}
+
+pub(crate) fn chat_new_effort() -> Option<String> {
+    state().with(AppState::resolved_chat_new_effort)
+}
+
+pub(crate) fn set_chat_new_effort(effort: Option<String>) {
+    state().update(|s| s.chat_new_effort = effort.filter(|e| !e.trim().is_empty()));
 }
 
 pub(crate) fn chat_new_agent() -> Option<String> {
@@ -3140,7 +3266,7 @@ pub(crate) fn set_chat_new_agent(agent: Option<String>) {
             .and_then(|reference| s.active_catalog_clone().resolve_agent(reference).ok());
         if let Some(resolved) = resolved {
             if let Some(provider) = resolved.provider.filter(|p| s.chat_provider_allowed(*p)) {
-                s.chat_new_provider = Some(provider);
+                s.choose_chat_new_provider(provider);
             }
             if let Some(sandbox) = resolved.sandbox {
                 s.chat_new_sandbox = Some(sandbox);

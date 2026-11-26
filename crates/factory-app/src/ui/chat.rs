@@ -26,6 +26,8 @@ use crate::{
 const LIST_WIDTH: f32 = 252.0;
 const TRANSCRIPT_MAX_WIDTH: f32 = 780.0;
 const NO_AGENT_VALUE: &str = "__no_agent__";
+const DEFAULT_MODEL_VALUE: &str = "__default_model__";
+const DEFAULT_EFFORT_VALUE: &str = "__default_effort__";
 /// How close to the end the transcript must be scrolled to keep following new text.
 const FOLLOW_THRESHOLD: f32 = 56.0;
 const CONTEXT_PANEL_WIDTH: f32 = 300.0;
@@ -345,6 +347,8 @@ fn new_chat_intro() -> impl IntoElement {
                     .pt(px(6.0))
                     .child(provider_picker())
                     .child(agent_picker())
+                    .child(model_picker())
+                    .child(effort_picker())
                     .child(sandbox_picker(
                         "chat-new-access",
                         store::chat_new_sandbox,
@@ -478,6 +482,91 @@ fn agent_picker() -> impl IntoElement {
                 })
                 .unwrap_or_else(|| "None".to_owned())
         }))
+}
+
+fn model_picker() -> impl IntoElement {
+    styled_select()
+        .test_id("chat-new-model")
+        .accessibility_label("Model")
+        .items(|| {
+            let mut items = vec![SelectItem::new(
+                DEFAULT_MODEL_VALUE,
+                format!("Default ({})", store::chat_default_model_label()),
+            )];
+            let options = store::chat_model_options();
+            // A model picked before the CLI's list loaded (or hidden by the family filter)
+            // stays choosable.
+            if let Some(current) = store::chat_new_model()
+                && !options.iter().any(|(value, _)| *value == current)
+            {
+                items.push(SelectItem::new(current.clone(), current));
+            }
+            for (value, name) in options {
+                items.push(SelectItem::new(value, name));
+            }
+            items
+        })
+        .value(|| {
+            SelectValue::from(
+                store::chat_new_model().unwrap_or_else(|| DEFAULT_MODEL_VALUE.to_owned()),
+            )
+        })
+        .on_change(|value: &Option<SharedString>| match value.as_deref() {
+            None | Some(DEFAULT_MODEL_VALUE) => store::set_chat_new_model(None),
+            Some(model) => store::set_chat_new_model(Some(model.to_owned())),
+        })
+        .trigger(picker_trigger("Model", || match store::chat_new_model() {
+            Some(model) => store::chat_model_options()
+                .into_iter()
+                .find(|(value, _)| *value == model)
+                .map(|(_, name)| name)
+                .unwrap_or(model),
+            None => "Default".to_owned(),
+        }))
+}
+
+fn effort_picker() -> impl IntoElement {
+    styled_select()
+        .test_id("chat-new-effort")
+        .accessibility_label("Effort")
+        .items(|| {
+            let mut items = vec![SelectItem::new(
+                DEFAULT_EFFORT_VALUE,
+                format!("Default ({})", store::chat_default_effort_label()),
+            )];
+            for level in store::chat_effort_options() {
+                items.push(SelectItem::new(level, effort_label(level)));
+            }
+            items
+        })
+        .value(|| {
+            SelectValue::from(
+                store::chat_new_effort().unwrap_or_else(|| DEFAULT_EFFORT_VALUE.to_owned()),
+            )
+        })
+        .on_change(|value: &Option<SharedString>| match value.as_deref() {
+            None | Some(DEFAULT_EFFORT_VALUE) => store::set_chat_new_effort(None),
+            Some(level) => store::set_chat_new_effort(Some(level.to_owned())),
+        })
+        .trigger(picker_trigger("Effort", || {
+            store::chat_new_effort()
+                .map(|level| effort_label(&level))
+                .unwrap_or_else(|| "Default".to_owned())
+        }))
+}
+
+/// "xhigh" → "Extra high", "low" → "Low".
+fn effort_label(level: &str) -> String {
+    match level {
+        "xhigh" => "Extra high".to_owned(),
+        other => {
+            let mut chars = other.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect(),
+                None => String::new(),
+            }
+        }
+    }
 }
 
 fn sandbox_picker(
@@ -1573,6 +1662,12 @@ fn chat_meta_line(meta: &ActiveChatMeta) -> String {
         parts.push(meta.agent_label.clone());
     }
     parts.push(meta.provider.label().to_owned());
+    if let Some(model) = meta.model.as_ref() {
+        parts.push(model.clone());
+    }
+    if let Some(effort) = meta.reasoning_effort.as_ref() {
+        parts.push(format!("{} effort", effort_label(effort)));
+    }
     parts.push(match meta.message_count {
         1 => "1 message".to_owned(),
         n => format!("{n} messages"),
