@@ -1,0 +1,78 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - "v*"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions: {}
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build macOS (arm64)
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: write # create and upload GitHub Release assets
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+
+      - name: Install Native Shell CLI
+        run: |
+          nsh_version="$(awk -F'"' '$0 == "name = \"nsh-core\"" { found=1; next } found && /^version = "/ { print $2; exit }' Cargo.lock)"
+          if [ -z "$nsh_version" ]; then
+            echo "error: could not determine nsh-core version from Cargo.lock" >&2
+            exit 1
+          fi
+          export NSH_VERSION="v${nsh_version}"
+          echo "Installing Native Shell CLI ${NSH_VERSION}"
+          curl -fsSL https://nsh.dev/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          nsh --version
+
+      - name: Package macOS app bundle
+        run: |
+          nsh package --target macos
+          bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
+          lipo -archs ".nsh/out/Bruk.app/Contents/MacOS/Bruk"
+
+      - name: Archive app bundle
+        run: |
+          mkdir -p dist
+          archive="dist/Bruk-${GITHUB_REF_NAME}-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent ".nsh/out/Bruk.app" "$archive"
+          (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+          ls -lh dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          archive="dist/Bruk-${GITHUB_REF_NAME}-macos-arm64.zip"
+          checksum="${archive}.sha256"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "$archive" "$checksum" --clobber
+          else
+            args=(--title "$GITHUB_REF_NAME" --generate-notes)
+            if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+              args+=(--prerelease)
+            fi
+            gh release create "$GITHUB_REF_NAME" "$archive" "$checksum" "${args[@]}"
+          fi
