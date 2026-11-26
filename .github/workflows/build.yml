@@ -19,7 +19,8 @@ jobs:
   build:
     name: Build macOS (arm64)
     runs-on: macos-26
-    timeout-minutes: 30
+    environment: Mac App Signing
+    timeout-minutes: 45
     permissions:
       contents: write # create and upload GitHub Release assets
     steps:
@@ -52,6 +53,103 @@ jobs:
           nsh package --target macos
           bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
           lipo -archs ".nsh/out/Bruk.app/Contents/MacOS/Bruk"
+
+      - name: Sign macOS app bundle
+        env:
+          CERTIFICATE_P12: ${{ secrets.CERTIFICATE_P12 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.CERTIFICATE_PASSWORD }}
+          SIGNING_IDENTITY: ${{ vars.SIGNING_IDENTITY }}
+        run: |
+          keychain_path="${RUNNER_TEMP}/signing.keychain-db"
+          cert_path="${RUNNER_TEMP}/cert.p12"
+          keychain_password="$(openssl rand -base64 32)"
+
+          printf '%s' "$CERTIFICATE_P12" | tr -d '\r\n' | base64 --decode > "$cert_path"
+          chmod 600 "$cert_path"
+
+          security create-keychain -p "$keychain_password" "$keychain_path"
+          security set-keychain-settings -lut 21600 "$keychain_path"
+          security unlock-keychain -p "$keychain_password" "$keychain_path"
+          security import "$cert_path" \
+            -P "$CERTIFICATE_PASSWORD" \
+            -f pkcs12 \
+            -k "$keychain_path" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s \
+            -k "$keychain_password" \
+            "$keychain_path"
+          security list-keychains -d user -s "$keychain_path" login.keychain-db
+          security find-identity -v -p codesigning "$keychain_path"
+
+          codesign --force --options runtime --timestamp \
+            --entitlements assets/entitlements.plist \
+            --sign "$SIGNING_IDENTITY" \
+            --identifier dev.frithuz.bruk \
+            --keychain "$keychain_path" \
+            ".nsh/out/Bruk.app"
+
+          codesign --verify --deep --strict --verbose=2 ".nsh/out/Bruk.app"
+          codesign --display --verbose=2 --entitlements - ".nsh/out/Bruk.app"
+
+      - name: Notarize and staple macOS app bundle
+        env:
+          API_KEY_P8: ${{ secrets.API_KEY_P8 }}
+          API_KEY_ID: ${{ vars.API_KEY_ID }}
+          API_ISSUER_ID: ${{ vars.API_ISSUER_ID }}
+        run: |
+          api_key_path="${RUNNER_TEMP}/AuthKey.p8"
+          notary_zip="${RUNNER_TEMP}/notarize.zip"
+          result_json="${RUNNER_TEMP}/notary-result.json"
+
+          if printf '%s' "$API_KEY_P8" | grep -q "BEGIN PRIVATE KEY"; then
+            printf '%s\n' "$API_KEY_P8" > "$api_key_path"
+          else
+            printf '%s' "$API_KEY_P8" | tr -d '\r\n' | base64 --decode > "$api_key_path"
+          fi
+          chmod 600 "$api_key_path"
+
+          ditto -c -k --sequesterRsrc --keepParent ".nsh/out/Bruk.app" "$notary_zip"
+
+          set +e
+          xcrun notarytool submit "$notary_zip" \
+            --key "$api_key_path" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait \
+            --output-format json > "$result_json"
+          submit_exit=$?
+          set -e
+
+          cat "$result_json"
+          submission_id="$(jq -r '.id // empty' "$result_json" 2>/dev/null || true)"
+          submission_status="$(jq -r '.status // empty' "$result_json" 2>/dev/null || true)"
+
+          if [ "$submit_exit" -ne 0 ] || [ "$submission_status" != "Accepted" ]; then
+            if [ -n "$submission_id" ]; then
+              xcrun notarytool log "$submission_id" \
+                --key "$api_key_path" \
+                --key-id "$API_KEY_ID" \
+                --issuer "$API_ISSUER_ID" || true
+            fi
+            exit 1
+          fi
+
+          xcrun stapler staple -v ".nsh/out/Bruk.app"
+          xcrun stapler validate -v ".nsh/out/Bruk.app"
+          spctl --assess --type execute --verbose=4 ".nsh/out/Bruk.app"
+
+      - name: Clean up signing materials
+        if: always()
+        run: |
+          security delete-keychain "${RUNNER_TEMP}/signing.keychain-db" 2>/dev/null || true
+          rm -f \
+            "${RUNNER_TEMP}/cert.p12" \
+            "${RUNNER_TEMP}/AuthKey.p8" \
+            "${RUNNER_TEMP}/notarize.zip" \
+            "${RUNNER_TEMP}/notary-result.json"
 
       - name: Archive app bundle
         run: |
