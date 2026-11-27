@@ -2,10 +2,10 @@
 
 pub use factory_fonts as fonts;
 pub use factory_logging::{boot_log, system_log};
+pub(crate) use factory_store as store;
 pub(crate) use factory_updater as updater;
 
 mod menu;
-mod store;
 mod ui;
 
 use std::{ffi::OsString, path::PathBuf};

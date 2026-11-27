@@ -1,0 +1,27 @@
+[package]
+name = "factory-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-chat.workspace = true
+factory-config.workspace = true
+factory-fonts.workspace = true
+factory-github.workspace = true
+factory-logging.workspace = true
+factory-machines.workspace = true
+factory-providers.workspace = true
+factory-runner.workspace = true
+factory-secrets.workspace = true
+factory-storage.workspace = true
+factory-types.workspace = true
+factory-updater.workspace = true
+factory-workflows.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+secrecy.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

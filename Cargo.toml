@@ -15,6 +15,7 @@ members = [
     "crates/factory-updater",
     "crates/factory-fonts",
     "crates/factory-ui-kit",
+    "crates/factory-store",
     "crates/factory-core",
     "crates/factory-app",
     "crates/factory-desktop",
@@ -39,6 +40,7 @@ factory-providers = { path = "crates/factory-providers" }
 factory-runner = { path = "crates/factory-runner" }
 factory-secrets = { path = "crates/factory-secrets" }
 factory-storage = { path = "crates/factory-storage" }
+factory-store = { path = "crates/factory-store" }
 factory-types = { path = "crates/factory-types" }
 factory-ui-kit = { path = "crates/factory-ui-kit" }
 factory-updater = { path = "crates/factory-updater" }

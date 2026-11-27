@@ -9,6 +9,7 @@ dirs.workspace = true
 factory-core.workspace = true
 factory-fonts.workspace = true
 factory-logging.workspace = true
+factory-store.workspace = true
 factory-ui-kit.workspace = true
 factory-updater.workspace = true
 log.workspace = true

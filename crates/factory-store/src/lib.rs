@@ -13,47 +13,70 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use factory_core::{
-    AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
-    AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
-    AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
-    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatGitStatus,
-    ChatPullRequestRequest, ChatSecretsCache, ChatSession, ChatSessionStatus, ChatSessionSummary,
-    ChatTokenBreakdown, ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace,
-    ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
-    ClaudeSpawnPlan, ClaudeSpawnSettings, CliAccount, CodexCliProbe, CodexSettingValue,
-    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CommandManagerConfig, CompositeDef,
-    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
-    DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection,
-    EnvScope, ExitField, ExitOperator, Exposure, FactoryState, FontPreference, GateDecision,
-    GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter,
-    InboxState, InitRepositoryOptions, IntakeRule, InternalPurpose, IssueSourceAuthMode,
-    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
-    MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore, NewMachineDraft,
-    ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager, PersistedWorkflowRun,
-    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
-    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
-    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
-    RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager, SecretProblem,
-    SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState, SecretStore,
-    SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError, StoreStatus,
-    ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
-    WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
-    WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
-    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_chat_worktree_to_checkout,
-    apply_runner_event_to_view_data, chat_worktree_branch, clone_repository,
-    contains_env_reference, current_unix_seconds, default_secret_store,
-    delete_legacy_database_files, detect_git_remote_info, display_with_tilde, expand_tilde,
-    fetch_antigravity_details, fetch_antigravity_usage, fetch_claude_details, fetch_codex_details,
-    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
-    find_legacy_database_files, init_local_repository, inspect_chat_git_status,
-    migrate_plaintext_secrets, open_chat_pull_request, open_dir_in_terminal, open_url_in_browser,
-    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
-    provider_effort_levels, query_chat_context, remove_chat_worktree, remove_github_issue_label,
-    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary,
-    resolve_new_repository_destination, run_antigravity_login, run_claude_auth_login,
-    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
-    validate_branch_name,
+use factory_chat::{
+    CHAT_ATTACHMENT_MAX_BYTES, ChatContextUsage, ChatEntry, ChatEvent, ChatGitStatus,
+    ChatPullRequestRequest, ChatSession, ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown,
+    ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree,
+    ChatWorktreeSetup, apply_chat_worktree_to_checkout, attachment_mime_type, chat_worktree_branch,
+    format_bytes, inspect_chat_git_status, is_model_image_type, open_chat_pull_request,
+    open_dir_in_terminal, open_url_in_browser, plan_chat_attachments, query_chat_context,
+    remove_chat_worktree, spawn_chat_turn,
+};
+use factory_config::{
+    AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AttentionRequest,
+    AttentionRequestBody, AttentionRequestKind, BrukHome, CliAccount, DefaultLandingView,
+    FontPreference, HomeEnvironment, HomeError, HomeResolution, InboxFilter, InboxState,
+    InitRepositoryOptions, PreferencesTab, ProjectSettings, ProjectSettingsTab, ReviewDetail,
+    SecretProblemDetail, clone_repository, display_with_tilde, init_local_repository,
+    parse_clone_source, project_dir_name, resolve_new_repository_destination, validate_branch_name,
+};
+use factory_github::{
+    AGENT_WORKING_LABEL, GitHubAuth, GitHubFilterClause, IntakeRule, ProjectWorkQueue,
+    WorkQueueStage, WorkQueueViewMode, add_github_issue_label, detect_git_remote_info,
+    fetch_github_open_issues_with_filter, remove_github_issue_label,
+};
+use factory_machines::{
+    CoreUpdatePolicy, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
+    NewMachineDraft,
+};
+use factory_providers::{
+    AntigravityCliProbe, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan,
+    ClaudeSpawnSettings, CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan,
+    CodexSpawnSettings, fetch_antigravity_details, fetch_antigravity_usage, fetch_claude_details,
+    fetch_codex_details, find_claude_setting_spec, find_codex_setting_spec, probe_antigravity_cli,
+    probe_claude_cli, probe_codex_cli, resolve_antigravity_binary, resolve_claude_binary,
+    resolve_codex_binary, run_antigravity_login, run_claude_auth_login, run_codex_login,
+};
+use factory_runner::{
+    GateDecision, RunControlHandle, RunnerEvent, WorkflowRunRequest,
+    apply_runner_event_to_view_data, spawn_workflow_run,
+};
+use factory_secrets::{
+    CancellationToken, ChatSecretsCache, CommandManagerConfig, EnvScope, Exposure, InternalPurpose,
+    ManagerId, ManagerStatus, MemoryStore, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode,
+    OnePasswordManager, SecretFix, SecretId, SecretKind, SecretManager, SecretProblem,
+    SecretRecord, SecretRedactor, SecretResolver, SecretState, SecretStore,
+    SecretsMetadataSnapshot, Sharing, StoreStatus, contains_env_reference, default_secret_store,
+    sanitize_env_segment, validate_env_name, validate_secret_value,
+};
+use factory_storage::{
+    DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
+    PersistedWorkflowRun, ProjectDatabase, StorageError, delete_legacy_database_files,
+    find_legacy_database_files, migrate_plaintext_secrets,
+};
+use factory_types::{
+    AppearanceMode, AppearanceSettings, ExitField, ExitOperator, IssueSourceAuthMode,
+    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, Project, ProjectId,
+    ProjectSandboxMode, ProviderKind, RunId, RunStatus, Workflow, WorkflowId, WorkflowRun,
+    current_unix_seconds, expand_tilde,
+};
+use factory_workflows::{
+    AgentDef, AgentTaskStepDef, BrukCatalog, CatalogLoadOptions, CompositeDef, DefinitionOrigin,
+    DeployWatchEntry, DryRunExecutor, EditorSelection, FactoryState, ProjectWorkflowsOverview,
+    RecentRunStatus, RunDetailTab, RunExecutionState, RunOutcomeDot, SkillDef, StepTypeKind,
+    ValidationReport, WorkflowDef, WorkflowEditorDocument, WorkflowNodeDef, WorkflowRecentRun,
+    WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef, WorkflowsFilter, WorkflowsSort,
+    provider_effort_levels, sync_project_workflows_from_catalog,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -77,7 +100,7 @@ use nsh_core::{
 
 /// Primary screen shown in the main content area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ActiveView {
+pub enum ActiveView {
     Dashboard,
     Inbox,
     Machines,
@@ -93,7 +116,7 @@ pub(crate) enum ActiveView {
 
 /// Controls how `claude` is searched on `PATH` when no custom binary path is configured.
 #[derive(Debug, Clone, Default)]
-pub(crate) enum ClaudePathLookup {
+pub enum ClaudePathLookup {
     /// Search the current process's `PATH` environment variable (production default).
     #[default]
     SystemPath,
@@ -312,19 +335,19 @@ struct AppState {
     sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
-    updater_state: crate::updater::UpdaterState,
+    updater_state: factory_updater::UpdaterState,
     updater_banner_dismissed: bool,
 }
 
 impl Default for AppState {
     fn default() -> Self {
-        let _span = crate::boot_log::span("boot.store.default_state");
+        let _span = factory_logging::boot_log::span("boot.store.default_state");
         let home_env = {
-            let _s = crate::boot_log::span("boot.store.home_env_system");
+            let _s = factory_logging::boot_log::span("boot.store.home_env_system");
             HomeEnvironment::system()
         };
         let secret_store = {
-            let _s = crate::boot_log::span("boot.store.secret_store_init");
+            let _s = factory_logging::boot_log::span("boot.store.secret_store_init");
             default_secret_store()
         };
         Self::from_environment(home_env, ClaudePathLookup::SystemPath, secret_store)
@@ -377,7 +400,7 @@ impl AppState {
         match environment {
             Ok(environment) => {
                 let legacy_paths = environment.legacy_database_paths.clone();
-                let resolve_span = crate::boot_log::span("boot.store.home_resolve");
+                let resolve_span = factory_logging::boot_log::span("boot.store.home_resolve");
                 let resolution = environment.resolve();
                 resolve_span.finish(match &resolution {
                     HomeResolution::Ready(_) => "resolution=ready",
@@ -396,7 +419,7 @@ impl AppState {
                 }
             }
             Err(err) => {
-                crate::boot_log::error("boot.store.home_env_error", &format!("{err}"));
+                factory_logging::boot_log::error("boot.store.home_env_error", &format!("{err}"));
                 Self::from_database_result_with_path(
                     Err(StorageError::Home(err)),
                     None,
@@ -414,7 +437,7 @@ impl AppState {
         secret_store: Arc<dyn SecretStore>,
         legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
-        let db_span = crate::boot_log::span("boot.store.db_open");
+        let db_span = factory_logging::boot_log::span("boot.store.db_open");
         let result = ProjectDatabase::open_home(&home);
         if result.is_ok() {
             db_span.finish("ok=true");
@@ -462,7 +485,7 @@ impl AppState {
     }
 
     fn from_database_result_with_path(
-        result: Result<ProjectDatabase, factory_core::StorageError>,
+        result: Result<ProjectDatabase, StorageError>,
         home: Option<BrukHome>,
         claude_path_lookup: ClaudePathLookup,
         secret_store: Arc<dyn SecretStore>,
@@ -476,7 +499,7 @@ impl AppState {
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| ":memory:".to_owned());
                     let (projects, mut status_message) = {
-                        let span = crate::boot_log::span("boot.store.db_list_projects");
+                        let span = factory_logging::boot_log::span("boot.store.db_list_projects");
                         match db.list_projects() {
                             Ok(projects) => {
                                 span.finish(format!("count={}", projects.len()));
@@ -489,7 +512,8 @@ impl AppState {
                         }
                     };
                     let preferences = {
-                        let span = crate::boot_log::span("boot.store.db_load_preferences");
+                        let span =
+                            factory_logging::boot_log::span("boot.store.db_load_preferences");
                         match db.load_preferences() {
                             Ok(Some(prefs)) => {
                                 span.finish(format!("found=true demo_mode={}", prefs.demo_mode));
@@ -561,9 +585,9 @@ impl AppState {
         secret_store: Arc<dyn SecretStore>,
         legacy_database_paths: Vec<std::path::PathBuf>,
     ) -> Self {
-        let build_span = crate::boot_log::span("boot.store.build_for_mode");
+        let build_span = factory_logging::boot_log::span("boot.store.build_for_mode");
         let secrets_store_status = {
-            let span = crate::boot_log::span("boot.store.secret_store_status");
+            let span = factory_logging::boot_log::span("boot.store.secret_store_status");
             let status = secret_store.status();
             let label = match &status {
                 StoreStatus::Available => "available",
@@ -582,9 +606,9 @@ impl AppState {
             && let Some(db_arc) = db.as_ref()
             && let Ok(guard) = db_arc.lock()
         {
-            let checks_span = crate::boot_log::span("boot.store.secrets_startup_checks");
+            let checks_span = factory_logging::boot_log::span("boot.store.secrets_startup_checks");
             let path_check_result = {
-                let _s = crate::boot_log::span("boot.store.db_path_change_check");
+                let _s = factory_logging::boot_log::span("boot.store.db_path_change_check");
                 guard.check_database_path_change()
             };
             match path_check_result {
@@ -609,7 +633,8 @@ impl AppState {
                 }
                 Ok(None) => {
                     let migration_result = {
-                        let _s = crate::boot_log::span("boot.store.migrate_plaintext_secrets");
+                        let _s =
+                            factory_logging::boot_log::span("boot.store.migrate_plaintext_secrets");
                         migrate_plaintext_secrets(&guard, secret_store.as_ref(), false, false)
                     };
                     match migration_result {
@@ -629,7 +654,9 @@ impl AppState {
                                 ));
                             }
                             let reloaded = {
-                                let _s = crate::boot_log::span("boot.store.reload_preferences");
+                                let _s = factory_logging::boot_log::span(
+                                    "boot.store.reload_preferences",
+                                );
                                 guard.load_preferences()
                             };
                             if let Ok(Some(reloaded)) = reloaded {
@@ -662,7 +689,7 @@ impl AppState {
             }
 
             let legacy_found = {
-                let span = crate::boot_log::span("boot.store.find_legacy_databases");
+                let span = factory_logging::boot_log::span("boot.store.find_legacy_databases");
                 let found = find_legacy_database_files(&legacy_database_paths);
                 span.finish(format!("count={}", found.len()));
                 found
@@ -741,7 +768,7 @@ impl AppState {
         let mut workflows_overviews = BTreeMap::new();
         let mut project_settings = BTreeMap::new();
         {
-            let projects_span = crate::boot_log::span("boot.store.load_projects_data");
+            let projects_span = factory_logging::boot_log::span("boot.store.load_projects_data");
             for project in factory.projects() {
                 let path_str = project.root_path.display().to_string();
                 if demo_mode {
@@ -762,7 +789,7 @@ impl AppState {
                         ),
                     );
                 } else {
-                    let project_span = crate::boot_log::span("boot.store.project_load");
+                    let project_span = factory_logging::boot_log::span("boot.store.project_load");
                     let t_settings = std::time::Instant::now();
                     let loaded_settings = db
                         .as_ref()
@@ -798,7 +825,7 @@ impl AppState {
 
                     let t_catalog = std::time::Instant::now();
                     let catalog = load_catalog(home.as_ref(), &project.root_path);
-                    factory_core::sync_project_workflows_from_catalog(&mut settings, &catalog);
+                    sync_project_workflows_from_catalog(&mut settings, &catalog);
                     let catalog_ms = t_catalog.elapsed().as_secs_f64() * 1000.0;
 
                     let t_queue = std::time::Instant::now();
@@ -878,7 +905,7 @@ impl AppState {
             )
         } else {
             let persisted_runs = {
-                let span = crate::boot_log::span("boot.store.load_workflow_runs");
+                let span = factory_logging::boot_log::span("boot.store.load_workflow_runs");
                 let runs = db
                     .as_ref()
                     .and_then(|arc| arc.lock().ok())
@@ -888,7 +915,7 @@ impl AppState {
                 runs
             };
             let chat_usage = {
-                let span = crate::boot_log::span("boot.store.load_chat_usage");
+                let span = factory_logging::boot_log::span("boot.store.load_chat_usage");
                 let usage = db
                     .as_ref()
                     .and_then(|arc| arc.lock().ok())
@@ -898,7 +925,7 @@ impl AppState {
                 usage
             };
             let dashboard = {
-                let _span = crate::boot_log::span("boot.store.build_dashboard_dataset");
+                let _span = factory_logging::boot_log::span("boot.store.build_dashboard_dataset");
                 DashboardDataset::from_usage(&persisted_runs, &chat_usage)
             };
             let mut runs_detail = BTreeMap::new();
@@ -961,7 +988,7 @@ impl AppState {
         let chat_sessions = if using_sample_projects {
             BTreeMap::new()
         } else {
-            let span = crate::boot_log::span("boot.store.load_chat_sessions");
+            let span = factory_logging::boot_log::span("boot.store.load_chat_sessions");
             let sessions = load_chat_sessions(db.as_ref());
             span.finish(format!("count={}", sessions.len()));
             sessions
@@ -972,7 +999,7 @@ impl AppState {
         } else if let Some(db_arc) = db.as_ref()
             && let Ok(guard) = db_arc.lock()
         {
-            let span = crate::boot_log::span("boot.store.load_secrets_metadata");
+            let span = factory_logging::boot_log::span("boot.store.load_secrets_metadata");
             let records = guard.list_secrets().unwrap_or_default();
             let snapshot = guard
                 .build_secrets_metadata_snapshot(&preferences)
@@ -1131,7 +1158,7 @@ impl AppState {
             sidebar_visible: true,
             status_message,
             registration_error,
-            updater_state: crate::updater::UpdaterState::Idle,
+            updater_state: factory_updater::UpdaterState::Idle,
             updater_banner_dismissed: false,
         };
         for (project_name, problem) in startup_secret_problems {
@@ -1160,7 +1187,7 @@ impl AppState {
         match self.home.as_ref() {
             Some(home) => Some(general.projects_dir(home)),
             None if !general.projects_dir_follows_home() => {
-                Some(factory_core::expand_tilde(&general.default_projects_dir))
+                Some(expand_tilde(&general.default_projects_dir))
             }
             None => None,
         }
@@ -1332,7 +1359,7 @@ impl AppState {
             .unwrap_or_else(BrukCatalog::builtin_only);
         let overview = ProjectWorkflowsOverview::from_catalog(project_name, &catalog);
         if let Some(settings) = self.project_settings.get_mut(project_name) {
-            factory_core::sync_project_workflows_from_catalog(settings, &catalog);
+            sync_project_workflows_from_catalog(settings, &catalog);
         }
         self.workflows_overviews
             .insert(project_name.to_owned(), overview);
@@ -1656,7 +1683,7 @@ fn apply_appearance_settings(appearance: &AppearanceSettings) {
         AppearanceMode::Dark => Appearance::Dark,
     };
     nsh_core::element::set_color_scheme(color_scheme);
-    crate::fonts::apply_font_tokens(appearance);
+    factory_fonts::apply_font_tokens(appearance);
 }
 
 fn state() -> Signal<AppState> {
@@ -1664,11 +1691,11 @@ fn state() -> Signal<AppState> {
 }
 
 /// Initializes the per-surface store from the Bruk folder configured on this machine.
-pub(crate) fn init_default() {
-    let init_span = crate::boot_log::span("boot.store.init_default");
+pub fn init_default() {
+    let init_span = factory_logging::boot_log::span("boot.store.init_default");
     let appearance = state().with_untracked(|s| s.preferences.appearance.clone());
     {
-        let span = crate::boot_log::span("boot.store.apply_appearance");
+        let span = factory_logging::boot_log::span("boot.store.apply_appearance");
         apply_appearance_settings(&appearance);
         span.finish(format!("mode={:?}", appearance.mode));
     }
@@ -1679,16 +1706,13 @@ pub(crate) fn init_default() {
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path.
-pub(crate) fn init_with_database_path(path: &Path) {
+pub fn init_with_database_path(path: &Path) {
     init_with_database_path_and_claude_path(path, ClaudePathLookup::SystemPath);
 }
 
 /// Initializes the per-surface store against an explicit SQLite DB path and Claude `PATH` lookup.
 /// Uses an isolated in-memory secret store so tests and custom DB paths never touch the OS keychain.
-pub(crate) fn init_with_database_path_and_claude_path(
-    path: &Path,
-    claude_path_lookup: ClaudePathLookup,
-) {
+pub fn init_with_database_path_and_claude_path(path: &Path, claude_path_lookup: ClaudePathLookup) {
     let loaded = AppState::from_database_result_with_path(
         ProjectDatabase::open(path),
         Some(BrukHome::with_database_path(path)),
@@ -1701,7 +1725,7 @@ pub(crate) fn init_with_database_path_and_claude_path(
 
 /// Initializes the per-surface store by resolving the Bruk folder from an explicit environment
 /// (first-launch setup runs when no folder is configured there).
-pub(crate) fn init_with_home_environment(
+pub fn init_with_home_environment(
     environment: HomeEnvironment,
     claude_path_lookup: ClaudePathLookup,
 ) {
@@ -1733,7 +1757,7 @@ fn sweep_secret_tombstones_async() {
     let Some((db, secret_store)) = job else {
         return;
     };
-    let boot_span = crate::boot_log::span("boot.async.sweep_secret_tombstones");
+    let boot_span = factory_logging::boot_log::span("boot.async.sweep_secret_tombstones");
     Owner::detached().run(|| {
         spawn(async move {
             let swept = spawn_blocking_task(move || {
@@ -1755,7 +1779,7 @@ fn sweep_secret_tombstones_async() {
 /// Probes all configured provider CLIs in parallel on background threads and chains into each
 /// authenticated provider's live usage/model refresh without blocking GUI startup.
 fn probe_providers_async() {
-    let from_boot = crate::boot_log::is_booting();
+    let from_boot = factory_logging::boot_log::is_booting();
     probe_claude_async(from_boot);
     probe_codex_async(from_boot);
     probe_antigravity_async(from_boot);
@@ -1776,7 +1800,7 @@ fn probe_claude_async(from_boot: bool) {
     let Some((expected_seq, custom_path, path_env)) = job else {
         return;
     };
-    let boot_span = crate::boot_log::async_span("boot.async.probe_claude_cli", from_boot);
+    let boot_span = factory_logging::boot_log::async_span("boot.async.probe_claude_cli", from_boot);
     Owner::detached().run(|| {
         spawn(async move {
             let probe = spawn_blocking_task(move || {
@@ -1819,7 +1843,7 @@ fn probe_codex_async(from_boot: bool) {
     let Some((expected_seq, custom_path, path_env)) = job else {
         return;
     };
-    let boot_span = crate::boot_log::async_span("boot.async.probe_codex_cli", from_boot);
+    let boot_span = factory_logging::boot_log::async_span("boot.async.probe_codex_cli", from_boot);
     Owner::detached().run(|| {
         spawn(async move {
             let probe = spawn_blocking_task(move || {
@@ -1863,7 +1887,8 @@ fn probe_antigravity_async(from_boot: bool) {
     let Some((expected_seq, custom_path, path_env)) = job else {
         return;
     };
-    let boot_span = crate::boot_log::async_span("boot.async.probe_antigravity_cli", from_boot);
+    let boot_span =
+        factory_logging::boot_log::async_span("boot.async.probe_antigravity_cli", from_boot);
     Owner::detached().run(|| {
         spawn(async move {
             let probe = spawn_blocking_task(move || {
@@ -1894,11 +1919,11 @@ fn probe_antigravity_async(from_boot: bool) {
 
 // --- Bruk folder ------------------------------------------------------------------------
 
-pub(crate) fn needs_home_setup() -> bool {
+pub fn needs_home_setup() -> bool {
     state().with(|s| s.home_setup.is_some())
 }
 
-pub(crate) fn home_setup_root_input() -> String {
+pub fn home_setup_root_input() -> String {
     state().with(|s| {
         s.home_setup
             .as_ref()
@@ -1907,7 +1932,7 @@ pub(crate) fn home_setup_root_input() -> String {
     })
 }
 
-pub(crate) fn set_home_setup_root_input(value: &str) {
+pub fn set_home_setup_root_input(value: &str) {
     state().update(|s| {
         if let Some(draft) = s.home_setup.as_mut() {
             draft.root_input = value.to_owned();
@@ -1917,17 +1942,16 @@ pub(crate) fn set_home_setup_root_input(value: &str) {
 }
 
 /// Whether the folder typed in setup already holds a Bruk database (it will be reused as-is).
-pub(crate) fn home_setup_target_has_database() -> bool {
+pub fn home_setup_target_has_database() -> bool {
     state().with(|s| {
         s.home_setup.as_ref().is_some_and(|d| {
             let trimmed = d.root_input.trim();
-            !trimmed.is_empty()
-                && BrukHome::at(factory_core::expand_tilde(trimmed)).is_initialized()
+            !trimmed.is_empty() && BrukHome::at(expand_tilde(trimmed)).is_initialized()
         })
     })
 }
 
-pub(crate) fn home_setup_legacy_database() -> Option<String> {
+pub fn home_setup_legacy_database() -> Option<String> {
     state().with(|s| {
         s.home_setup
             .as_ref()
@@ -1936,11 +1960,11 @@ pub(crate) fn home_setup_legacy_database() -> Option<String> {
     })
 }
 
-pub(crate) fn home_setup_import_legacy() -> bool {
+pub fn home_setup_import_legacy() -> bool {
     state().with(|s| s.home_setup.as_ref().is_some_and(|d| d.import_legacy))
 }
 
-pub(crate) fn toggle_home_setup_import_legacy() {
+pub fn toggle_home_setup_import_legacy() {
     state().update(|s| {
         if let Some(draft) = s.home_setup.as_mut() {
             draft.import_legacy = !draft.import_legacy;
@@ -1948,12 +1972,12 @@ pub(crate) fn toggle_home_setup_import_legacy() {
     });
 }
 
-pub(crate) fn home_setup_error() -> Option<String> {
+pub fn home_setup_error() -> Option<String> {
     state().with(|s| s.home_setup.as_ref().and_then(|d| d.error.clone()))
 }
 
 /// Creates (or adopts) the chosen Bruk folder, then loads the app from it.
-pub(crate) fn complete_home_setup() {
+pub fn complete_home_setup() {
     let Some((draft, claude_path_lookup, secret_store)) = state().with_untracked(|s| {
         s.home_setup.clone().map(|draft| {
             (
@@ -2007,7 +2031,7 @@ pub(crate) fn complete_home_setup() {
 }
 
 /// Paths inside the active Bruk folder: (folder, database, cloned projects, run workspaces).
-pub(crate) fn home_paths_display() -> Option<(String, String, String, String)> {
+pub fn home_paths_display() -> Option<(String, String, String, String)> {
     state().with(|s| {
         s.home.as_ref().map(|home| {
             (
@@ -2020,11 +2044,11 @@ pub(crate) fn home_paths_display() -> Option<(String, String, String, String)> {
     })
 }
 
-pub(crate) fn home_root() -> Option<std::path::PathBuf> {
+pub fn home_root() -> Option<std::path::PathBuf> {
     state().with_untracked(|s| s.home.as_ref().map(|home| home.root().to_path_buf()))
 }
 
-pub(crate) fn home_root_display() -> String {
+pub fn home_root_display() -> String {
     state().with(|s| {
         s.home
             .as_ref()
@@ -2034,7 +2058,7 @@ pub(crate) fn home_root_display() -> String {
 }
 
 /// Whether a project's clone lives in the Bruk folder (as opposed to an external clone).
-pub(crate) fn project_is_managed(id: ProjectId) -> bool {
+pub fn project_is_managed(id: ProjectId) -> bool {
     state().with(|s| {
         let Some(home) = s.home.as_ref() else {
             return false;
@@ -2047,11 +2071,11 @@ pub(crate) fn project_is_managed(id: ProjectId) -> bool {
 
 // --- Cloning projects into the Bruk folder ----------------------------------------------
 
-pub(crate) fn clear_registration_error() {
+pub fn clear_registration_error() {
     state().update(|s| s.registration_error = None);
 }
 
-pub(crate) fn clone_source_input() -> String {
+pub fn clone_source_input() -> String {
     state().with(|s| s.clone_source_input.clone())
 }
 
@@ -2063,7 +2087,7 @@ fn suggested_clone_name(source: &str) -> String {
 
 /// Updates the repository field, keeping the project name in step with it until the user
 /// types a name of their own.
-pub(crate) fn set_clone_source_input(value: &str) {
+pub fn set_clone_source_input(value: &str) {
     state().update(|s| {
         let name_follows_source = s.clone_name_input.trim().is_empty()
             || s.clone_name_input == suggested_clone_name(&s.clone_source_input);
@@ -2074,19 +2098,19 @@ pub(crate) fn set_clone_source_input(value: &str) {
     });
 }
 
-pub(crate) fn clone_name_input() -> String {
+pub fn clone_name_input() -> String {
     state().with(|s| s.clone_name_input.clone())
 }
 
-pub(crate) fn set_clone_name_input(value: &str) {
+pub fn set_clone_name_input(value: &str) {
     state().update(|s| s.clone_name_input = value.to_owned());
 }
 
-pub(crate) fn clone_in_progress() -> bool {
+pub fn clone_in_progress() -> bool {
     state().with(|s| s.clone_in_progress)
 }
 
-pub(crate) fn clone_destination_caption() -> String {
+pub fn clone_destination_caption() -> String {
     state().with(|s| {
         let Some(projects_dir) = s.home.as_ref().and(s.projects_dir()) else {
             return "The Bruk folder is not available.".to_owned();
@@ -2106,7 +2130,7 @@ pub(crate) fn clone_destination_caption() -> String {
 /// Clones the repository typed in the Clone form into the default projects directory
 /// (`<Bruk folder>/projects` unless changed in Preferences) on a background thread, then
 /// registers it with the branch the clone checked out.
-pub(crate) fn clone_and_register_project() {
+pub fn clone_and_register_project() {
     let mut job = None;
     state().update(|s| {
         if s.clone_in_progress {
@@ -2171,44 +2195,44 @@ pub(crate) fn clone_and_register_project() {
 
 // --- Creating new local repositories ----------------------------------------------------
 
-pub(crate) fn create_name_input() -> String {
+pub fn create_name_input() -> String {
     state().with(|s| s.create_name_input.clone())
 }
 
-pub(crate) fn set_create_name_input(value: &str) {
+pub fn set_create_name_input(value: &str) {
     state().update(|s| s.create_name_input = value.to_owned());
 }
 
-pub(crate) fn create_location_input() -> String {
+pub fn create_location_input() -> String {
     state().with(|s| s.create_location_input.clone())
 }
 
-pub(crate) fn set_create_location_input(value: &str) {
+pub fn set_create_location_input(value: &str) {
     state().update(|s| s.create_location_input = value.to_owned());
 }
 
-pub(crate) fn create_branch_input() -> String {
+pub fn create_branch_input() -> String {
     state().with(|s| s.create_branch_input.clone())
 }
 
-pub(crate) fn set_create_branch_input(value: &str) {
+pub fn set_create_branch_input(value: &str) {
     state().update(|s| s.create_branch_input = value.to_owned());
 }
 
-pub(crate) fn create_readme() -> bool {
+pub fn create_readme() -> bool {
     state().with(|s| s.create_readme)
 }
 
-pub(crate) fn toggle_create_readme() {
+pub fn toggle_create_readme() {
     state().update(|s| s.create_readme = !s.create_readme);
 }
 
-pub(crate) fn create_in_progress() -> bool {
+pub fn create_in_progress() -> bool {
     state().with(|s| s.create_in_progress)
 }
 
 /// Directory to open the folder picker at when choosing where to create a new local repository.
-pub(crate) fn create_browse_start_dir() -> Option<std::path::PathBuf> {
+pub fn create_browse_start_dir() -> Option<std::path::PathBuf> {
     state().with_untracked(|s| {
         let location = s.create_location_input.trim();
         if !location.is_empty() {
@@ -2221,7 +2245,7 @@ pub(crate) fn create_browse_start_dir() -> Option<std::path::PathBuf> {
     })
 }
 
-pub(crate) fn create_destination_caption() -> String {
+pub fn create_destination_caption() -> String {
     state().with(|s| {
         let location = s.create_location_input.trim();
         let parent = if location.is_empty() {
@@ -2251,7 +2275,7 @@ pub(crate) fn create_destination_caption() -> String {
 
 /// Creates and initializes a new local git repository on a background thread, then registers
 /// it as a project with the initialized default branch.
-pub(crate) fn create_local_repository_project() {
+pub fn create_local_repository_project() {
     let mut job = None;
     state().update(|s| {
         if s.create_in_progress {
@@ -2345,11 +2369,11 @@ pub(crate) fn create_local_repository_project() {
     });
 }
 
-pub(crate) fn demo_mode() -> bool {
+pub fn demo_mode() -> bool {
     state().with(|s| s.demo_mode)
 }
 
-pub(crate) fn set_demo_mode(enabled: bool) {
+pub fn set_demo_mode(enabled: bool) {
     let mut appearance_to_apply = None;
     state().update(|s| {
         if s.demo_mode == enabled {
@@ -2449,33 +2473,33 @@ pub(crate) fn set_demo_mode(enabled: bool) {
     }
 }
 
-pub(crate) fn toggle_demo_mode() {
+pub fn toggle_demo_mode() {
     let current = state().with_untracked(|s| s.demo_mode);
     set_demo_mode(!current);
 }
 
-pub(crate) fn sidebar_visible() -> bool {
+pub fn sidebar_visible() -> bool {
     state().with(|s| s.sidebar_visible)
 }
 
-pub(crate) fn toggle_sidebar() {
+pub fn toggle_sidebar() {
     state().update(|s| {
         s.sidebar_visible = !s.sidebar_visible;
     });
 }
 
-pub(crate) fn active_view() -> ActiveView {
+pub fn active_view() -> ActiveView {
     state().with(|s| s.active_view)
 }
 
-pub(crate) fn open_dashboard() {
+pub fn open_dashboard() {
     state().update(|s| {
         s.active_view = ActiveView::Dashboard;
         s.status_message = None;
     });
 }
 
-pub(crate) fn open_inbox() {
+pub fn open_inbox() {
     state().update(|s| {
         s.menubar_popover_open = false;
         s.active_view = ActiveView::Inbox;
@@ -2487,7 +2511,7 @@ pub(crate) fn open_inbox() {
     main_window().focus();
 }
 
-pub(crate) fn open_inbox_for_request(id: &str) {
+pub fn open_inbox_for_request(id: &str) {
     let target = id.to_owned();
     state().update(|s| {
         s.menubar_popover_open = false;
@@ -2513,22 +2537,22 @@ pub(crate) fn open_inbox_for_request(id: &str) {
     main_window().focus();
 }
 
-pub(crate) fn menubar_popover_open() -> bool {
+pub fn menubar_popover_open() -> bool {
     state().with(|s| s.menubar_popover_open)
 }
 
-pub(crate) fn menubar_anchor_bounds() -> Option<Bounds<Points>> {
+pub fn menubar_anchor_bounds() -> Option<Bounds<Points>> {
     state().with(|s| s.menubar_anchor_bounds)
 }
 
-pub(crate) fn open_menubar_popover(bounds: Option<Bounds<Points>>) {
+pub fn open_menubar_popover(bounds: Option<Bounds<Points>>) {
     state().update(|s| {
         s.menubar_anchor_bounds = bounds;
         s.menubar_popover_open = true;
     });
 }
 
-pub(crate) fn toggle_menubar_popover(bounds: Option<Bounds<Points>>) {
+pub fn toggle_menubar_popover(bounds: Option<Bounds<Points>>) {
     state().update(|s| {
         if s.menubar_popover_open {
             s.menubar_popover_open = false;
@@ -2539,27 +2563,27 @@ pub(crate) fn toggle_menubar_popover(bounds: Option<Bounds<Points>>) {
     });
 }
 
-pub(crate) fn close_menubar_popover() {
+pub fn close_menubar_popover() {
     state().update(|s| {
         s.menubar_popover_open = false;
     });
 }
 
-pub(crate) fn open_machines() {
+pub fn open_machines() {
     state().update(|s| {
         s.active_view = ActiveView::Machines;
         s.status_message = None;
     });
 }
 
-pub(crate) fn open_register_project() {
+pub fn open_register_project() {
     state().update(|s| {
         s.active_view = ActiveView::RegisterProject;
         s.registration_error = None;
     });
 }
 
-pub(crate) fn open_workspace() {
+pub fn open_workspace() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -2568,19 +2592,19 @@ pub(crate) fn open_workspace() {
     });
 }
 
-pub(crate) fn db_path_display() -> String {
+pub fn db_path_display() -> String {
     state().with(|s| s.db_path_display.clone())
 }
 
-pub(crate) fn registration_error() -> Option<String> {
+pub fn registration_error() -> Option<String> {
     state().with(|s| s.registration_error.clone())
 }
 
-pub(crate) fn project_ids() -> Vec<ProjectId> {
+pub fn project_ids() -> Vec<ProjectId> {
     state().with(|s| s.factory.projects().iter().map(|p| p.id).collect())
 }
 
-pub(crate) fn recent_projects() -> Vec<(ProjectId, String)> {
+pub fn recent_projects() -> Vec<(ProjectId, String)> {
     state().with(|s| {
         s.factory
             .projects()
@@ -2590,7 +2614,7 @@ pub(crate) fn recent_projects() -> Vec<(ProjectId, String)> {
     })
 }
 
-pub(crate) fn tracked_project_ids() -> Vec<ProjectId> {
+pub fn tracked_project_ids() -> Vec<ProjectId> {
     state().with(|s| {
         if s.using_sample_projects {
             Vec::new()
@@ -2600,22 +2624,22 @@ pub(crate) fn tracked_project_ids() -> Vec<ProjectId> {
     })
 }
 
-pub(crate) fn project_by_id(id: ProjectId) -> Option<Project> {
+pub fn project_by_id(id: ProjectId) -> Option<Project> {
     state().with(|s| s.factory.project(id).cloned())
 }
 
-pub(crate) fn selected_project_id() -> Option<ProjectId> {
+pub fn selected_project_id() -> Option<ProjectId> {
     state().with(|s| s.selected_project)
 }
 
-pub(crate) fn selected_project() -> Option<Project> {
+pub fn selected_project() -> Option<Project> {
     state().with(|s| {
         s.selected_project
             .and_then(|id| s.factory.project(id).cloned())
     })
 }
 
-pub(crate) fn select_project(id: ProjectId) {
+pub fn select_project(id: ProjectId) {
     state().update(|s| {
         s.selected_project = Some(id);
         s.expanded_projects.insert(id);
@@ -2626,11 +2650,11 @@ pub(crate) fn select_project(id: ProjectId) {
     });
 }
 
-pub(crate) fn is_project_expanded(id: ProjectId) -> bool {
+pub fn is_project_expanded(id: ProjectId) -> bool {
     state().with(|s| s.expanded_projects.contains(&id))
 }
 
-pub(crate) fn toggle_project_expanded(id: ProjectId) {
+pub fn toggle_project_expanded(id: ProjectId) {
     state().update(|s| {
         if !s.expanded_projects.remove(&id) {
             s.expanded_projects.insert(id);
@@ -2638,7 +2662,7 @@ pub(crate) fn toggle_project_expanded(id: ProjectId) {
     });
 }
 
-pub(crate) fn open_work_queue() {
+pub fn open_work_queue() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -2652,7 +2676,7 @@ pub(crate) fn open_work_queue() {
     });
 }
 
-pub(crate) fn open_work_queue_for_project(id: ProjectId) {
+pub fn open_work_queue_for_project(id: ProjectId) {
     state().update(|s| {
         let project_changed = s.selected_project != Some(id);
         s.selected_project = Some(id);
@@ -2668,7 +2692,7 @@ pub(crate) fn open_work_queue_for_project(id: ProjectId) {
     });
 }
 
-pub(crate) fn open_project_workflow(project_id: ProjectId, workflow_name: &str) {
+pub fn open_project_workflow(project_id: ProjectId, workflow_name: &str) {
     let target = workflow_name.to_owned();
     state().update(|s| {
         s.selected_project = Some(project_id);
@@ -2690,7 +2714,7 @@ pub(crate) fn open_project_workflow(project_id: ProjectId, workflow_name: &str) 
     });
 }
 
-pub(crate) fn open_run_history_for_project(project_id: ProjectId) {
+pub fn open_run_history_for_project(project_id: ProjectId) {
     state().update(|s| {
         s.selected_project = Some(project_id);
         s.expanded_projects.insert(project_id);
@@ -2706,19 +2730,19 @@ pub(crate) fn open_run_history_for_project(project_id: ProjectId) {
 
 // --- Workflow Run Detail state ----------------------------------------------------------
 
-pub(crate) fn active_workflow_run() -> WorkflowRunViewData {
+pub fn active_workflow_run() -> WorkflowRunViewData {
     state().with(AppState::active_workflow_run_clone)
 }
 
-pub(crate) fn active_workflow_run_key() -> (String, String) {
+pub fn active_workflow_run_key() -> (String, String) {
     state().with(|s| s.active_workflow_run_key.clone())
 }
 
-pub(crate) fn workflow_run_selected_step() -> usize {
+pub fn workflow_run_selected_step() -> usize {
     state().with(|s| s.workflow_run_selected_step)
 }
 
-pub(crate) fn select_workflow_run_step(index: usize) {
+pub fn select_workflow_run_step(index: usize) {
     state().update(|s| {
         let len = s.active_workflow_run_clone().steps.len();
         if len > 0 {
@@ -2727,43 +2751,43 @@ pub(crate) fn select_workflow_run_step(index: usize) {
     });
 }
 
-pub(crate) fn workflow_run_tab() -> RunDetailTab {
+pub fn workflow_run_tab() -> RunDetailTab {
     state().with(|s| s.workflow_run_tab)
 }
 
-pub(crate) fn set_workflow_run_tab(tab: RunDetailTab) {
+pub fn set_workflow_run_tab(tab: RunDetailTab) {
     state().update(|s| {
         s.workflow_run_tab = tab;
     });
 }
 
-pub(crate) fn workflow_run_inspector_visible() -> bool {
+pub fn workflow_run_inspector_visible() -> bool {
     state().with(|s| s.workflow_run_inspector_visible)
 }
 
-pub(crate) fn toggle_workflow_run_inspector() {
+pub fn toggle_workflow_run_inspector() {
     state().update(|s| {
         s.workflow_run_inspector_visible = !s.workflow_run_inspector_visible;
     });
 }
 
-pub(crate) fn workflow_run_command_palette_open() -> bool {
+pub fn workflow_run_command_palette_open() -> bool {
     state().with(|s| s.workflow_run_command_palette_open)
 }
 
-pub(crate) fn toggle_workflow_run_command_palette() {
+pub fn toggle_workflow_run_command_palette() {
     state().update(|s| {
         s.workflow_run_command_palette_open = !s.workflow_run_command_palette_open;
     });
 }
 
-pub(crate) fn set_workflow_run_command_palette_open(open: bool) {
+pub fn set_workflow_run_command_palette_open(open: bool) {
     state().update(|s| {
         s.workflow_run_command_palette_open = open;
     });
 }
 
-pub(crate) fn toggle_pause_workflow_run() {
+pub fn toggle_pause_workflow_run() {
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
         let run = s.ensure_workflow_run_mut(&project, &workflow);
@@ -2783,7 +2807,7 @@ pub(crate) fn toggle_pause_workflow_run() {
     });
 }
 
-pub(crate) fn stop_workflow_run() {
+pub fn stop_workflow_run() {
     let mut stop_key = None;
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
@@ -2806,7 +2830,7 @@ pub(crate) fn stop_workflow_run() {
     }
 }
 
-pub(crate) fn steer_workflow_run_step(instruction: &str) -> bool {
+pub fn steer_workflow_run_step(instruction: &str) -> bool {
     let mut sent = false;
     let mut steer_key = None;
     state().update(|s| {
@@ -2838,7 +2862,7 @@ pub(crate) fn steer_workflow_run_step(instruction: &str) -> bool {
     sent
 }
 
-pub(crate) fn toggle_workflow_run_budget_pause() {
+pub fn toggle_workflow_run_budget_pause() {
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
         let run = s.ensure_workflow_run_mut(&project, &workflow);
@@ -2846,7 +2870,7 @@ pub(crate) fn toggle_workflow_run_budget_pause() {
     });
 }
 
-pub(crate) fn approve_workflow_run_review_gate() {
+pub fn approve_workflow_run_review_gate() {
     let mut approve_key = None;
     state().update(|s| {
         let (project, workflow) = s.active_workflow_run_key.clone();
@@ -2873,7 +2897,7 @@ pub(crate) fn approve_workflow_run_review_gate() {
     }
 }
 
-pub(crate) fn edit_active_workflow() {
+pub fn edit_active_workflow() {
     state().update(|s| {
         let (project, workflow_name) = s.active_workflow_run_key.clone();
         let demo = s.demo_mode;
@@ -2910,12 +2934,12 @@ pub(crate) fn edit_active_workflow() {
     });
 }
 
-pub(crate) fn deploy_watch_entries() -> Vec<DeployWatchEntry> {
+pub fn deploy_watch_entries() -> Vec<DeployWatchEntry> {
     state().with(|s| s.deploy_watch_entries.clone())
 }
 
 /// Persists a new project in SQLite and adds it to the reactive factory state.
-pub(crate) fn register_project(name: &str, path: &str) -> bool {
+pub fn register_project(name: &str, path: &str) -> bool {
     register_project_with_branch(name, path, "main")
 }
 
@@ -2960,7 +2984,7 @@ fn register_project_with_branch(name: &str, path: &str, default_branch: &str) ->
                         clean.apply_detected_git_remote(&detected);
                     }
                     let catalog = load_catalog(s.home.as_ref(), Path::new(&saved_path));
-                    factory_core::sync_project_workflows_from_catalog(&mut clean, &catalog);
+                    sync_project_workflows_from_catalog(&mut clean, &catalog);
                     (clean, Some(catalog))
                 };
                 if !demo
@@ -3030,7 +3054,7 @@ fn register_project_with_branch(name: &str, path: &str, default_branch: &str) ->
 }
 
 /// Opens an existing project matching `path`, or registers it in SQLite and opens its workspace.
-pub(crate) fn open_or_register_project_path(path: &Path) -> bool {
+pub fn open_or_register_project_path(path: &Path) -> bool {
     let existing = state().with_untracked(|s| {
         s.factory
             .projects()
@@ -3059,7 +3083,7 @@ pub(crate) fn open_or_register_project_path(path: &Path) -> bool {
 }
 
 /// Deletes a tracked project from SQLite and removes it from the reactive state.
-pub(crate) fn remove_project(id: ProjectId) {
+pub fn remove_project(id: ProjectId) {
     state().update(|s| {
         let project_name = s.factory.project(id).map(|p| p.name.clone());
         let managed_clone = s
@@ -3168,80 +3192,80 @@ struct ProviderLaunch {
 
 /// Compact git change badge shown in the chat header.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChatGitSummary {
-    pub(crate) uncommitted_files: usize,
-    pub(crate) additions: usize,
-    pub(crate) deletions: usize,
-    pub(crate) commits_ahead: usize,
+pub struct ChatGitSummary {
+    pub uncommitted_files: usize,
+    pub additions: usize,
+    pub deletions: usize,
+    pub commits_ahead: usize,
 }
 
 /// What a chat's header and composer show.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActiveChatMeta {
-    pub(crate) id: String,
-    pub(crate) title: String,
-    pub(crate) agent_label: String,
-    pub(crate) provider: ProviderKind,
+pub struct ActiveChatMeta {
+    pub id: String,
+    pub title: String,
+    pub agent_label: String,
+    pub provider: ProviderKind,
     /// The model and effort picked when the chat started, when not the defaults.
-    pub(crate) model: Option<String>,
-    pub(crate) reasoning_effort: Option<String>,
-    pub(crate) sandbox: ProjectSandboxMode,
-    pub(crate) status: ChatSessionStatus,
-    pub(crate) message_count: usize,
-    pub(crate) total_tokens: u64,
-    pub(crate) total_cost_cents: u64,
-    pub(crate) workspace: ChatWorkspace,
-    pub(crate) worktree: Option<ChatWorktree>,
+    pub model: Option<String>,
+    pub reasoning_effort: Option<String>,
+    pub sandbox: ProjectSandboxMode,
+    pub status: ChatSessionStatus,
+    pub message_count: usize,
+    pub total_tokens: u64,
+    pub total_cost_cents: u64,
+    pub workspace: ChatWorkspace,
+    pub worktree: Option<ChatWorktree>,
     /// Tokens in the context window and its size, after the latest turn.
-    pub(crate) context: Option<(u64, u64)>,
+    pub context: Option<(u64, u64)>,
     /// Whether this chat's project is a git repository (enables the Changes drawer).
-    pub(crate) is_git_repo: bool,
+    pub is_git_repo: bool,
     /// Summary of uncommitted changes and commits ahead for the header Changes button.
-    pub(crate) git_summary: Option<ChatGitSummary>,
+    pub git_summary: Option<ChatGitSummary>,
 }
 
 /// What the open chat's Changes drawer shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActiveChatChanges {
-    pub(crate) chat_id: String,
-    pub(crate) title: String,
-    pub(crate) working_dir: std::path::PathBuf,
-    pub(crate) is_worktree: bool,
-    pub(crate) default_branch: String,
-    pub(crate) open_prs_as_draft: bool,
-    pub(crate) running: bool,
-    pub(crate) loading: bool,
-    pub(crate) busy: bool,
-    pub(crate) status: Option<ChatGitStatus>,
-    pub(crate) error: Option<String>,
-    pub(crate) feedback: Option<String>,
-    pub(crate) pr_url: Option<String>,
+pub struct ActiveChatChanges {
+    pub chat_id: String,
+    pub title: String,
+    pub working_dir: std::path::PathBuf,
+    pub is_worktree: bool,
+    pub default_branch: String,
+    pub open_prs_as_draft: bool,
+    pub running: bool,
+    pub loading: bool,
+    pub busy: bool,
+    pub status: Option<ChatGitStatus>,
+    pub error: Option<String>,
+    pub feedback: Option<String>,
+    pub pr_url: Option<String>,
 }
 
 /// What the open chat's context panel shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActiveChatContext {
-    pub(crate) chat_id: String,
-    pub(crate) provider: ProviderKind,
-    pub(crate) usage: Option<ChatContextUsage>,
-    pub(crate) loading: bool,
-    pub(crate) error: Option<String>,
+pub struct ActiveChatContext {
+    pub chat_id: String,
+    pub provider: ProviderKind,
+    pub usage: Option<ChatContextUsage>,
+    pub loading: bool,
+    pub error: Option<String>,
     /// The provider has a session to measure (a turn has run).
-    pub(crate) has_session: bool,
-    pub(crate) running: bool,
+    pub has_session: bool,
+    pub running: bool,
     /// The chat's tokens by kind, the running reply's so far included.
-    pub(crate) tokens: ChatTokenBreakdown,
+    pub tokens: ChatTokenBreakdown,
     /// Every token the chat's finished replies used, as totaled for the dashboard.
-    pub(crate) recorded_tokens: u64,
+    pub recorded_tokens: u64,
 }
 
 /// One row of the open chat's transcript, keyed by chat and position.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ChatEntryRow {
-    pub(crate) chat_id: String,
-    pub(crate) index: usize,
-    pub(crate) provider: ProviderKind,
-    pub(crate) entry: factory_core::ChatEntry,
+pub struct ChatEntryRow {
+    pub chat_id: String,
+    pub index: usize,
+    pub provider: ProviderKind,
+    pub entry: ChatEntry,
 }
 
 impl AppState {
@@ -3253,9 +3277,9 @@ impl AppState {
         &self,
         project_root: &std::path::Path,
         settings: Option<&ProjectSettings>,
-    ) -> factory_core::mcp::McpSources {
-        factory_core::mcp::McpSources::gather(
-            &factory_core::mcp::load_project_mcp(project_root),
+    ) -> factory_config::mcp::McpSources {
+        factory_config::mcp::McpSources::gather(
+            &factory_config::mcp::load_project_mcp(project_root),
             settings,
             &self.preferences.extensions,
         )
@@ -3290,8 +3314,8 @@ impl AppState {
             self.preferences
                 .codex
                 .as_ref()
-                .map(|cx| factory_core::expand_tilde(&cx.config_dir))
-                .unwrap_or_else(|| factory_core::expand_tilde("~/.codex")),
+                .map(|cx| expand_tilde(&cx.config_dir))
+                .unwrap_or_else(|| expand_tilde("~/.codex")),
         );
         let antigravity_binary = self.preferences.antigravity.as_ref().and_then(|ag| {
             resolve_antigravity_binary(ag.custom_cli_path.as_deref(), path_env.as_deref()).ok()
@@ -3518,7 +3542,7 @@ impl AppState {
                 "Wait for the reply, or stop it, before sending another message".to_owned(),
             );
         }
-        let uploads = factory_core::plan_chat_attachments(&chat_dir, attachment_sources)?;
+        let uploads = plan_chat_attachments(&chat_dir, attachment_sources)?;
         let attachments = uploads.iter().map(|u| u.attachment.clone()).collect();
         session.push_user_message_with_attachments(text, attachments, now);
         if session.workspace == ChatWorkspace::Worktree && session.worktree.is_none() {
@@ -3649,7 +3673,7 @@ impl AppState {
 }
 
 /// Opens a project's chats, showing the one last open there.
-pub(crate) fn open_chats_for_project(id: ProjectId) {
+pub fn open_chats_for_project(id: ProjectId) {
     let mut selected_chat = None;
     state().update(|s| {
         s.selected_project = Some(id);
@@ -3664,7 +3688,7 @@ pub(crate) fn open_chats_for_project(id: ProjectId) {
 }
 
 /// Opens a fresh composer in the selected (or first) project's chats.
-pub(crate) fn start_new_chat() {
+pub fn start_new_chat() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -3680,7 +3704,7 @@ pub(crate) fn start_new_chat() {
     });
 }
 
-pub(crate) fn select_chat(id: &str) {
+pub fn select_chat(id: &str) {
     let mut found = false;
     state().update(|s| {
         if let Some(pid) = s.chat_sessions.get(id).map(|chat| chat.project_id) {
@@ -3696,7 +3720,7 @@ pub(crate) fn select_chat(id: &str) {
 }
 
 /// The project's chats, most recently active first.
-pub(crate) fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
+pub fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
     state().with(|s| {
         let mut chats: Vec<ChatSessionSummary> = s
             .chat_sessions
@@ -3714,7 +3738,7 @@ pub(crate) fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummar
 }
 
 /// How many chats a project has, and how many are working on a reply.
-pub(crate) fn chat_counts_for_project(id: ProjectId) -> (usize, usize) {
+pub fn chat_counts_for_project(id: ProjectId) -> (usize, usize) {
     state().with(|s| {
         s.chat_sessions
             .values()
@@ -3725,11 +3749,11 @@ pub(crate) fn chat_counts_for_project(id: ProjectId) -> (usize, usize) {
     })
 }
 
-pub(crate) fn active_chat_id() -> Option<String> {
+pub fn active_chat_id() -> Option<String> {
     state().with(|s| s.active_chat_id().cloned())
 }
 
-pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
+pub fn active_chat_meta() -> Option<ActiveChatMeta> {
     state().with(|s| {
         let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
         let is_git_repo = !s.using_sample_projects
@@ -3766,7 +3790,7 @@ pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
     })
 }
 
-pub(crate) fn active_chat_rows() -> Vec<ChatEntryRow> {
+pub fn active_chat_rows() -> Vec<ChatEntryRow> {
     state().with(|s| {
         let Some(chat) = s.active_chat_id().and_then(|id| s.chat_sessions.get(id)) else {
             return Vec::new();
@@ -3785,7 +3809,7 @@ pub(crate) fn active_chat_rows() -> Vec<ChatEntryRow> {
 }
 
 /// Providers a chat can talk to: Claude, and Codex or Antigravity once added in Settings.
-pub(crate) fn chat_provider_options() -> Vec<ProviderKind> {
+pub fn chat_provider_options() -> Vec<ProviderKind> {
     state().with(|s| {
         ProviderKind::CLI_PROVIDERS
             .iter()
@@ -3796,7 +3820,7 @@ pub(crate) fn chat_provider_options() -> Vec<ProviderKind> {
 }
 
 /// The selected project's agents as `(reference, name)`.
-pub(crate) fn chat_agent_options() -> Vec<(String, String)> {
+pub fn chat_agent_options() -> Vec<(String, String)> {
     let agents = |catalog: &BrukCatalog| -> Vec<(String, String)> {
         catalog
             .effective_agents()
@@ -3810,17 +3834,17 @@ pub(crate) fn chat_agent_options() -> Vec<(String, String)> {
     })
 }
 
-pub(crate) fn chat_new_provider() -> ProviderKind {
+pub fn chat_new_provider() -> ProviderKind {
     state().with(AppState::resolved_chat_new_provider)
 }
 
-pub(crate) fn set_chat_new_provider(provider: ProviderKind) {
+pub fn set_chat_new_provider(provider: ProviderKind) {
     state().update(|s| s.choose_chat_new_provider(provider));
 }
 
 /// Models the next new chat's provider offers, as `(value, name)`, from its CLI (the Model
 /// Family Filter applied).
-pub(crate) fn chat_model_options() -> Vec<(String, String)> {
+pub fn chat_model_options() -> Vec<(String, String)> {
     state().with(|s| {
         s.cli_account(s.resolved_chat_new_provider())
             .map(|account| {
@@ -3843,7 +3867,7 @@ pub(crate) fn chat_model_options() -> Vec<(String, String)> {
 
 /// What the next new chat uses when no model is picked: its agent's model, the project's
 /// override, or the provider's default.
-pub(crate) fn chat_default_model_label() -> String {
+pub fn chat_default_model_label() -> String {
     state().with(|s| {
         let provider = s.resolved_chat_new_provider();
         let agent_model = s
@@ -3867,21 +3891,21 @@ pub(crate) fn chat_default_model_label() -> String {
     })
 }
 
-pub(crate) fn chat_new_model() -> Option<String> {
+pub fn chat_new_model() -> Option<String> {
     state().with(|s| s.chat_new_model.clone())
 }
 
-pub(crate) fn set_chat_new_model(model: Option<String>) {
+pub fn set_chat_new_model(model: Option<String>) {
     state().update(|s| s.chat_new_model = model.filter(|m| !m.trim().is_empty()));
 }
 
 /// Effort levels the next new chat's provider takes, lowest first.
-pub(crate) fn chat_effort_options() -> Vec<&'static str> {
+pub fn chat_effort_options() -> Vec<&'static str> {
     state().with(|s| provider_effort_levels(s.resolved_chat_new_provider()).to_vec())
 }
 
 /// What the next new chat uses when no effort is picked: its agent's, or the provider's.
-pub(crate) fn chat_default_effort_label() -> String {
+pub fn chat_default_effort_label() -> String {
     state().with(|s| {
         s.chat_new_agent
             .as_deref()
@@ -3892,20 +3916,20 @@ pub(crate) fn chat_default_effort_label() -> String {
     })
 }
 
-pub(crate) fn chat_new_effort() -> Option<String> {
+pub fn chat_new_effort() -> Option<String> {
     state().with(AppState::resolved_chat_new_effort)
 }
 
-pub(crate) fn set_chat_new_effort(effort: Option<String>) {
+pub fn set_chat_new_effort(effort: Option<String>) {
     state().update(|s| s.chat_new_effort = effort.filter(|e| !e.trim().is_empty()));
 }
 
-pub(crate) fn chat_new_agent() -> Option<String> {
+pub fn chat_new_agent() -> Option<String> {
     state().with(|s| s.chat_new_agent.clone())
 }
 
 /// Picks the agent for the next new chat, adopting the provider and access it declares.
-pub(crate) fn set_chat_new_agent(agent: Option<String>) {
+pub fn set_chat_new_agent(agent: Option<String>) {
     state().update(|s| {
         let resolved = agent
             .as_deref()
@@ -3922,16 +3946,16 @@ pub(crate) fn set_chat_new_agent(agent: Option<String>) {
     });
 }
 
-pub(crate) fn chat_new_sandbox() -> ProjectSandboxMode {
+pub fn chat_new_sandbox() -> ProjectSandboxMode {
     state().with(AppState::resolved_chat_new_sandbox)
 }
 
-pub(crate) fn set_chat_new_sandbox(mode: ProjectSandboxMode) {
+pub fn set_chat_new_sandbox(mode: ProjectSandboxMode) {
     state().update(|s| s.chat_new_sandbox = Some(mode));
 }
 
 /// Changes what the open chat's agent may do, from its next message on.
-pub(crate) fn set_active_chat_sandbox(mode: ProjectSandboxMode) {
+pub fn set_active_chat_sandbox(mode: ProjectSandboxMode) {
     state().update(|s| {
         let Some(id) = s.active_chat_id().cloned() else {
             return;
@@ -3945,7 +3969,7 @@ pub(crate) fn set_active_chat_sandbox(mode: ProjectSandboxMode) {
 
 /// Sends `text` in the open chat (starting a new one if none is open). False if nothing
 /// was sent.
-pub(crate) fn send_chat_message(text: &str) -> bool {
+pub fn send_chat_message(text: &str) -> bool {
     let text = text.trim().to_owned();
     let now = current_unix_seconds();
     let mut prepared = None;
@@ -3977,27 +4001,27 @@ pub(crate) fn send_chat_message(text: &str) -> bool {
 
 /// A file waiting in the composer to go with the next message.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct PendingChatAttachment {
-    pub(crate) path: std::path::PathBuf,
-    pub(crate) name: String,
-    pub(crate) mime_type: String,
-    pub(crate) size_bytes: u64,
+pub struct PendingChatAttachment {
+    pub path: std::path::PathBuf,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
 }
 
 impl PendingChatAttachment {
-    pub(crate) fn is_image(&self) -> bool {
-        factory_core::is_model_image_type(&self.mime_type)
+    pub fn is_image(&self) -> bool {
+        is_model_image_type(&self.mime_type)
     }
 }
 
 /// Files waiting in the composer, in the order they were added.
-pub(crate) fn chat_pending_attachments() -> Vec<PendingChatAttachment> {
+pub fn chat_pending_attachments() -> Vec<PendingChatAttachment> {
     state().with(|s| s.chat_pending_attachments.clone())
 }
 
 /// Adds files to the next message; reports the ones that can't be attached (folders, missing
 /// or too large files). A file already waiting is not added again.
-pub(crate) fn add_chat_attachments(paths: Vec<std::path::PathBuf>) {
+pub fn add_chat_attachments(paths: Vec<std::path::PathBuf>) {
     let mut added = Vec::new();
     let mut problems = Vec::new();
     for path in paths {
@@ -4009,10 +4033,10 @@ pub(crate) fn add_chat_attachments(paths: Vec<std::path::PathBuf>) {
             Ok(meta) if meta.is_dir() => problems.push(format!("{name} is a folder")),
             Ok(meta) if meta.len() > CHAT_ATTACHMENT_MAX_BYTES => problems.push(format!(
                 "{name} is larger than {}",
-                factory_core::format_bytes(CHAT_ATTACHMENT_MAX_BYTES)
+                format_bytes(CHAT_ATTACHMENT_MAX_BYTES)
             )),
             Ok(meta) => added.push(PendingChatAttachment {
-                mime_type: factory_core::attachment_mime_type(&path).to_owned(),
+                mime_type: attachment_mime_type(&path).to_owned(),
                 size_bytes: meta.len(),
                 name,
                 path,
@@ -4036,7 +4060,7 @@ pub(crate) fn add_chat_attachments(paths: Vec<std::path::PathBuf>) {
 }
 
 /// Adds files given as `file:` URLs (a drop, a paste from Finder).
-pub(crate) fn add_chat_attachment_uris(uris: &[String]) {
+pub fn add_chat_attachment_uris(uris: &[String]) {
     let paths: Vec<std::path::PathBuf> = uris.iter().filter_map(|u| file_uri_to_path(u)).collect();
     if !paths.is_empty() {
         add_chat_attachments(paths);
@@ -4044,7 +4068,7 @@ pub(crate) fn add_chat_attachment_uris(uris: &[String]) {
 }
 
 /// Attaches pasted bytes (a screenshot) by saving them to a file of their own first.
-pub(crate) fn add_pasted_chat_attachment(name: &str, data: &[u8]) {
+pub fn add_pasted_chat_attachment(name: &str, data: &[u8]) {
     let dir = std::env::temp_dir().join("bruk-pasted");
     let seq = chat_registry()
         .lock()
@@ -4073,12 +4097,12 @@ pub(crate) fn add_pasted_chat_attachment(name: &str, data: &[u8]) {
     }
 }
 
-pub(crate) fn remove_chat_attachment(path: &std::path::Path) {
+pub fn remove_chat_attachment(path: &std::path::Path) {
     state().update(|s| s.chat_pending_attachments.retain(|a| a.path != path));
 }
 
 /// The local path of a `file:` URL (percent-decoded); `None` for other URLs.
-pub(crate) fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
+pub fn file_uri_to_path(uri: &str) -> Option<std::path::PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     // `file://localhost/path` and `file:///path` both name `/path`.
     let rest = rest.strip_prefix("localhost").unwrap_or(rest);
@@ -4298,25 +4322,25 @@ fn refresh_chat_context(chat_id: String) {
     });
 }
 
-pub(crate) fn chat_new_workspace() -> ChatWorkspace {
+pub fn chat_new_workspace() -> ChatWorkspace {
     state().with(AppState::resolved_chat_new_workspace)
 }
 
-pub(crate) fn set_chat_new_workspace(workspace: ChatWorkspace) {
+pub fn set_chat_new_workspace(workspace: ChatWorkspace) {
     state().update(|s| s.chat_new_workspace = Some(workspace));
 }
 
 /// Whether the selected project can give a new chat its own worktree.
-pub(crate) fn chat_worktree_available() -> bool {
+pub fn chat_worktree_available() -> bool {
     state().with(AppState::chat_worktree_available)
 }
 
-pub(crate) fn chat_context_open() -> bool {
+pub fn chat_context_open() -> bool {
     state().with(|s| s.chat_context_open)
 }
 
 /// Shows or hides the context-window panel, reading the open chat's window when it has none.
-pub(crate) fn toggle_chat_context() {
+pub fn toggle_chat_context() {
     let mut opened = false;
     state().update(|s| {
         s.chat_context_open = !s.chat_context_open;
@@ -4338,12 +4362,12 @@ pub(crate) fn toggle_chat_context() {
     }
 }
 
-pub(crate) fn chat_changes_open() -> bool {
+pub fn chat_changes_open() -> bool {
     state().with(|s| s.chat_changes_open)
 }
 
 /// Shows or hides the Changes / Git drawer for the open chat, refreshing git status on open.
-pub(crate) fn toggle_chat_changes() {
+pub fn toggle_chat_changes() {
     let mut opened = false;
     let mut active_id = None;
     state().update(|s| {
@@ -4360,13 +4384,13 @@ pub(crate) fn toggle_chat_changes() {
 }
 
 /// Refreshes the open chat's git status and diffs.
-pub(crate) fn refresh_active_chat_changes() {
+pub fn refresh_active_chat_changes() {
     if let Some(id) = active_chat_id() {
         refresh_chat_git_status(id);
     }
 }
 
-pub(crate) fn active_chat_changes() -> Option<ActiveChatChanges> {
+pub fn active_chat_changes() -> Option<ActiveChatChanges> {
     state().with(|s| {
         let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
         let project = s.factory.project(chat.project_id)?;
@@ -4456,7 +4480,7 @@ fn refresh_chat_git_status(chat_id: String) {
 }
 
 /// Sends a message to the active chat's agent asking it to review and commit the uncommitted changes.
-pub(crate) fn ask_agent_to_commit_active_chat() -> bool {
+pub fn ask_agent_to_commit_active_chat() -> bool {
     const COMMIT_PROMPT: &str = "Please review the uncommitted changes, stage what belongs in the commit, and create a git commit with a clear commit message.";
     let now = current_unix_seconds();
     let mut prepared = None;
@@ -4487,7 +4511,7 @@ pub(crate) fn ask_agent_to_commit_active_chat() -> bool {
 }
 
 /// Pushes the active chat's branch and opens a GitHub pull request via `gh pr create`.
-pub(crate) fn open_active_chat_pr(title: String, body: String, draft: bool) {
+pub fn open_active_chat_pr(title: String, body: String, draft: bool) {
     let mut job = None;
     state().update(|s| {
         let Some(chat_id) = s.active_chat_id().cloned() else {
@@ -4619,7 +4643,7 @@ pub(crate) fn open_active_chat_pr(title: String, body: String, draft: bool) {
 }
 
 /// Applies the active worktree chat's changes (patch or commits) to the main project checkout.
-pub(crate) fn apply_active_chat_to_checkout() {
+pub fn apply_active_chat_to_checkout() {
     let mut job = None;
     state().update(|s| {
         let Some(chat_id) = s.active_chat_id().cloned() else {
@@ -4701,7 +4725,7 @@ pub(crate) fn apply_active_chat_to_checkout() {
 }
 
 /// Opens the active chat's working directory in Terminal.app.
-pub(crate) fn open_active_chat_in_terminal() {
+pub fn open_active_chat_in_terminal() {
     let dir = state().with(|s| {
         let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
         let project = s.factory.project(chat.project_id)?;
@@ -4718,7 +4742,7 @@ pub(crate) fn open_active_chat_in_terminal() {
 }
 
 /// Opens the pull request URL created from the active chat in the default browser.
-pub(crate) fn open_active_chat_pr_url() {
+pub fn open_active_chat_pr_url() {
     let url = state().with(|s| {
         let id = s.active_chat_id()?;
         s.chat_pr_urls.get(id).cloned()
@@ -4731,13 +4755,13 @@ pub(crate) fn open_active_chat_pr_url() {
 }
 
 /// Reads the open chat's context window again.
-pub(crate) fn refresh_active_chat_context() {
+pub fn refresh_active_chat_context() {
     if let Some(id) = active_chat_id() {
         refresh_chat_context(id);
     }
 }
 
-pub(crate) fn active_chat_context() -> Option<ActiveChatContext> {
+pub fn active_chat_context() -> Option<ActiveChatContext> {
     state().with(|s| {
         let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
         Some(ActiveChatContext {
@@ -4755,7 +4779,7 @@ pub(crate) fn active_chat_context() -> Option<ActiveChatContext> {
 }
 
 /// Stops the open chat's running reply.
-pub(crate) fn stop_active_chat() {
+pub fn stop_active_chat() {
     let Some(id) = active_chat_id() else {
         return;
     };
@@ -4785,7 +4809,7 @@ pub(crate) fn stop_active_chat() {
 }
 
 /// Deletes a chat and its runtime files, stopping it first if it is replying.
-pub(crate) fn delete_chat(id: &str) {
+pub fn delete_chat(id: &str) {
     let control = chat_registry()
         .lock()
         .ok()
@@ -4856,14 +4880,14 @@ pub(crate) fn delete_chat(id: &str) {
 
 // --- Work Queue state -------------------------------------------------------------------
 
-pub(crate) fn active_work_queue() -> ProjectWorkQueue {
+pub fn active_work_queue() -> ProjectWorkQueue {
     state().with(|s| {
         let name = s.selected_project_name();
         s.queue_for_name(&name)
     })
 }
 
-pub(crate) fn work_queue_for_project(id: ProjectId) -> ProjectWorkQueue {
+pub fn work_queue_for_project(id: ProjectId) -> ProjectWorkQueue {
     state().with(|s| {
         let name = s
             .factory
@@ -4874,48 +4898,48 @@ pub(crate) fn work_queue_for_project(id: ProjectId) -> ProjectWorkQueue {
     })
 }
 
-pub(crate) fn work_queue_view_mode() -> WorkQueueViewMode {
+pub fn work_queue_view_mode() -> WorkQueueViewMode {
     state().with(|s| s.work_queue_view_mode)
 }
 
-pub(crate) fn set_work_queue_view_mode(mode: WorkQueueViewMode) {
+pub fn set_work_queue_view_mode(mode: WorkQueueViewMode) {
     state().update(|s| {
         s.work_queue_view_mode = mode;
     });
 }
 
-pub(crate) fn selected_work_queue_issue() -> Option<u32> {
+pub fn selected_work_queue_issue() -> Option<u32> {
     state().with(|s| s.work_queue_selected_issue)
 }
 
-pub(crate) fn select_work_queue_issue(issue_number: u32) {
+pub fn select_work_queue_issue(issue_number: u32) {
     state().update(|s| {
         s.work_queue_selected_issue = Some(issue_number);
         s.work_queue_inspector_visible = true;
     });
 }
 
-pub(crate) fn work_queue_inspector_visible() -> bool {
+pub fn work_queue_inspector_visible() -> bool {
     state().with(|s| s.work_queue_inspector_visible)
 }
 
-pub(crate) fn toggle_work_queue_inspector() {
+pub fn toggle_work_queue_inspector() {
     state().update(|s| {
         s.work_queue_inspector_visible = !s.work_queue_inspector_visible;
     });
 }
 
-pub(crate) fn work_queue_ad_hoc_open() -> bool {
+pub fn work_queue_ad_hoc_open() -> bool {
     state().with(|s| s.work_queue_ad_hoc_open)
 }
 
-pub(crate) fn set_work_queue_ad_hoc_open(open: bool) {
+pub fn set_work_queue_ad_hoc_open(open: bool) {
     state().update(|s| {
         s.work_queue_ad_hoc_open = open;
     });
 }
 
-pub(crate) fn open_work_queue_ad_hoc() {
+pub fn open_work_queue_ad_hoc() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -4929,15 +4953,15 @@ pub(crate) fn open_work_queue_ad_hoc() {
     });
 }
 
-pub(crate) fn work_queue_unmatched_expanded() -> bool {
+pub fn work_queue_unmatched_expanded() -> bool {
     state().with(|s| s.work_queue_unmatched_expanded)
 }
 
-pub(crate) fn work_queue_syncing() -> bool {
+pub fn work_queue_syncing() -> bool {
     state().with(|s| s.work_queue_syncing)
 }
 
-pub(crate) fn toggle_work_queue_unmatched_expanded() {
+pub fn toggle_work_queue_unmatched_expanded() {
     state().update(|s| {
         s.work_queue_unmatched_expanded = !s.work_queue_unmatched_expanded;
     });
@@ -4957,7 +4981,7 @@ fn resolve_github_auth_off_thread(
                         .to_owned(),
                 );
             };
-            let cancel = factory_core::CancellationToken::new();
+            let cancel = CancellationToken::new();
             let secret = resolver
                 .resolve_internal(secret_id, &cancel)
                 .map_err(|failure| failure.to_problem(None).reason)?;
@@ -5037,7 +5061,7 @@ fn spawn_github_working_label_update(issue_number: u32, add: bool) {
     }
 }
 
-pub(crate) fn start_work_queue_issue(issue_number: u32) {
+pub fn start_work_queue_issue(issue_number: u32) {
     let mut started = false;
     let mut real_run_args: Option<(String, String, String, u32)> = None;
     state().update(|s| {
@@ -5080,7 +5104,7 @@ pub(crate) fn start_work_queue_issue(issue_number: u32) {
     }
 }
 
-pub(crate) fn start_next_queued_issue() {
+pub fn start_next_queued_issue() {
     let mut started_issue = None;
     state().update(|s| {
         let name = s.selected_project_name();
@@ -5105,7 +5129,7 @@ pub(crate) fn start_next_queued_issue() {
     }
 }
 
-pub(crate) fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &str) {
+pub fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &str) {
     let wf = workflow_name.to_owned();
     state().update(|s| {
         let name = s.selected_project_name();
@@ -5122,7 +5146,7 @@ pub(crate) fn reassign_work_queue_workflow(issue_number: u32, workflow_name: &st
     });
 }
 
-pub(crate) fn skip_work_queue_issue(issue_number: u32) {
+pub fn skip_work_queue_issue(issue_number: u32) {
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -5140,7 +5164,7 @@ pub(crate) fn skip_work_queue_issue(issue_number: u32) {
     });
 }
 
-pub(crate) fn approve_work_queue_review(issue_number: u32) {
+pub fn approve_work_queue_review(issue_number: u32) {
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -5159,7 +5183,7 @@ pub(crate) fn approve_work_queue_review(issue_number: u32) {
     });
 }
 
-pub(crate) fn request_changes_work_queue_review(issue_number: u32) {
+pub fn request_changes_work_queue_review(issue_number: u32) {
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -5178,7 +5202,7 @@ pub(crate) fn request_changes_work_queue_review(issue_number: u32) {
     });
 }
 
-pub(crate) fn stop_work_queue_issue(issue_number: u32) {
+pub fn stop_work_queue_issue(issue_number: u32) {
     let mut stopped = false;
     state().update(|s| {
         let name = s.selected_project_name();
@@ -5200,7 +5224,7 @@ pub(crate) fn stop_work_queue_issue(issue_number: u32) {
     }
 }
 
-pub(crate) fn requeue_work_queue_issue(issue_number: u32) {
+pub fn requeue_work_queue_issue(issue_number: u32) {
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -5217,7 +5241,7 @@ pub(crate) fn requeue_work_queue_issue(issue_number: u32) {
     });
 }
 
-pub(crate) fn queue_unmatched_work_issue(issue_number: u32) {
+pub fn queue_unmatched_work_issue(issue_number: u32) {
     state().update(|s| {
         let name = s.selected_project_name();
         let queue = s.ensure_queue_mut(&name);
@@ -5234,7 +5258,7 @@ pub(crate) fn queue_unmatched_work_issue(issue_number: u32) {
     });
 }
 
-pub(crate) fn open_work_queue_issue_url(url: &str) {
+pub fn open_work_queue_issue_url(url: &str) {
     let url_owned = url.to_owned();
     let should_open = state().with_untracked(|s| {
         !s.demo_mode
@@ -5252,11 +5276,11 @@ pub(crate) fn open_work_queue_issue_url(url: &str) {
     }
 }
 
-pub(crate) fn sync_work_queue() {
+pub fn sync_work_queue() {
     sync_github_issues_for_active_project(false);
 }
 
-pub(crate) fn test_and_sync_project_github_source() {
+pub fn test_and_sync_project_github_source() {
     sync_github_issues_for_active_project(true);
 }
 
@@ -5489,7 +5513,7 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
     }
 }
 
-pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
+pub fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
     let wf = workflow_name.to_owned();
     let prompt = title.to_owned();
     let mut launched = false;
@@ -5515,14 +5539,14 @@ pub(crate) fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
     launched
 }
 
-pub(crate) fn has_queued_work_issues() -> bool {
+pub fn has_queued_work_issues() -> bool {
     state().with(|s| {
         let name = s.selected_project_name();
         s.queue_for_name(&name).waiting_count() > 0
     })
 }
 
-pub(crate) fn dashboard_snapshot() -> DashboardSnapshot {
+pub fn dashboard_snapshot() -> DashboardSnapshot {
     state().with(|s| {
         let query = DashboardQuery {
             granularity: s.dashboard_granularity,
@@ -5539,11 +5563,11 @@ pub(crate) fn dashboard_snapshot() -> DashboardSnapshot {
     })
 }
 
-pub(crate) fn dashboard_granularity() -> DashboardGranularity {
+pub fn dashboard_granularity() -> DashboardGranularity {
     state().with(|s| s.dashboard_granularity)
 }
 
-pub(crate) fn set_dashboard_granularity(granularity: DashboardGranularity) {
+pub fn set_dashboard_granularity(granularity: DashboardGranularity) {
     state().update(|s| {
         if s.dashboard_granularity != granularity {
             s.dashboard_granularity = granularity;
@@ -5552,7 +5576,7 @@ pub(crate) fn set_dashboard_granularity(granularity: DashboardGranularity) {
     });
 }
 
-pub(crate) fn step_dashboard_period(delta: i32) {
+pub fn step_dashboard_period(delta: i32) {
     state().update(|s| {
         if !s.demo_mode {
             s.dashboard_period_offset = 0;
@@ -5567,17 +5591,17 @@ pub(crate) fn step_dashboard_period(delta: i32) {
     });
 }
 
-pub(crate) fn dashboard_project_filter() -> Option<String> {
+pub fn dashboard_project_filter() -> Option<String> {
     state().with(|s| s.dashboard_project_filter.clone())
 }
 
-pub(crate) fn set_dashboard_project_filter(filter: Option<String>) {
+pub fn set_dashboard_project_filter(filter: Option<String>) {
     state().update(|s| {
         s.dashboard_project_filter = filter;
     });
 }
 
-pub(crate) fn dashboard_filter_options() -> Vec<String> {
+pub fn dashboard_filter_options() -> Vec<String> {
     state().with(|s| {
         let tracked: &[Project] = if s.using_sample_projects {
             &[]
@@ -5588,11 +5612,11 @@ pub(crate) fn dashboard_filter_options() -> Vec<String> {
     })
 }
 
-pub(crate) fn tokens_show_table() -> bool {
+pub fn tokens_show_table() -> bool {
     state().with(|s| s.tokens_show_table)
 }
 
-pub(crate) fn toggle_tokens_show_table() {
+pub fn toggle_tokens_show_table() {
     state().update(|s| {
         s.tokens_show_table = !s.tokens_show_table;
     });
@@ -5600,19 +5624,19 @@ pub(crate) fn toggle_tokens_show_table() {
 
 // --- Inbox & Machines -------------------------------------------------------------------
 
-pub(crate) fn inbox_state() -> InboxState {
+pub fn inbox_state() -> InboxState {
     state().with(|s| s.inbox.clone())
 }
 
-pub(crate) fn pending_inbox_count() -> usize {
+pub fn pending_inbox_count() -> usize {
     state().with(|s| s.inbox.pending_count())
 }
 
-pub(crate) fn inbox_filter() -> InboxFilter {
+pub fn inbox_filter() -> InboxFilter {
     state().with(|s| s.inbox_filter)
 }
 
-pub(crate) fn set_inbox_filter(filter: InboxFilter) {
+pub fn set_inbox_filter(filter: InboxFilter) {
     state().update(|s| {
         s.inbox_filter = filter;
         s.inbox_waiting_rules_open = false;
@@ -5620,11 +5644,11 @@ pub(crate) fn set_inbox_filter(filter: InboxFilter) {
     });
 }
 
-pub(crate) fn inbox_selected_id() -> Option<String> {
+pub fn inbox_selected_id() -> Option<String> {
     state().with(|s| s.inbox_selected_id.clone())
 }
 
-pub(crate) fn inbox_selected_pending() -> Option<AttentionRequest> {
+pub fn inbox_selected_pending() -> Option<AttentionRequest> {
     state().with(|s| {
         s.inbox_selected_id
             .as_deref()
@@ -5633,7 +5657,7 @@ pub(crate) fn inbox_selected_pending() -> Option<AttentionRequest> {
     })
 }
 
-pub(crate) fn inbox_selected_answered() -> Option<AnsweredInboxItem> {
+pub fn inbox_selected_answered() -> Option<AnsweredInboxItem> {
     state().with(|s| {
         s.inbox_selected_id
             .as_deref()
@@ -5642,7 +5666,7 @@ pub(crate) fn inbox_selected_answered() -> Option<AnsweredInboxItem> {
     })
 }
 
-pub(crate) fn inbox_select_request(id: &str) {
+pub fn inbox_select_request(id: &str) {
     let target = id.to_owned();
     state().update(|s| {
         s.inbox_selected_id = Some(target);
@@ -5659,7 +5683,7 @@ pub(crate) fn inbox_select_request(id: &str) {
     });
 }
 
-pub(crate) fn inbox_select_relative(delta: isize) {
+pub fn inbox_select_relative(delta: isize) {
     state().update(|s| {
         let items = s.inbox.pending_oldest_first(s.inbox_filter);
         if items.is_empty() {
@@ -5688,31 +5712,31 @@ pub(crate) fn inbox_select_relative(delta: isize) {
     });
 }
 
-pub(crate) fn inbox_answered_expanded() -> bool {
+pub fn inbox_answered_expanded() -> bool {
     state().with(|s| s.inbox_answered_expanded)
 }
 
-pub(crate) fn toggle_inbox_answered_expanded() {
+pub fn toggle_inbox_answered_expanded() {
     state().update(|s| {
         s.inbox_answered_expanded = !s.inbox_answered_expanded;
     });
 }
 
-pub(crate) fn inbox_waiting_rules_open() -> bool {
+pub fn inbox_waiting_rules_open() -> bool {
     state().with(|s| s.inbox_waiting_rules_open)
 }
 
-pub(crate) fn toggle_inbox_waiting_rules() {
+pub fn toggle_inbox_waiting_rules() {
     state().update(|s| {
         s.inbox_waiting_rules_open = !s.inbox_waiting_rules_open;
     });
 }
 
-pub(crate) fn inbox_editing_command() -> bool {
+pub fn inbox_editing_command() -> bool {
     state().with(|s| s.inbox_editing_command)
 }
 
-pub(crate) fn toggle_inbox_editing_command() {
+pub fn toggle_inbox_editing_command() {
     state().update(|s| {
         if let Some(req) = s
             .inbox_selected_id
@@ -5728,61 +5752,61 @@ pub(crate) fn toggle_inbox_editing_command() {
     });
 }
 
-pub(crate) fn inbox_edited_command() -> String {
+pub fn inbox_edited_command() -> String {
     state().with(|s| s.inbox_edited_command.clone())
 }
 
-pub(crate) fn set_inbox_edited_command(cmd: String) {
+pub fn set_inbox_edited_command(cmd: String) {
     state().update(|s| {
         s.inbox_edited_command = cmd;
     });
 }
 
-pub(crate) fn inbox_always_allow_open() -> bool {
+pub fn inbox_always_allow_open() -> bool {
     state().with(|s| s.inbox_always_allow_open)
 }
 
-pub(crate) fn toggle_inbox_always_allow_open() {
+pub fn toggle_inbox_always_allow_open() {
     state().update(|s| {
         s.inbox_always_allow_open = !s.inbox_always_allow_open;
     });
 }
 
-pub(crate) fn inbox_always_allow_pattern() -> String {
+pub fn inbox_always_allow_pattern() -> String {
     state().with(|s| s.inbox_always_allow_pattern.clone())
 }
 
-pub(crate) fn set_inbox_always_allow_pattern(pattern: String) {
+pub fn set_inbox_always_allow_pattern(pattern: String) {
     state().update(|s| {
         s.inbox_always_allow_pattern = pattern;
     });
 }
 
-pub(crate) fn inbox_note_draft() -> String {
+pub fn inbox_note_draft() -> String {
     state().with(|s| s.inbox_note_draft.clone())
 }
 
-pub(crate) fn set_inbox_note_draft(note: String) {
+pub fn set_inbox_note_draft(note: String) {
     state().update(|s| {
         s.inbox_note_draft = note;
     });
 }
 
-pub(crate) fn inbox_question_choice() -> Option<String> {
+pub fn inbox_question_choice() -> Option<String> {
     state().with(|s| s.inbox_question_choice.clone())
 }
 
-pub(crate) fn set_inbox_question_choice(choice: String) {
+pub fn set_inbox_question_choice(choice: String) {
     state().update(|s| {
         s.inbox_question_choice = Some(choice);
     });
 }
 
-pub(crate) fn inbox_feedback() -> Option<String> {
+pub fn inbox_feedback() -> Option<String> {
     state().with(|s| s.inbox_feedback.clone())
 }
 
-pub(crate) fn inbox_quick_allow(id: &str) {
+pub fn inbox_quick_allow(id: &str) {
     let target = id.to_owned();
     let mut closed_id = None;
     state().update(|s| {
@@ -5798,7 +5822,7 @@ pub(crate) fn inbox_quick_allow(id: &str) {
     }
 }
 
-pub(crate) fn inbox_quick_deny(id: &str) {
+pub fn inbox_quick_deny(id: &str) {
     let target = id.to_owned();
     let mut closed_id = None;
     state().update(|s| {
@@ -5814,7 +5838,7 @@ pub(crate) fn inbox_quick_deny(id: &str) {
     }
 }
 
-pub(crate) fn inbox_allow_once() {
+pub fn inbox_allow_once() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5838,7 +5862,7 @@ pub(crate) fn inbox_allow_once() {
     }
 }
 
-pub(crate) fn inbox_allow_for_run() {
+pub fn inbox_allow_for_run() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5862,7 +5886,7 @@ pub(crate) fn inbox_allow_for_run() {
     }
 }
 
-pub(crate) fn inbox_always_allow(scope: AlwaysAllowScope) {
+pub fn inbox_always_allow(scope: AlwaysAllowScope) {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5881,7 +5905,7 @@ pub(crate) fn inbox_always_allow(scope: AlwaysAllowScope) {
     }
 }
 
-pub(crate) fn inbox_deny_selected() {
+pub fn inbox_deny_selected() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5900,7 +5924,7 @@ pub(crate) fn inbox_deny_selected() {
     }
 }
 
-pub(crate) fn inbox_answer_question() {
+pub fn inbox_answer_question() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5923,7 +5947,7 @@ pub(crate) fn inbox_answer_question() {
     }
 }
 
-pub(crate) fn inbox_let_agent_decide() {
+pub fn inbox_let_agent_decide() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -5941,7 +5965,7 @@ pub(crate) fn inbox_let_agent_decide() {
     }
 }
 
-pub(crate) fn inbox_approve_review() {
+pub fn inbox_approve_review() {
     let mut closed_id = None;
     let mut note_for_runner = None;
     state().update(|s| {
@@ -5968,7 +5992,7 @@ pub(crate) fn inbox_approve_review() {
     }
 }
 
-pub(crate) fn inbox_request_changes() {
+pub fn inbox_request_changes() {
     let mut closed_id = None;
     let mut note_for_runner = None;
     state().update(|s| {
@@ -5995,7 +6019,7 @@ pub(crate) fn inbox_request_changes() {
     }
 }
 
-pub(crate) fn inbox_grant_more_attempts() {
+pub fn inbox_grant_more_attempts() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -6020,7 +6044,7 @@ pub(crate) fn inbox_grant_more_attempts() {
     }
 }
 
-pub(crate) fn inbox_stop_exhausted_run() {
+pub fn inbox_stop_exhausted_run() {
     let mut closed_id = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -6039,7 +6063,7 @@ pub(crate) fn inbox_stop_exhausted_run() {
     }
 }
 
-pub(crate) fn inbox_primary_answer() {
+pub fn inbox_primary_answer() {
     let Some(req) = inbox_selected_pending() else {
         return;
     };
@@ -6052,7 +6076,7 @@ pub(crate) fn inbox_primary_answer() {
     }
 }
 
-pub(crate) fn inbox_secondary_deny_shortcut() {
+pub fn inbox_secondary_deny_shortcut() {
     let Some(req) = inbox_selected_pending() else {
         return;
     };
@@ -6065,7 +6089,7 @@ pub(crate) fn inbox_secondary_deny_shortcut() {
     }
 }
 
-pub(crate) fn inbox_open_selected_run() {
+pub fn inbox_open_selected_run() {
     let target = state().with(|s| {
         let id = s.inbox_selected_id.as_deref()?;
         if let Some(req) = s.inbox.pending_by_id(id) {
@@ -6097,7 +6121,7 @@ pub(crate) fn inbox_open_selected_run() {
     main_window().focus();
 }
 
-pub(crate) fn toggle_pause_all_agents() {
+pub fn toggle_pause_all_agents() {
     state().update(|s| {
         let paused = s.inbox.toggle_pause_all_agents();
         log::info!(target: "bruk::inbox", "inbox.pause_all_agents paused={paused}");
@@ -6111,7 +6135,7 @@ pub(crate) fn toggle_pause_all_agents() {
     });
 }
 
-pub(crate) fn toggle_snooze_notifications() {
+pub fn toggle_snooze_notifications() {
     state().update(|s| {
         let snoozed = s.inbox.toggle_snooze_notifications();
         log::info!(target: "bruk::inbox", "inbox.snooze_notifications mins={snoozed:?}");
@@ -6125,15 +6149,15 @@ pub(crate) fn toggle_snooze_notifications() {
     });
 }
 
-pub(crate) fn machines_fleet() -> MachinesFleet {
+pub fn machines_fleet() -> MachinesFleet {
     state().with(|s| s.machines_fleet.clone())
 }
 
-pub(crate) fn machines() -> Vec<MachineRecord> {
+pub fn machines() -> Vec<MachineRecord> {
     state().with(|s| s.machines_fleet.machines.clone())
 }
 
-pub(crate) fn selected_machine_id() -> Option<u64> {
+pub fn selected_machine_id() -> Option<u64> {
     state().with(|s| {
         s.selected_machine_id
             .filter(|id| s.machines_fleet.machine(*id).is_some())
@@ -6141,7 +6165,7 @@ pub(crate) fn selected_machine_id() -> Option<u64> {
     })
 }
 
-pub(crate) fn selected_machine() -> Option<MachineRecord> {
+pub fn selected_machine() -> Option<MachineRecord> {
     state().with(|s| {
         let id = s
             .selected_machine_id
@@ -6151,7 +6175,7 @@ pub(crate) fn selected_machine() -> Option<MachineRecord> {
     })
 }
 
-pub(crate) fn select_machine(id: u64) {
+pub fn select_machine(id: u64) {
     state().update(|s| {
         if s.machines_fleet.machine(id).is_some() {
             s.selected_machine_id = Some(id);
@@ -6162,7 +6186,7 @@ pub(crate) fn select_machine(id: u64) {
     });
 }
 
-pub(crate) fn disconnect_machine(id: u64) {
+pub fn disconnect_machine(id: u64) {
     state().update(|s| match s.machines_fleet.disconnect_machine(id) {
         Ok(machine) => {
             s.machines_changes_expanded = false;
@@ -6177,7 +6201,7 @@ pub(crate) fn disconnect_machine(id: u64) {
     });
 }
 
-pub(crate) fn reconnect_machine(id: u64) {
+pub fn reconnect_machine(id: u64) {
     state().update(|s| match s.machines_fleet.reconnect_machine(id) {
         Ok(machine) => {
             s.status_message = Some(format!("Reconnected machine '{}'", machine.name));
@@ -6188,7 +6212,7 @@ pub(crate) fn reconnect_machine(id: u64) {
     });
 }
 
-pub(crate) fn open_machine_in_terminal(id: u64) {
+pub fn open_machine_in_terminal(id: u64) {
     state().update(|s| {
         if let Some(machine) = s.machines_fleet.machine(id) {
             if machine.is_local {
@@ -6203,7 +6227,7 @@ pub(crate) fn open_machine_in_terminal(id: u64) {
     });
 }
 
-pub(crate) fn update_machine_core(id: u64) {
+pub fn update_machine_core(id: u64) {
     state().update(|s| match s.machines_fleet.update_core(id) {
         Ok(machine) => {
             s.status_message = Some(format!(
@@ -6217,7 +6241,7 @@ pub(crate) fn update_machine_core(id: u64) {
     });
 }
 
-pub(crate) fn update_all_suggested_cores() {
+pub fn update_all_suggested_cores() {
     state().update(|s| {
         let updated = s.machines_fleet.update_all_suggested_cores();
         s.machines_update_cores_open = false;
@@ -6237,7 +6261,7 @@ pub(crate) fn update_all_suggested_cores() {
     });
 }
 
-pub(crate) fn check_bruk_update() {
+pub fn check_bruk_update() {
     state().update(|s| {
         s.status_message = Some(
             "Bruk 1.0.0 (data schema 8) is available in Software Update — install to resume syncing gpu-01."
@@ -6246,7 +6270,7 @@ pub(crate) fn check_bruk_update() {
     });
 }
 
-pub(crate) fn add_machine(draft: NewMachineDraft) -> Result<(), String> {
+pub fn add_machine(draft: NewMachineDraft) -> Result<(), String> {
     let mut outcome = Ok(());
     state().update(|s| match s.machines_fleet.add_machine(draft) {
         Ok(added) => {
@@ -6267,7 +6291,7 @@ pub(crate) fn add_machine(draft: NewMachineDraft) -> Result<(), String> {
     outcome
 }
 
-pub(crate) fn toggle_machine_project_access(id: u64, project_name: &str) {
+pub fn toggle_machine_project_access(id: u64, project_name: &str) {
     let project = project_name.to_owned();
     state().update(
         |s| match s.machines_fleet.toggle_project_access(id, &project) {
@@ -6290,7 +6314,7 @@ pub(crate) fn toggle_machine_project_access(id: u64, project_name: &str) {
     );
 }
 
-pub(crate) fn remove_machine(id: u64) {
+pub fn remove_machine(id: u64) {
     state().update(|s| match s.machines_fleet.remove_machine(id) {
         Ok(removed) => {
             if s.selected_machine_id == Some(id) {
@@ -6306,21 +6330,21 @@ pub(crate) fn remove_machine(id: u64) {
     });
 }
 
-pub(crate) fn machines_changes_expanded() -> bool {
+pub fn machines_changes_expanded() -> bool {
     state().with(|s| s.machines_changes_expanded)
 }
 
-pub(crate) fn toggle_machines_changes_expanded() {
+pub fn toggle_machines_changes_expanded() {
     state().update(|s| {
         s.machines_changes_expanded = !s.machines_changes_expanded;
     });
 }
 
-pub(crate) fn machines_update_cores_open() -> bool {
+pub fn machines_update_cores_open() -> bool {
     state().with(|s| s.machines_update_cores_open)
 }
 
-pub(crate) fn set_machines_update_cores_open(open: bool) {
+pub fn set_machines_update_cores_open(open: bool) {
     state().update(|s| {
         s.machines_update_cores_open = open;
         if open {
@@ -6329,11 +6353,11 @@ pub(crate) fn set_machines_update_cores_open(open: bool) {
     });
 }
 
-pub(crate) fn machines_add_drawer_open() -> bool {
+pub fn machines_add_drawer_open() -> bool {
     state().with(|s| s.machines_add_drawer_open)
 }
 
-pub(crate) fn set_machines_add_drawer_open(open: bool) {
+pub fn set_machines_add_drawer_open(open: bool) {
     state().update(|s| {
         s.machines_add_drawer_open = open;
         if open {
@@ -6342,17 +6366,17 @@ pub(crate) fn set_machines_add_drawer_open(open: bool) {
     });
 }
 
-pub(crate) fn machines_settings_open() -> bool {
+pub fn machines_settings_open() -> bool {
     state().with(|s| s.machines_settings_open)
 }
 
-pub(crate) fn toggle_machines_settings_open() {
+pub fn toggle_machines_settings_open() {
     state().update(|s| {
         s.machines_settings_open = !s.machines_settings_open;
     });
 }
 
-pub(crate) fn open_machine_session(project_name: &str, workflow_name: &str, run_number: u32) {
+pub fn open_machine_session(project_name: &str, workflow_name: &str, run_number: u32) {
     let project = project_name.to_owned();
     let workflow = workflow_name.to_owned();
     state().update(|s| {
@@ -6380,33 +6404,33 @@ pub(crate) fn open_machine_session(project_name: &str, workflow_name: &str, run_
 
 // --- Workflows & Runs -------------------------------------------------------------------
 
-pub(crate) fn workflow_ids() -> Vec<WorkflowId> {
+pub fn workflow_ids() -> Vec<WorkflowId> {
     state().with(|s| s.factory.workflows().iter().map(|w| w.id).collect())
 }
 
-pub(crate) fn workflow_by_id(id: WorkflowId) -> Option<Workflow> {
+pub fn workflow_by_id(id: WorkflowId) -> Option<Workflow> {
     state().with(|s| s.factory.workflow(id).cloned())
 }
 
-pub(crate) fn selected_workflow_id() -> Option<WorkflowId> {
+pub fn selected_workflow_id() -> Option<WorkflowId> {
     state().with(|s| s.selected_workflow)
 }
 
-pub(crate) fn selected_workflow() -> Option<Workflow> {
+pub fn selected_workflow() -> Option<Workflow> {
     state().with(|s| {
         s.selected_workflow
             .and_then(|id| s.factory.workflow(id).cloned())
     })
 }
 
-pub(crate) fn select_workflow(id: WorkflowId) {
+pub fn select_workflow(id: WorkflowId) {
     state().update(|s| {
         s.selected_workflow = Some(id);
         s.status_message = None;
     });
 }
 
-pub(crate) fn run_ids_for_selected_project() -> Vec<RunId> {
+pub fn run_ids_for_selected_project() -> Vec<RunId> {
     state().with(|s| {
         let Some(project_id) = s.selected_project else {
             return Vec::new();
@@ -6419,25 +6443,25 @@ pub(crate) fn run_ids_for_selected_project() -> Vec<RunId> {
     })
 }
 
-pub(crate) fn run_by_id(id: RunId) -> Option<WorkflowRun> {
+pub fn run_by_id(id: RunId) -> Option<WorkflowRun> {
     state().with(|s| s.factory.run(id).cloned())
 }
 
-pub(crate) fn selected_run_id() -> Option<RunId> {
+pub fn selected_run_id() -> Option<RunId> {
     state().with(|s| s.selected_run)
 }
 
-pub(crate) fn selected_run() -> Option<WorkflowRun> {
+pub fn selected_run() -> Option<WorkflowRun> {
     state().with(|s| s.selected_run.and_then(|id| s.factory.run(id).cloned()))
 }
 
-pub(crate) fn select_run(id: RunId) {
+pub fn select_run(id: RunId) {
     state().update(|s| {
         s.selected_run = Some(id);
     });
 }
 
-pub(crate) fn launch_run(task_prompt: &str) -> bool {
+pub fn launch_run(task_prompt: &str) -> bool {
     let mut launched = false;
     state().update(|s| {
         let (Some(project_id), Some(workflow_id)) = (s.selected_project, s.selected_workflow)
@@ -6460,7 +6484,7 @@ pub(crate) fn launch_run(task_prompt: &str) -> bool {
     launched
 }
 
-pub(crate) fn advance_selected_run() {
+pub fn advance_selected_run() {
     state().update(|s| {
         let Some(run_id) = s.selected_run else {
             return;
@@ -6476,7 +6500,7 @@ pub(crate) fn advance_selected_run() {
     });
 }
 
-pub(crate) fn approve_selected_run_step() {
+pub fn approve_selected_run_step() {
     let is_waiting = state().with_untracked(|s| {
         s.selected_run
             .and_then(|id| s.factory.run(id))
@@ -6487,7 +6511,7 @@ pub(crate) fn approve_selected_run_step() {
     }
 }
 
-pub(crate) fn cancel_selected_run() {
+pub fn cancel_selected_run() {
     state().update(|s| {
         let Some(run_id) = s.selected_run else {
             return;
@@ -6503,11 +6527,11 @@ pub(crate) fn cancel_selected_run() {
     });
 }
 
-pub(crate) fn status_message() -> Option<String> {
+pub fn status_message() -> Option<String> {
     state().with(|s| s.status_message.clone())
 }
 
-pub(crate) fn set_status_message(message: impl Into<String>) {
+pub fn set_status_message(message: impl Into<String>) {
     let message = message.into();
     state().update(|s| {
         s.status_message = Some(message);
@@ -6592,29 +6616,29 @@ fn thread_channel<T>() -> (ThreadChannelTx<T>, ThreadChannelRx<T>) {
     (ThreadChannelTx(shared.clone()), ThreadChannelRx(shared))
 }
 
-pub(crate) fn current_app_version() -> String {
-    crate::updater::current_version()
+pub fn current_app_version() -> String {
+    factory_updater::current_version()
 }
 
-pub(crate) fn updater_state() -> crate::updater::UpdaterState {
+pub fn updater_state() -> factory_updater::UpdaterState {
     state().with(|s| s.updater_state.clone())
 }
 
-pub(crate) fn updater_banner_visible() -> bool {
+pub fn updater_banner_visible() -> bool {
     state().with(|s| {
         !s.updater_banner_dismissed
             && matches!(
                 s.updater_state,
-                crate::updater::UpdaterState::Available(_)
-                    | crate::updater::UpdaterState::Downloading { .. }
-                    | crate::updater::UpdaterState::ReadyToRestart { .. }
-                    | crate::updater::UpdaterState::Installing { .. }
-                    | crate::updater::UpdaterState::StagedOnQuit { .. }
+                factory_updater::UpdaterState::Available(_)
+                    | factory_updater::UpdaterState::Downloading { .. }
+                    | factory_updater::UpdaterState::ReadyToRestart { .. }
+                    | factory_updater::UpdaterState::Installing { .. }
+                    | factory_updater::UpdaterState::StagedOnQuit { .. }
             )
     })
 }
 
-pub(crate) fn dismiss_updater_banner() {
+pub fn dismiss_updater_banner() {
     state().update(|s| {
         s.updater_banner_dismissed = true;
     });
@@ -6626,14 +6650,14 @@ fn maybe_check_for_updates_on_launch() {
     let should_check = state().with_untracked(|s| {
         !s.demo_mode && s.preferences.general.auto_check_updates && !s.updater_state.is_busy()
     });
-    if !should_check || !crate::updater::has_packaged_updater_config() {
+    if !should_check || !factory_updater::has_packaged_updater_config() {
         return;
     }
     run_update_check(true);
 }
 
 /// Triggers an explicit user-initiated check for updates.
-pub(crate) fn check_for_updates() {
+pub fn check_for_updates() {
     run_update_check(false);
 }
 
@@ -6646,7 +6670,7 @@ fn run_update_check(silent: bool) {
             }
             ok = true;
             if !silent {
-                s.updater_state = crate::updater::UpdaterState::Checking;
+                s.updater_state = factory_updater::UpdaterState::Checking;
                 s.updater_banner_dismissed = false;
             }
         });
@@ -6658,27 +6682,27 @@ fn run_update_check(silent: bool) {
 
     Owner::detached().run(|| {
         spawn(async move {
-            let outcome = spawn_blocking_task(crate::updater::check_for_update).await;
+            let outcome = spawn_blocking_task(factory_updater::check_for_update).await;
             state().update(|s| match outcome {
-                Ok(crate::updater::CheckOutcome::Available(update)) => {
-                    s.updater_state = crate::updater::UpdaterState::Available(update);
+                Ok(factory_updater::CheckOutcome::Available(update)) => {
+                    s.updater_state = factory_updater::UpdaterState::Available(update);
                     s.updater_banner_dismissed = false;
                 }
-                Ok(crate::updater::CheckOutcome::UpToDate { current_version }) => {
+                Ok(factory_updater::CheckOutcome::UpToDate { current_version }) => {
                     if !silent {
                         s.updater_state =
-                            crate::updater::UpdaterState::UpToDate { current_version };
+                            factory_updater::UpdaterState::UpToDate { current_version };
                     }
                 }
-                Ok(crate::updater::CheckOutcome::Unavailable(reason)) => {
+                Ok(factory_updater::CheckOutcome::Unavailable(reason)) => {
                     if !silent {
-                        s.updater_state = crate::updater::UpdaterState::Unavailable(reason);
+                        s.updater_state = factory_updater::UpdaterState::Unavailable(reason);
                     }
                 }
                 Err(err) => {
                     log::warn!("updater: check failed: {err}");
                     if !silent {
-                        s.updater_state = crate::updater::UpdaterState::Error(err);
+                        s.updater_state = factory_updater::UpdaterState::Error(err);
                     }
                 }
             });
@@ -6687,15 +6711,15 @@ fn run_update_check(silent: bool) {
 }
 
 /// Downloads and verifies the currently available release archive on a background thread.
-pub(crate) fn download_available_update() {
+pub fn download_available_update() {
     let update = {
         let mut target = None;
         state().update(|s| {
-            if let crate::updater::UpdaterState::Available(avail) = &s.updater_state
+            if let factory_updater::UpdaterState::Available(avail) = &s.updater_state
                 && avail.can_install
             {
                 let cloned = avail.clone();
-                s.updater_state = crate::updater::UpdaterState::Downloading {
+                s.updater_state = factory_updater::UpdaterState::Downloading {
                     update: cloned.clone(),
                     received: 0,
                     total: cloned.size,
@@ -6719,7 +6743,7 @@ pub(crate) fn download_available_update() {
     let worker_update = update.clone();
     std::thread::spawn(move || {
         let progress_tx = tx.clone();
-        let result = crate::updater::download_update(&worker_update, move |received, total| {
+        let result = factory_updater::download_update(&worker_update, move |received, total| {
             progress_tx.send(DownloadEvent::Progress { received, total });
         });
         tx.send(DownloadEvent::Finished(result));
@@ -6732,7 +6756,7 @@ pub(crate) fn download_available_update() {
                 match event {
                     DownloadEvent::Progress { received, total } => {
                         state().update(|s| {
-                            if let crate::updater::UpdaterState::Downloading {
+                            if let factory_updater::UpdaterState::Downloading {
                                 received: cur_received,
                                 total: cur_total,
                                 ..
@@ -6747,7 +6771,7 @@ pub(crate) fn download_available_update() {
                     }
                     DownloadEvent::Finished(Ok(archive_path)) => {
                         state().update(|s| {
-                            s.updater_state = crate::updater::UpdaterState::ReadyToRestart {
+                            s.updater_state = factory_updater::UpdaterState::ReadyToRestart {
                                 version: update.version.clone(),
                                 notes: update.notes.clone(),
                                 archive_path,
@@ -6758,7 +6782,7 @@ pub(crate) fn download_available_update() {
                     DownloadEvent::Finished(Err(err)) => {
                         log::error!("updater: download failed: {err}");
                         state().update(|s| {
-                            s.updater_state = crate::updater::UpdaterState::Error(err);
+                            s.updater_state = factory_updater::UpdaterState::Error(err);
                         });
                     }
                 }
@@ -6768,11 +6792,11 @@ pub(crate) fn download_available_update() {
 }
 
 /// Installs a downloaded update archive over the running `Bruk.app` and restarts the app.
-pub(crate) fn install_and_restart_update() {
+pub fn install_and_restart_update() {
     let pending = {
         let mut target = None;
         state().update(|s| {
-            if let crate::updater::UpdaterState::ReadyToRestart {
+            if let factory_updater::UpdaterState::ReadyToRestart {
                 version,
                 archive_path,
                 ..
@@ -6780,7 +6804,7 @@ pub(crate) fn install_and_restart_update() {
             {
                 let version = version.clone();
                 let archive_path = archive_path.clone();
-                s.updater_state = crate::updater::UpdaterState::Installing {
+                s.updater_state = factory_updater::UpdaterState::Installing {
                     version: version.clone(),
                 };
                 target = Some((version, archive_path));
@@ -6795,7 +6819,7 @@ pub(crate) fn install_and_restart_update() {
     Owner::detached().run(|| {
         spawn(async move {
             let result = spawn_blocking_task(move || {
-                crate::updater::install_downloaded_update(&archive_path)
+                factory_updater::install_downloaded_update(&archive_path)
             })
             .await;
             match result {
@@ -6806,7 +6830,7 @@ pub(crate) fn install_and_restart_update() {
                 Err(err) => {
                     log::error!("updater: install failed: {err}");
                     state().update(|s| {
-                        s.updater_state = crate::updater::UpdaterState::Error(err);
+                        s.updater_state = factory_updater::UpdaterState::Error(err);
                     });
                 }
             }
@@ -6815,11 +6839,11 @@ pub(crate) fn install_and_restart_update() {
 }
 
 /// Unpacks and verifies the downloaded update now so it swaps in automatically when Bruk quits.
-pub(crate) fn stage_update_for_quit() {
+pub fn stage_update_for_quit() {
     let pending = {
         let mut target = None;
         state().update(|s| {
-            if let crate::updater::UpdaterState::ReadyToRestart {
+            if let factory_updater::UpdaterState::ReadyToRestart {
                 version,
                 archive_path,
                 ..
@@ -6827,7 +6851,7 @@ pub(crate) fn stage_update_for_quit() {
             {
                 let version = version.clone();
                 let archive_path = archive_path.clone();
-                s.updater_state = crate::updater::UpdaterState::Installing {
+                s.updater_state = factory_updater::UpdaterState::Installing {
                     version: version.clone(),
                 };
                 target = Some((version, archive_path));
@@ -6843,16 +6867,16 @@ pub(crate) fn stage_update_for_quit() {
         spawn(async move {
             let v = version.clone();
             let result = spawn_blocking_task(move || {
-                crate::updater::stage_downloaded_update_for_quit(v, archive_path)
+                factory_updater::stage_downloaded_update_for_quit(v, archive_path)
             })
             .await;
             state().update(|s| match result {
                 Ok(()) => {
-                    s.updater_state = crate::updater::UpdaterState::StagedOnQuit { version };
+                    s.updater_state = factory_updater::UpdaterState::StagedOnQuit { version };
                 }
                 Err(err) => {
                     log::error!("updater: stage for quit failed: {err}");
-                    s.updater_state = crate::updater::UpdaterState::Error(err);
+                    s.updater_state = factory_updater::UpdaterState::Error(err);
                 }
             });
         });
@@ -6861,11 +6885,11 @@ pub(crate) fn stage_update_for_quit() {
 
 /// Restarts the app immediately when an update has already been staged for quit; the `on_app_quit`
 /// hook swaps the bundle in place before the restarted process launches.
-pub(crate) fn restart_for_staged_update() {
+pub fn restart_for_staged_update() {
     let is_staged = state().with_untracked(|s| {
         matches!(
             s.updater_state,
-            crate::updater::UpdaterState::StagedOnQuit { .. }
+            factory_updater::UpdaterState::StagedOnQuit { .. }
         )
     });
     if is_staged {
@@ -6875,9 +6899,9 @@ pub(crate) fn restart_for_staged_update() {
 
 /// Opens the release download URL in the user's default browser when in-place replacement is
 /// unavailable (e.g. App Translocation or read-only install directory).
-pub(crate) fn open_update_download_url() {
+pub fn open_update_download_url() {
     let url = state().with_untracked(|s| match &s.updater_state {
-        crate::updater::UpdaterState::Available(update) => Some(update.url.clone()),
+        factory_updater::UpdaterState::Available(update) => Some(update.url.clone()),
         _ => None,
     });
     if let Some(url) = url {
@@ -6892,21 +6916,21 @@ pub(crate) fn open_update_download_url() {
 
 // --- Preferences Window & Settings ------------------------------------------------------
 
-pub(crate) fn preferences_open() -> bool {
+pub fn preferences_open() -> bool {
     state().with(|s| s.preferences_open)
 }
 
-pub(crate) fn preferences_focused() -> bool {
+pub fn preferences_focused() -> bool {
     state().with(|s| s.preferences_focused)
 }
 
-pub(crate) fn set_preferences_focused(focused: bool) {
+pub fn set_preferences_focused(focused: bool) {
     state().update(|s| {
         s.preferences_focused = focused;
     });
 }
 
-pub(crate) fn open_preferences() {
+pub fn open_preferences() {
     state().update(|s| {
         s.preferences_open = true;
         s.preferences_focused = true;
@@ -6914,7 +6938,7 @@ pub(crate) fn open_preferences() {
     });
 }
 
-pub(crate) fn open_preferences_tab(tab: PreferencesTab) {
+pub fn open_preferences_tab(tab: PreferencesTab) {
     state().update(|s| {
         s.preferences_tab = tab;
         s.preferences_open = true;
@@ -6924,7 +6948,7 @@ pub(crate) fn open_preferences_tab(tab: PreferencesTab) {
     });
 }
 
-pub(crate) fn close_preferences() {
+pub fn close_preferences() {
     state().update(|s| {
         s.preferences_open = false;
         s.preferences_focused = false;
@@ -6933,11 +6957,11 @@ pub(crate) fn close_preferences() {
     });
 }
 
-pub(crate) fn preferences_tab() -> PreferencesTab {
+pub fn preferences_tab() -> PreferencesTab {
     state().with(|s| s.preferences_tab)
 }
 
-pub(crate) fn set_preferences_tab(tab: PreferencesTab) {
+pub fn set_preferences_tab(tab: PreferencesTab) {
     state().update(|s| {
         s.preferences_tab = tab;
         s.preferences_error = None;
@@ -6945,15 +6969,15 @@ pub(crate) fn set_preferences_tab(tab: PreferencesTab) {
     });
 }
 
-pub(crate) fn preferences() -> AppPreferences {
+pub fn preferences() -> AppPreferences {
     state().with(|s| s.preferences.clone())
 }
 
-pub(crate) fn selected_provider_id() -> String {
+pub fn selected_provider_id() -> String {
     state().with(|s| s.selected_provider_id.clone())
 }
 
-pub(crate) fn select_provider(id: String) {
+pub fn select_provider(id: String) {
     state().update(|s| {
         s.selected_provider_id = id;
         s.preferences_error = None;
@@ -6961,22 +6985,22 @@ pub(crate) fn select_provider(id: String) {
     });
 }
 
-pub(crate) fn preferences_error() -> Option<String> {
+pub fn preferences_error() -> Option<String> {
     state().with(|s| s.preferences_error.clone())
 }
 
-pub(crate) fn preferences_feedback() -> Option<String> {
+pub fn preferences_feedback() -> Option<String> {
     state().with(|s| s.preferences_feedback.clone())
 }
 
-pub(crate) fn clear_preferences_messages() {
+pub fn clear_preferences_messages() {
     state().update(|s| {
         s.preferences_error = None;
         s.preferences_feedback = None;
     });
 }
 
-pub(crate) fn test_selected_provider() {
+pub fn test_selected_provider() {
     let mut should_refresh_claude = false;
     let mut should_refresh_codex = false;
     let mut should_refresh_antigravity = false;
@@ -7115,7 +7139,7 @@ fn antigravity_probe_feedback(s: &mut AppState, probe: &AntigravityCliProbe, ver
     }
 }
 
-pub(crate) fn add_openrouter_key(
+pub fn add_openrouter_key(
     name: &str,
     raw_api_key: &str,
     monthly_cap: &str,
@@ -7182,7 +7206,7 @@ pub(crate) fn add_openrouter_key(
     added
 }
 
-pub(crate) fn replace_selected_openrouter_key(raw_api_key: &str) -> bool {
+pub fn replace_selected_openrouter_key(raw_api_key: &str) -> bool {
     let mut updated = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
@@ -7245,7 +7269,7 @@ pub(crate) fn replace_selected_openrouter_key(raw_api_key: &str) -> bool {
     updated
 }
 
-pub(crate) fn update_selected_openrouter_cap(monthly_cap_input: &str) -> bool {
+pub fn update_selected_openrouter_cap(monthly_cap_input: &str) -> bool {
     let mut updated = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
@@ -7264,7 +7288,7 @@ pub(crate) fn update_selected_openrouter_cap(monthly_cap_input: &str) -> bool {
     updated
 }
 
-pub(crate) fn update_selected_provider_model(model: &str) -> bool {
+pub fn update_selected_provider_model(model: &str) -> bool {
     let mut updated = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
@@ -7283,7 +7307,7 @@ pub(crate) fn update_selected_provider_model(model: &str) -> bool {
     updated
 }
 
-pub(crate) fn make_selected_openrouter_default() {
+pub fn make_selected_openrouter_default() {
     state().update(|s| {
         let id = s.selected_provider_id.clone();
         match s.preferences.make_default_openrouter_key(&id) {
@@ -7299,7 +7323,7 @@ pub(crate) fn make_selected_openrouter_default() {
     });
 }
 
-pub(crate) fn rename_selected_openrouter_key(new_name: &str) -> bool {
+pub fn rename_selected_openrouter_key(new_name: &str) -> bool {
     let mut renamed = false;
     state().update(|s| {
         let id = s.selected_provider_id.clone();
@@ -7331,7 +7355,7 @@ pub(crate) fn rename_selected_openrouter_key(new_name: &str) -> bool {
     renamed
 }
 
-pub(crate) fn remove_selected_openrouter_key() {
+pub fn remove_selected_openrouter_key() {
     state().update(|s| {
         let id = s.selected_provider_id.clone();
         let linked_secret_id = s
@@ -7359,7 +7383,7 @@ pub(crate) fn remove_selected_openrouter_key() {
     });
 }
 
-pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
+pub fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
     let mut added = false;
     let mut should_refresh_details = false;
     state().update(
@@ -7387,7 +7411,7 @@ pub(crate) fn add_codex_account(cli_binary: &str, default_model: &str) -> bool {
     added
 }
 
-pub(crate) fn remove_codex_account() {
+pub fn remove_codex_account() {
     state().update(|s| match s.preferences.remove_codex_account() {
         Ok(next_selected) => {
             s.codex_probe_seq.fetch_add(1, Ordering::AcqRel);
@@ -7404,7 +7428,7 @@ pub(crate) fn remove_codex_account() {
     });
 }
 
-pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> bool {
+pub fn add_antigravity_account(cli_binary: &str, default_model: &str) -> bool {
     let mut added = false;
     let mut should_refresh_usage = false;
     state().update(|s| {
@@ -7436,7 +7460,7 @@ pub(crate) fn add_antigravity_account(cli_binary: &str, default_model: &str) -> 
     added
 }
 
-pub(crate) fn remove_antigravity_account() {
+pub fn remove_antigravity_account() {
     state().update(|s| match s.preferences.remove_antigravity_account() {
         Ok(next_selected) => {
             s.antigravity_probe_seq.fetch_add(1, Ordering::AcqRel);
@@ -7453,16 +7477,16 @@ pub(crate) fn remove_antigravity_account() {
     });
 }
 
-pub(crate) fn antigravity_sign_in_in_progress() -> bool {
+pub fn antigravity_sign_in_in_progress() -> bool {
     state().with(|s| s.antigravity_sign_in_in_progress)
 }
 
-pub(crate) fn antigravity_details_loading() -> bool {
+pub fn antigravity_details_loading() -> bool {
     state().with(|s| s.antigravity_details_loading)
 }
 
 /// Lists the signed-in Antigravity account's models and quota on a background thread.
-pub(crate) fn refresh_antigravity_details_async() {
+pub fn refresh_antigravity_details_async() {
     refresh_antigravity_async_inner(false, false);
 }
 
@@ -7504,7 +7528,7 @@ fn refresh_antigravity_async_inner(usage_only: bool, from_boot: bool) {
         } else {
             "boot.async.antigravity_details"
         };
-        let boot_span = crate::boot_log::async_span(phase, from_boot);
+        let boot_span = factory_logging::boot_log::async_span(phase, from_boot);
         Owner::detached().run(|| {
             spawn(async move {
                 let details = spawn_blocking_task(move || {
@@ -7541,7 +7565,7 @@ fn refresh_antigravity_async_inner(usage_only: bool, from_boot: bool) {
 ///
 /// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
 /// entered path could not be resolved to an executable binary.
-pub(crate) fn update_antigravity_cli_path(raw_path: &str) -> bool {
+pub fn update_antigravity_cli_path(raw_path: &str) -> bool {
     let mut updated = false;
     let mut should_refresh_details = false;
     state().update(|s| {
@@ -7596,12 +7620,12 @@ pub(crate) fn update_antigravity_cli_path(raw_path: &str) -> bool {
 }
 
 /// Clears any custom Antigravity CLI binary path and reverts to default `PATH` discovery.
-pub(crate) fn reset_antigravity_cli_path() {
+pub fn reset_antigravity_cli_path() {
     let _ = update_antigravity_cli_path("");
 }
 
 /// Toggles visibility of an Antigravity model family (e.g. `"Flash"`) in the model picker.
-pub(crate) fn toggle_antigravity_model_family(family: &str) {
+pub fn toggle_antigravity_model_family(family: &str) {
     state().update(|s| {
         let now_visible = s.preferences.toggle_antigravity_model_family(family);
         s.preferences_error = None;
@@ -7616,7 +7640,7 @@ pub(crate) fn toggle_antigravity_model_family(family: &str) {
 
 /// Opens Antigravity's Google sign-in on a background thread and refreshes the login state
 /// when it finishes.
-pub(crate) fn sign_in_antigravity() {
+pub fn sign_in_antigravity() {
     let mut binary_to_run = None;
     state().update(|s| {
         if s.demo_mode {
@@ -7694,25 +7718,25 @@ pub(crate) fn sign_in_antigravity() {
     }
 }
 
-pub(crate) fn claude_sign_in_in_progress() -> bool {
+pub fn claude_sign_in_in_progress() -> bool {
     state().with(|s| s.claude_sign_in_in_progress)
 }
 
-pub(crate) fn claude_details_loading() -> bool {
+pub fn claude_details_loading() -> bool {
     state().with(|s| s.claude_details_loading)
 }
 
-pub(crate) fn codex_sign_in_in_progress() -> bool {
+pub fn codex_sign_in_in_progress() -> bool {
     state().with(|s| s.codex_sign_in_in_progress)
 }
 
-pub(crate) fn codex_details_loading() -> bool {
+pub fn codex_details_loading() -> bool {
     state().with(|s| s.codex_details_loading)
 }
 
 /// Fetches the live model catalog and remaining plan usage from the authenticated `codex` CLI
 /// on a background thread without blocking the UI.
-pub(crate) fn refresh_codex_details_async() {
+pub fn refresh_codex_details_async() {
     refresh_codex_details_async_inner(false);
 }
 
@@ -7739,7 +7763,8 @@ fn refresh_codex_details_async_inner(from_boot: bool) {
 
     if let Some(binary_path) = binary_to_query {
         let expected_binary = binary_path.display().to_string();
-        let boot_span = crate::boot_log::async_span("boot.async.codex_details", from_boot);
+        let boot_span =
+            factory_logging::boot_log::async_span("boot.async.codex_details", from_boot);
         Owner::detached().run(|| {
             spawn(async move {
                 let details = spawn_blocking_task(move || fetch_codex_details(&binary_path)).await;
@@ -7765,7 +7790,7 @@ fn refresh_codex_details_async_inner(from_boot: bool) {
 
 /// Fetches the live model catalog and remaining plan usage from the authenticated `claude` CLI
 /// on a background thread without blocking the UI.
-pub(crate) fn refresh_claude_details_async() {
+pub fn refresh_claude_details_async() {
     refresh_claude_details_async_inner(false);
 }
 
@@ -7786,7 +7811,8 @@ fn refresh_claude_details_async_inner(from_boot: bool) {
 
     if let Some(binary_path) = binary_to_query {
         let expected_binary = binary_path.display().to_string();
-        let boot_span = crate::boot_log::async_span("boot.async.claude_details", from_boot);
+        let boot_span =
+            factory_logging::boot_log::async_span("boot.async.claude_details", from_boot);
         Owner::detached().run(|| {
             spawn(async move {
                 let details = spawn_blocking_task(move || fetch_claude_details(&binary_path)).await;
@@ -7812,7 +7838,7 @@ fn refresh_claude_details_async_inner(from_boot: bool) {
 ///
 /// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
 /// entered path could not be resolved to an executable binary.
-pub(crate) fn update_claude_cli_path(raw_path: &str) -> bool {
+pub fn update_claude_cli_path(raw_path: &str) -> bool {
     let mut updated = false;
     let mut should_refresh_details = false;
     state().update(|s| {
@@ -7910,12 +7936,12 @@ pub(crate) fn update_claude_cli_path(raw_path: &str) -> bool {
 }
 
 /// Clears any custom Claude CLI binary path override and reverts to default `PATH` discovery.
-pub(crate) fn reset_claude_cli_path() {
+pub fn reset_claude_cli_path() {
     let _ = update_claude_cli_path("");
 }
 
 /// Toggles visibility of a Claude model family (e.g. `"Fable"`) in the model selection view.
-pub(crate) fn toggle_claude_model_family(family: &str) {
+pub fn toggle_claude_model_family(family: &str) {
     state().update(|s| {
         let now_visible = s.preferences.toggle_claude_model_family(family);
         s.preferences_error = None;
@@ -7929,12 +7955,12 @@ pub(crate) fn toggle_claude_model_family(family: &str) {
 }
 
 /// Returns the persisted custom Claude spawn settings.
-pub(crate) fn claude_spawn_settings() -> ClaudeSpawnSettings {
+pub fn claude_spawn_settings() -> ClaudeSpawnSettings {
     state().with(|s| s.preferences.claude_spawn_settings.clone())
 }
 
 /// Builds a live spawn preview plan for the current Claude binary, default model, and spawn settings.
-pub(crate) fn claude_spawn_preview_plan() -> Result<ClaudeSpawnPlan, String> {
+pub fn claude_spawn_preview_plan() -> Result<ClaudeSpawnPlan, String> {
     state().with(|s| {
         s.preferences
             .build_claude_spawn_plan(&ClaudeSpawnOptions::default())
@@ -7943,7 +7969,7 @@ pub(crate) fn claude_spawn_preview_plan() -> Result<ClaudeSpawnPlan, String> {
 }
 
 /// Sets or clears (`None`) a boolean Claude spawn setting override.
-pub(crate) fn set_claude_spawn_bool(spec_id: &str, value: Option<bool>) {
+pub fn set_claude_spawn_bool(spec_id: &str, value: Option<bool>) {
     state().update(|s| {
         let label = find_claude_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -7980,7 +8006,7 @@ pub(crate) fn set_claude_spawn_bool(spec_id: &str, value: Option<bool>) {
 }
 
 /// Sets or clears (`None`) a choice/enum Claude spawn setting override.
-pub(crate) fn set_claude_spawn_choice(spec_id: &str, choice: Option<&str>) {
+pub fn set_claude_spawn_choice(spec_id: &str, choice: Option<&str>) {
     state().update(|s| {
         let label = find_claude_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -8014,7 +8040,7 @@ pub(crate) fn set_claude_spawn_choice(spec_id: &str, choice: Option<&str>) {
 }
 
 /// Parses and saves a text-edited Claude spawn setting override. Returns `true` on success.
-pub(crate) fn set_claude_spawn_text(spec_id: &str, raw: &str) -> bool {
+pub fn set_claude_spawn_text(spec_id: &str, raw: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let label = find_claude_setting_spec(spec_id)
@@ -8041,7 +8067,7 @@ pub(crate) fn set_claude_spawn_text(spec_id: &str, raw: &str) -> bool {
 }
 
 /// Clears a single Claude spawn setting override back to the CLI default.
-pub(crate) fn clear_claude_spawn_setting(spec_id: &str) {
+pub fn clear_claude_spawn_setting(spec_id: &str) {
     state().update(|s| {
         let label = find_claude_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -8054,7 +8080,7 @@ pub(crate) fn clear_claude_spawn_setting(spec_id: &str) {
 }
 
 /// Adds or updates a Claude spawn environment variable override. Returns `true` on success.
-pub(crate) fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
+pub fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let normalized = key.trim().to_owned();
@@ -8090,16 +8116,16 @@ pub(crate) fn set_claude_spawn_env_var(key: &str, value: &str) -> bool {
 }
 
 /// Adds or updates a secret Claude spawn environment variable stored in Keychain.
-pub(crate) fn set_claude_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
+pub fn set_claude_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let normalized = key.trim().to_owned();
-        if let Err(err) = factory_core::validate_env_name(&normalized) {
+        if let Err(err) = validate_env_name(&normalized) {
             s.preferences_feedback = None;
             s.preferences_error = Some(err.to_string());
             return;
         }
-        if let Err(err) = factory_core::validate_secret_value(raw_value) {
+        if let Err(err) = validate_secret_value(raw_value) {
             s.preferences_feedback = None;
             s.preferences_error = Some(err.to_string());
             return;
@@ -8166,7 +8192,7 @@ pub(crate) fn set_claude_spawn_secret_env_var(key: &str, raw_value: &str) -> boo
 }
 
 /// Removes a configured Claude spawn environment variable (plain or secret).
-pub(crate) fn remove_claude_spawn_env_var(key: &str) {
+pub fn remove_claude_spawn_env_var(key: &str) {
     state().update(|s| {
         let removed_plain = s.preferences.claude_spawn_settings.remove_env_var(key);
         let removed_secret = s
@@ -8190,7 +8216,7 @@ pub(crate) fn remove_claude_spawn_env_var(key: &str) {
 }
 
 /// Updates extra raw CLI arguments appended when spawning Claude. Returns `true` on success.
-pub(crate) fn set_claude_spawn_extra_cli_args(raw: &str) -> bool {
+pub fn set_claude_spawn_extra_cli_args(raw: &str) -> bool {
     let mut ok = false;
     state().update(
         |s| match s.preferences.claude_spawn_settings.set_extra_cli_args(raw) {
@@ -8214,7 +8240,7 @@ pub(crate) fn set_claude_spawn_extra_cli_args(raw: &str) -> bool {
 }
 
 /// Updates extra raw JSON merged into `--settings` when spawning Claude. Returns `true` on success.
-pub(crate) fn set_claude_spawn_extra_settings_json(raw: &str) -> bool {
+pub fn set_claude_spawn_extra_settings_json(raw: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         match s
@@ -8242,7 +8268,7 @@ pub(crate) fn set_claude_spawn_extra_settings_json(raw: &str) -> bool {
 }
 
 /// Resets all custom Claude spawn settings back to CLI defaults.
-pub(crate) fn reset_all_claude_spawn_settings() {
+pub fn reset_all_claude_spawn_settings() {
     state().update(|s| {
         s.preferences.claude_spawn_settings.reset_all();
         s.preferences_error = None;
@@ -8253,12 +8279,12 @@ pub(crate) fn reset_all_claude_spawn_settings() {
 }
 
 /// Returns the persisted custom Codex spawn settings.
-pub(crate) fn codex_spawn_settings() -> CodexSpawnSettings {
+pub fn codex_spawn_settings() -> CodexSpawnSettings {
     state().with(|s| s.preferences.codex_spawn_settings.clone())
 }
 
 /// Builds a live spawn preview plan for the current Codex binary, default model, and spawn settings.
-pub(crate) fn codex_spawn_preview_plan() -> Result<CodexSpawnPlan, String> {
+pub fn codex_spawn_preview_plan() -> Result<CodexSpawnPlan, String> {
     state().with(|s| {
         s.preferences
             .build_codex_spawn_plan(&CodexSpawnOptions::default())
@@ -8267,7 +8293,7 @@ pub(crate) fn codex_spawn_preview_plan() -> Result<CodexSpawnPlan, String> {
 }
 
 /// Sets or clears (`None`) a boolean Codex spawn setting override.
-pub(crate) fn set_codex_spawn_bool(spec_id: &str, value: Option<bool>) {
+pub fn set_codex_spawn_bool(spec_id: &str, value: Option<bool>) {
     state().update(|s| {
         let label = find_codex_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -8304,7 +8330,7 @@ pub(crate) fn set_codex_spawn_bool(spec_id: &str, value: Option<bool>) {
 }
 
 /// Sets or clears (`None`) a choice/enum Codex spawn setting override.
-pub(crate) fn set_codex_spawn_choice(spec_id: &str, choice: Option<&str>) {
+pub fn set_codex_spawn_choice(spec_id: &str, choice: Option<&str>) {
     state().update(|s| {
         let label = find_codex_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -8338,7 +8364,7 @@ pub(crate) fn set_codex_spawn_choice(spec_id: &str, choice: Option<&str>) {
 }
 
 /// Parses and saves a text-edited Codex spawn setting override. Returns `true` on success.
-pub(crate) fn set_codex_spawn_text(spec_id: &str, raw: &str) -> bool {
+pub fn set_codex_spawn_text(spec_id: &str, raw: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let label = find_codex_setting_spec(spec_id)
@@ -8365,7 +8391,7 @@ pub(crate) fn set_codex_spawn_text(spec_id: &str, raw: &str) -> bool {
 }
 
 /// Clears a single Codex spawn setting override back to the CLI default.
-pub(crate) fn clear_codex_spawn_setting(spec_id: &str) {
+pub fn clear_codex_spawn_setting(spec_id: &str) {
     state().update(|s| {
         let label = find_codex_setting_spec(spec_id)
             .map(|spec| spec.label)
@@ -8378,7 +8404,7 @@ pub(crate) fn clear_codex_spawn_setting(spec_id: &str) {
 }
 
 /// Adds or updates a Codex spawn environment variable override. Returns `true` on success.
-pub(crate) fn set_codex_spawn_env_var(key: &str, value: &str) -> bool {
+pub fn set_codex_spawn_env_var(key: &str, value: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let normalized = key.trim().to_owned();
@@ -8414,16 +8440,16 @@ pub(crate) fn set_codex_spawn_env_var(key: &str, value: &str) -> bool {
 }
 
 /// Adds or updates a secret Codex spawn environment variable stored in Keychain.
-pub(crate) fn set_codex_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
+pub fn set_codex_spawn_secret_env_var(key: &str, raw_value: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let normalized = key.trim().to_owned();
-        if let Err(err) = factory_core::validate_env_name(&normalized) {
+        if let Err(err) = validate_env_name(&normalized) {
             s.preferences_feedback = None;
             s.preferences_error = Some(err.to_string());
             return;
         }
-        if let Err(err) = factory_core::validate_secret_value(raw_value) {
+        if let Err(err) = validate_secret_value(raw_value) {
             s.preferences_feedback = None;
             s.preferences_error = Some(err.to_string());
             return;
@@ -8490,7 +8516,7 @@ pub(crate) fn set_codex_spawn_secret_env_var(key: &str, raw_value: &str) -> bool
 }
 
 /// Removes a configured Codex spawn environment variable (plain or secret).
-pub(crate) fn remove_codex_spawn_env_var(key: &str) {
+pub fn remove_codex_spawn_env_var(key: &str) {
     state().update(|s| {
         let removed_plain = s.preferences.codex_spawn_settings.remove_env_var(key);
         let removed_secret = s
@@ -8514,7 +8540,7 @@ pub(crate) fn remove_codex_spawn_env_var(key: &str) {
 }
 
 /// Updates extra raw CLI arguments appended when spawning Codex. Returns `true` on success.
-pub(crate) fn set_codex_spawn_extra_cli_args(raw: &str) -> bool {
+pub fn set_codex_spawn_extra_cli_args(raw: &str) -> bool {
     let mut ok = false;
     state().update(
         |s| match s.preferences.codex_spawn_settings.set_extra_cli_args(raw) {
@@ -8538,7 +8564,7 @@ pub(crate) fn set_codex_spawn_extra_cli_args(raw: &str) -> bool {
 }
 
 /// Updates extra raw `-c` config.toml overrides when spawning Codex. Returns `true` on success.
-pub(crate) fn set_codex_spawn_extra_config_overrides(raw: &str) -> bool {
+pub fn set_codex_spawn_extra_config_overrides(raw: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         match s
@@ -8566,7 +8592,7 @@ pub(crate) fn set_codex_spawn_extra_config_overrides(raw: &str) -> bool {
 }
 
 /// Resets all custom Codex spawn settings back to CLI defaults.
-pub(crate) fn reset_all_codex_spawn_settings() {
+pub fn reset_all_codex_spawn_settings() {
     state().update(|s| {
         s.preferences.codex_spawn_settings.reset_all();
         s.preferences_error = None;
@@ -8576,7 +8602,7 @@ pub(crate) fn reset_all_codex_spawn_settings() {
 }
 
 /// Launches `claude auth login` on a background thread and refreshes system login status when done.
-pub(crate) fn sign_in_claude() {
+pub fn sign_in_claude() {
     let mut binary_to_run = None;
     state().update(|s| {
         if s.demo_mode {
@@ -8663,7 +8689,7 @@ pub(crate) fn sign_in_claude() {
 ///
 /// Returns `true` if the path was accepted (or cleared back to default `PATH`), `false` if the
 /// entered path could not be resolved to an executable binary.
-pub(crate) fn update_codex_cli_path(raw_path: &str) -> bool {
+pub fn update_codex_cli_path(raw_path: &str) -> bool {
     let mut updated = false;
     let mut should_refresh_details = false;
     state().update(|s| {
@@ -8770,12 +8796,12 @@ pub(crate) fn update_codex_cli_path(raw_path: &str) -> bool {
 }
 
 /// Clears any custom Codex CLI binary path override and reverts to default `PATH` discovery.
-pub(crate) fn reset_codex_cli_path() {
+pub fn reset_codex_cli_path() {
     let _ = update_codex_cli_path("");
 }
 
 /// Toggles visibility of a Codex model family (e.g. `"Luna"`) in the model selection view.
-pub(crate) fn toggle_codex_model_family(family: &str) {
+pub fn toggle_codex_model_family(family: &str) {
     state().update(|s| {
         let now_visible = s.preferences.toggle_codex_model_family(family);
         s.preferences_error = None;
@@ -8789,7 +8815,7 @@ pub(crate) fn toggle_codex_model_family(family: &str) {
 }
 
 /// Launches `codex login` on a background thread and refreshes system login status when done.
-pub(crate) fn sign_in_codex() {
+pub fn sign_in_codex() {
     let mut binary_to_run = None;
     state().update(|s| {
         if s.demo_mode {
@@ -8876,7 +8902,7 @@ pub(crate) fn sign_in_codex() {
     }
 }
 
-pub(crate) fn set_appearance_mode(mode: AppearanceMode) {
+pub fn set_appearance_mode(mode: AppearanceMode) {
     let mut updated = None;
     state().update(|s| {
         s.preferences.appearance.mode = mode;
@@ -8888,7 +8914,7 @@ pub(crate) fn set_appearance_mode(mode: AppearanceMode) {
     }
 }
 
-pub(crate) fn set_ui_font(font: FontPreference) {
+pub fn set_ui_font(font: FontPreference) {
     let mut updated = None;
     state().update(|s| {
         s.preferences.appearance.ui_font = font;
@@ -8900,7 +8926,7 @@ pub(crate) fn set_ui_font(font: FontPreference) {
     }
 }
 
-pub(crate) fn set_mono_font(font: FontPreference) {
+pub fn set_mono_font(font: FontPreference) {
     let mut updated = None;
     state().update(|s| {
         s.preferences.appearance.mono_font = font;
@@ -8914,11 +8940,11 @@ pub(crate) fn set_mono_font(font: FontPreference) {
 
 #[derive(Clone, Default)]
 struct FontPickerBridge {
-    channel: crate::fonts::FontPickChannel,
+    channel: factory_fonts::FontPickChannel,
     listening: bool,
 }
 
-fn ensure_font_picker_channel() -> crate::fonts::FontPickChannel {
+fn ensure_font_picker_channel() -> factory_fonts::FontPickChannel {
     let bridge = global::<FontPickerBridge>();
     let (channel, start_listener) = bridge.with_untracked(|b| (b.channel.clone(), !b.listening));
     if start_listener {
@@ -8927,10 +8953,10 @@ fn ensure_font_picker_channel() -> crate::fonts::FontPickChannel {
         spawn(async move {
             loop {
                 let (target, family) = listener_channel.next().await;
-                let pref = crate::fonts::normalize_picked_font(target, &family);
+                let pref = factory_fonts::normalize_picked_font(target, &family);
                 match target {
-                    crate::fonts::FontPickerTarget::Ui => set_ui_font(pref),
-                    crate::fonts::FontPickerTarget::Mono => set_mono_font(pref),
+                    factory_fonts::FontPickerTarget::Ui => set_ui_font(pref),
+                    factory_fonts::FontPickerTarget::Mono => set_mono_font(pref),
                 }
             }
         });
@@ -8938,7 +8964,7 @@ fn ensure_font_picker_channel() -> crate::fonts::FontPickChannel {
     channel
 }
 
-pub(crate) fn open_ui_font_picker() {
+pub fn open_ui_font_picker() {
     let current = state().with_untracked(|s| {
         s.preferences
             .appearance
@@ -8947,10 +8973,10 @@ pub(crate) fn open_ui_font_picker() {
             .map(str::to_owned)
     });
     let channel = ensure_font_picker_channel();
-    crate::fonts::open_font_panel(crate::fonts::FontPickerTarget::Ui, current, channel);
+    factory_fonts::open_font_panel(factory_fonts::FontPickerTarget::Ui, current, channel);
 }
 
-pub(crate) fn open_mono_font_picker() {
+pub fn open_mono_font_picker() {
     let current = state().with_untracked(|s| {
         s.preferences
             .appearance
@@ -8959,28 +8985,28 @@ pub(crate) fn open_mono_font_picker() {
             .map(str::to_owned)
     });
     let channel = ensure_font_picker_channel();
-    crate::fonts::open_font_panel(crate::fonts::FontPickerTarget::Mono, current, channel);
+    factory_fonts::open_font_panel(factory_fonts::FontPickerTarget::Mono, current, channel);
 }
 
-pub(crate) fn close_font_picker() {
-    crate::fonts::close_font_panel();
+pub fn close_font_picker() {
+    factory_fonts::close_font_panel();
 }
 
-pub(crate) fn toggle_compact_sidebar() {
+pub fn toggle_compact_sidebar() {
     state().update(|s| {
         s.preferences.appearance.compact_sidebar = !s.preferences.appearance.compact_sidebar;
         s.persist_preferences();
     });
 }
 
-pub(crate) fn set_monospace_font_size(size: u8) {
+pub fn set_monospace_font_size(size: u8) {
     state().update(|s| {
         s.preferences.appearance.monospace_font_size = size.clamp(11, 16);
         s.persist_preferences();
     });
 }
 
-pub(crate) fn set_default_landing_view(view: DefaultLandingView) {
+pub fn set_default_landing_view(view: DefaultLandingView) {
     state().update(|s| {
         s.preferences.general.default_landing_view = view;
         s.persist_preferences();
@@ -8989,13 +9015,13 @@ pub(crate) fn set_default_landing_view(view: DefaultLandingView) {
 
 /// Sets where new projects are cloned. An empty value, or the Bruk folder's own `projects/`,
 /// is stored as "follow the Bruk folder" so it keeps tracking the folder chosen at setup.
-pub(crate) fn set_default_projects_dir(dir: &str) {
+pub fn set_default_projects_dir(dir: &str) {
     state().update(|s| {
         let trimmed = dir.trim();
         let follows_home = trimmed.is_empty()
             || s.home
                 .as_ref()
-                .is_some_and(|home| factory_core::expand_tilde(trimmed) == home.projects_dir());
+                .is_some_and(|home| expand_tilde(trimmed) == home.projects_dir());
         s.preferences.general.default_projects_dir = if follows_home {
             String::new()
         } else {
@@ -9006,7 +9032,7 @@ pub(crate) fn set_default_projects_dir(dir: &str) {
 }
 
 /// The folder new projects are cloned into, shortened with `~` for display.
-pub(crate) fn default_projects_dir_display() -> String {
+pub fn default_projects_dir_display() -> String {
     state().with(|s| {
         s.projects_dir()
             .map(|dir| display_with_tilde(&dir))
@@ -9015,13 +9041,13 @@ pub(crate) fn default_projects_dir_display() -> String {
 }
 
 /// The default projects directory, when it exists on disk (used to start folder pickers there).
-pub(crate) fn default_projects_dir_path() -> Option<std::path::PathBuf> {
+pub fn default_projects_dir_path() -> Option<std::path::PathBuf> {
     state()
         .with_untracked(AppState::projects_dir)
         .filter(|dir| dir.is_dir())
 }
 
-pub(crate) fn toggle_general_flag(flag: GeneralFlag) {
+pub fn toggle_general_flag(flag: GeneralFlag) {
     state().update(|s| {
         match flag {
             GeneralFlag::ConfirmBeforeCancel => {
@@ -9046,14 +9072,14 @@ pub(crate) fn toggle_general_flag(flag: GeneralFlag) {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum GeneralFlag {
+pub enum GeneralFlag {
     ConfirmBeforeCancel,
     NotifyHumanGate,
     NotifyRunFailure,
     AutoCheckUpdates,
 }
 
-pub(crate) fn selected_prefs_machine_id() -> Option<u64> {
+pub fn selected_prefs_machine_id() -> Option<u64> {
     state().with(|s| {
         s.selected_prefs_machine_id
             .filter(|id| s.machines_fleet.machine(*id).is_some())
@@ -9061,7 +9087,7 @@ pub(crate) fn selected_prefs_machine_id() -> Option<u64> {
     })
 }
 
-pub(crate) fn selected_prefs_machine() -> Option<MachineRecord> {
+pub fn selected_prefs_machine() -> Option<MachineRecord> {
     state().with(|s| {
         let id = s
             .selected_prefs_machine_id
@@ -9071,7 +9097,7 @@ pub(crate) fn selected_prefs_machine() -> Option<MachineRecord> {
     })
 }
 
-pub(crate) fn select_prefs_machine(id: u64) {
+pub fn select_prefs_machine(id: u64) {
     state().update(|s| {
         if s.machines_fleet.machine(id).is_some() {
             s.selected_prefs_machine_id = Some(id);
@@ -9081,7 +9107,7 @@ pub(crate) fn select_prefs_machine(id: u64) {
     });
 }
 
-pub(crate) fn test_prefs_machine_connection(id: u64) {
+pub fn test_prefs_machine_connection(id: u64) {
     state().update(|s| match s.machines_fleet.test_connection(id) {
         Ok(msg) => {
             s.preferences_error = None;
@@ -9093,7 +9119,7 @@ pub(crate) fn test_prefs_machine_connection(id: u64) {
     });
 }
 
-pub(crate) fn update_prefs_machine_user(id: u64, user: &str) -> bool {
+pub fn update_prefs_machine_user(id: u64, user: &str) -> bool {
     let mut ok = false;
     state().update(|s| match s.machines_fleet.set_ssh_user(id, user) {
         Ok(()) => {
@@ -9108,7 +9134,7 @@ pub(crate) fn update_prefs_machine_user(id: u64, user: &str) -> bool {
     ok
 }
 
-pub(crate) fn update_prefs_machine_jump_host(id: u64, jump_host: &str) -> bool {
+pub fn update_prefs_machine_jump_host(id: u64, jump_host: &str) -> bool {
     let mut ok = false;
     state().update(|s| match s.machines_fleet.set_jump_host(id, jump_host) {
         Ok(()) => {
@@ -9130,7 +9156,7 @@ pub(crate) fn update_prefs_machine_jump_host(id: u64, jump_host: &str) -> bool {
     ok
 }
 
-pub(crate) fn update_prefs_machine_ssh_key(
+pub fn update_prefs_machine_ssh_key(
     id: u64,
     key_name: &str,
     key_type: &str,
@@ -9155,7 +9181,7 @@ pub(crate) fn update_prefs_machine_ssh_key(
     ok
 }
 
-pub(crate) fn check_prefs_machine_core(id: u64) {
+pub fn check_prefs_machine_core(id: u64) {
     state().update(|s| match s.machines_fleet.check_core_now(id) {
         Ok(msg) => {
             s.preferences_error = None;
@@ -9167,7 +9193,7 @@ pub(crate) fn check_prefs_machine_core(id: u64) {
     });
 }
 
-pub(crate) fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePolicy) {
+pub fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePolicy) {
     state().update(
         |s| match s.machines_fleet.set_core_update_policy(id, policy) {
             Ok(()) => {
@@ -9184,7 +9210,7 @@ pub(crate) fn set_prefs_machine_core_update_policy(id: u64, policy: CoreUpdatePo
     );
 }
 
-pub(crate) fn set_prefs_machine_agent_signed_in(id: u64, agent: MachineAgentKind, signed_in: bool) {
+pub fn set_prefs_machine_agent_signed_in(id: u64, agent: MachineAgentKind, signed_in: bool) {
     state().update(
         |s| match s.machines_fleet.set_agent_signed_in(id, agent, signed_in) {
             Ok(()) => {
@@ -9202,7 +9228,7 @@ pub(crate) fn set_prefs_machine_agent_signed_in(id: u64, agent: MachineAgentKind
     );
 }
 
-pub(crate) fn update_prefs_machine_max_sessions(id: u64, value_str: &str) -> bool {
+pub fn update_prefs_machine_max_sessions(id: u64, value_str: &str) -> bool {
     let parsed = value_str.trim().parse::<u32>();
     let mut ok = false;
     state().update(|s| match parsed {
@@ -9224,7 +9250,7 @@ pub(crate) fn update_prefs_machine_max_sessions(id: u64, value_str: &str) -> boo
     ok
 }
 
-pub(crate) fn toggle_prefs_machine_project(id: u64, project_name: &str) {
+pub fn toggle_prefs_machine_project(id: u64, project_name: &str) {
     let project = project_name.to_owned();
     state().update(
         |s| match s.machines_fleet.toggle_project_access(id, &project) {
@@ -9243,7 +9269,7 @@ pub(crate) fn toggle_prefs_machine_project(id: u64, project_name: &str) {
     );
 }
 
-pub(crate) fn add_prefs_machine(
+pub fn add_prefs_machine(
     name: &str,
     ipv4: &str,
     port: &str,
@@ -9300,7 +9326,7 @@ pub(crate) fn add_prefs_machine(
     added_ok
 }
 
-pub(crate) fn remove_prefs_machine(id: u64) -> bool {
+pub fn remove_prefs_machine(id: u64) -> bool {
     let mut removed_ok = false;
     state().update(|s| match s.machines_fleet.remove_machine(id) {
         Ok(removed) => {
@@ -9321,7 +9347,7 @@ pub(crate) fn remove_prefs_machine(id: u64) -> bool {
     removed_ok
 }
 
-pub(crate) fn available_machine_project_names() -> Vec<String> {
+pub fn available_machine_project_names() -> Vec<String> {
     state().with(|s| {
         let mut names: Vec<String> = s
             .factory
@@ -9340,7 +9366,7 @@ pub(crate) fn available_machine_project_names() -> Vec<String> {
     })
 }
 
-pub(crate) fn toggle_allow_project_mcp_servers() {
+pub fn toggle_allow_project_mcp_servers() {
     state().update(|s| {
         s.preferences.extensions.allow_project_mcp_servers =
             !s.preferences.extensions.allow_project_mcp_servers;
@@ -9352,7 +9378,7 @@ pub(crate) fn toggle_allow_project_mcp_servers() {
 
 /// Whose servers an MCP list edits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum McpServerScope {
+pub enum McpServerScope {
     /// This user's servers for the selected project.
     Project,
     /// This user's servers for every project.
@@ -9361,26 +9387,26 @@ pub(crate) enum McpServerScope {
 
 /// What Project Settings › MCP Servers shows for the selected project.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ProjectMcpOverview {
-    pub(crate) state: factory_core::mcp::ProjectMcpState,
-    pub(crate) allow_project_servers: bool,
-    pub(crate) approved: bool,
+pub struct ProjectMcpOverview {
+    pub state: factory_config::mcp::ProjectMcpState,
+    pub allow_project_servers: bool,
+    pub approved: bool,
     /// A file was approved, but its contents changed since.
-    pub(crate) changed_since_approval: bool,
-    pub(crate) project_extras: Vec<factory_core::mcp::McpServerDef>,
-    pub(crate) user_extras: Vec<factory_core::mcp::McpServerDef>,
+    pub changed_since_approval: bool,
+    pub project_extras: Vec<factory_config::mcp::McpServerDef>,
+    pub user_extras: Vec<factory_config::mcp::McpServerDef>,
 }
 
-pub(crate) fn project_mcp_overview() -> ProjectMcpOverview {
+pub fn project_mcp_overview() -> ProjectMcpOverview {
     state().with(|s| {
         let name = s.selected_project_name();
         let state = s
             .project_root_by_name(&name)
-            .map(|root| factory_core::mcp::load_project_mcp(&root))
+            .map(|root| factory_config::mcp::load_project_mcp(&root))
             .unwrap_or_default();
         let settings = s.project_settings.get(&name);
         let sources =
-            factory_core::mcp::McpSources::gather(&state, settings, &s.preferences.extensions);
+            factory_config::mcp::McpSources::gather(&state, settings, &s.preferences.extensions);
         let approved = sources.project_trusted();
         ProjectMcpOverview {
             changed_since_approval: !approved
@@ -9395,19 +9421,22 @@ pub(crate) fn project_mcp_overview() -> ProjectMcpOverview {
     })
 }
 
-pub(crate) fn user_mcp_servers() -> Vec<factory_core::mcp::McpServerDef> {
+pub fn user_mcp_servers() -> Vec<factory_config::mcp::McpServerDef> {
     state().with(|s| s.preferences.extensions.mcp_servers.clone())
 }
 
 /// Approves the project's current MCP file, so its servers load until it changes.
-pub(crate) fn approve_project_mcp_servers() {
+pub fn approve_project_mcp_servers() {
     let mut cleared = Vec::new();
     state().update(|s| {
         let name = s.selected_project_name();
         let Some(root) = s.project_root_by_name(&name) else {
             return;
         };
-        let Some(config) = factory_core::mcp::load_project_mcp(&root).config().cloned() else {
+        let Some(config) = factory_config::mcp::load_project_mcp(&root)
+            .config()
+            .cloned()
+        else {
             s.project_settings_error =
                 Some("This project has no MCP servers to approve.".to_owned());
             return;
@@ -9421,14 +9450,14 @@ pub(crate) fn approve_project_mcp_servers() {
         ));
         s.persist_active_project_settings();
         cleared = s.inbox.clear_mcp_problems(&name, |p| {
-            p.fix == factory_core::mcp::McpFix::ApproveProjectServers
+            p.fix == factory_config::mcp::McpFix::ApproveProjectServers
         });
         s.sync_inbox_selection_and_drafts();
     });
     close_notifications(cleared);
 }
 
-pub(crate) fn revoke_project_mcp_servers() {
+pub fn revoke_project_mcp_servers() {
     state().update(|s| {
         s.ensure_project_settings_mut().approved_mcp_fingerprint = None;
         s.project_settings_error = None;
@@ -9440,7 +9469,7 @@ pub(crate) fn revoke_project_mcp_servers() {
 
 /// Adds one of this user's servers from the add-server form, optionally moving marked inline
 /// values into Keychain as `McpOnly` secrets and rewriting them to `${VAR}` (or `Bearer ${VAR}`).
-pub(crate) fn add_mcp_server_with_secret_lines(
+pub fn add_mcp_server_with_secret_lines(
     scope: McpServerScope,
     name: &str,
     command_or_url: &str,
@@ -9560,7 +9589,7 @@ pub(crate) fn add_mcp_server_with_secret_lines(
         }
 
         let final_pairs = rewritten_lines.join("\n");
-        let parsed = factory_core::mcp::McpServerDef::from_form(
+        let parsed = factory_config::mcp::McpServerDef::from_form(
             name,
             command_or_url,
             args_text,
@@ -9606,7 +9635,7 @@ pub(crate) fn add_mcp_server_with_secret_lines(
     added
 }
 
-pub(crate) fn remove_mcp_server(scope: McpServerScope, name: &str) {
+pub fn remove_mcp_server(scope: McpServerScope, name: &str) {
     state().update(|s| match scope {
         McpServerScope::Project => {
             if s.ensure_project_settings_mut().remove_mcp_server(name) {
@@ -9625,7 +9654,7 @@ pub(crate) fn remove_mcp_server(scope: McpServerScope, name: &str) {
     });
 }
 
-pub(crate) fn toggle_mcp_server(scope: McpServerScope, name: &str) {
+pub fn toggle_mcp_server(scope: McpServerScope, name: &str) {
     state().update(|s| match scope {
         McpServerScope::Project => {
             if let Some(server) = s
@@ -9654,8 +9683,8 @@ pub(crate) fn toggle_mcp_server(scope: McpServerScope, name: &str) {
 }
 
 /// Takes the user to where `fix` gets done (for notifications, banners and the Inbox).
-pub(crate) fn apply_mcp_fix(project_name: Option<&str>, fix: &factory_core::mcp::McpFix) {
-    use factory_core::mcp::{McpFix, McpOrigin};
+pub fn apply_mcp_fix(project_name: Option<&str>, fix: &factory_config::mcp::McpFix) {
+    use factory_config::mcp::{McpFix, McpOrigin};
     if let Some(name) = project_name {
         state().update(|s| {
             if let Some(project) = s.factory.projects().iter().find(|p| p.name == name) {
@@ -9705,7 +9734,7 @@ impl AppState {
     fn file_mcp_problem(
         &mut self,
         ctx: McpProblemContext<'_>,
-        problem: &factory_core::mcp::McpProblem,
+        problem: &factory_config::mcp::McpProblem,
     ) -> Option<nsh_core::notifications::Notification> {
         let id = format!("mcp:{}:{}", ctx.project_name, mcp_problem_id(problem));
         if self.inbox.pending.iter().any(|r| r.id == id) {
@@ -9745,7 +9774,7 @@ impl AppState {
             deadline_badge: None,
             timeout_footer: "Clears by itself once the server starts.".to_owned(),
             note_placeholder: String::new(),
-            body: AttentionRequestBody::McpProblem(factory_core::inbox::McpProblemDetail {
+            body: AttentionRequestBody::McpProblem(factory_config::inbox::McpProblemDetail {
                 problem: problem.clone(),
                 stopped_work: problem.blocking,
             }),
@@ -9773,7 +9802,7 @@ impl AppState {
         problem: &SecretProblem,
     ) -> Option<nsh_core::notifications::Notification> {
         let digest =
-            factory_core::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned();
+            factory_config::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned();
         let id = format!("secret:{}:{digest}", ctx.project_name);
         if self.inbox.pending.iter().any(|r| r.id == id) {
             return None;
@@ -9836,7 +9865,7 @@ impl AppState {
     fn clear_ready_mcp_servers(
         &mut self,
         project_name: &str,
-        servers: &[(String, factory_core::mcp::McpOrigin)],
+        servers: &[(String, factory_config::mcp::McpOrigin)],
     ) -> Vec<String> {
         let cleared = self.inbox.clear_mcp_problems(project_name, |p| {
             servers.iter().any(|(name, origin)| {
@@ -9850,8 +9879,8 @@ impl AppState {
     }
 }
 
-fn mcp_problem_id(problem: &factory_core::mcp::McpProblem) -> String {
-    factory_core::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned()
+fn mcp_problem_id(problem: &factory_config::mcp::McpProblem) -> String {
+    factory_config::mcp::fingerprint(problem.dedupe_key().as_bytes())[..16].to_owned()
 }
 
 /// Shows MCP problem notifications, asking for permission the first time.
@@ -9876,7 +9905,7 @@ fn close_notifications(ids: Vec<String>) {
 }
 
 /// The Inbox's selected Setup item: its fix.
-pub(crate) fn inbox_fix_setup_item() {
+pub fn inbox_fix_setup_item() {
     let Some(req) = inbox_selected_pending() else {
         return;
     };
@@ -9899,7 +9928,7 @@ pub(crate) fn inbox_fix_setup_item() {
     }
 }
 
-pub(crate) fn inbox_dismiss_setup_item() {
+pub fn inbox_dismiss_setup_item() {
     let mut closed = None;
     state().update(|s| {
         let Some(id) = s.inbox_selected_id.clone() else {
@@ -9915,21 +9944,21 @@ pub(crate) fn inbox_dismiss_setup_item() {
     }
 }
 
-pub(crate) fn toggle_extension(id: &str) {
+pub fn toggle_extension(id: &str) {
     state().update(|s| {
         s.preferences.toggle_extension(id);
         s.persist_preferences();
     });
 }
 
-pub(crate) fn toggle_verbose_step_logs() {
+pub fn toggle_verbose_step_logs() {
     state().update(|s| {
         s.preferences.advanced.verbose_step_logs = !s.preferences.advanced.verbose_step_logs;
         s.persist_preferences();
     });
 }
 
-pub(crate) fn toggle_keep_worktrees_on_failure() {
+pub fn toggle_keep_worktrees_on_failure() {
     state().update(|s| {
         s.preferences.advanced.keep_worktrees_on_failure =
             !s.preferences.advanced.keep_worktrees_on_failure;
@@ -9938,7 +9967,7 @@ pub(crate) fn toggle_keep_worktrees_on_failure() {
 }
 
 /// Sets the SSH agent socket handed to agents. Empty clears it so agents inherit the detected one.
-pub(crate) fn set_ssh_auth_sock(path: &str) {
+pub fn set_ssh_auth_sock(path: &str) {
     state().update(|s| {
         s.preferences.advanced.ssh_auth_sock = path.trim().to_owned();
         s.persist_preferences();
@@ -9946,11 +9975,11 @@ pub(crate) fn set_ssh_auth_sock(path: &str) {
 }
 
 /// The SSH agent socket Bruk inherited from its environment, if any.
-pub(crate) fn detected_ssh_auth_sock() -> Option<String> {
-    factory_core::detected_ssh_auth_sock()
+pub fn detected_ssh_auth_sock() -> Option<String> {
+    factory_config::detected_ssh_auth_sock()
 }
 
-pub(crate) fn step_log_retention_days(delta: i32) {
+pub fn step_log_retention_days(delta: i32) {
     state().update(|s| {
         let next = (s.preferences.advanced.log_retention_days as i32 + delta).clamp(7, 365) as u32;
         s.preferences.advanced.log_retention_days = next;
@@ -9958,7 +9987,7 @@ pub(crate) fn step_log_retention_days(delta: i32) {
     });
 }
 
-pub(crate) fn reset_preferences_to_defaults() {
+pub fn reset_preferences_to_defaults() {
     state().update(|s| {
         if s.demo_mode {
             let mut sample = AppPreferences::sample();
@@ -9982,7 +10011,7 @@ pub(crate) fn reset_preferences_to_defaults() {
 
 // --- Project Settings -------------------------------------------------------------------
 
-pub(crate) fn open_project_settings() {
+pub fn open_project_settings() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -9998,7 +10027,7 @@ pub(crate) fn open_project_settings() {
     main_window().focus();
 }
 
-pub(crate) fn open_project_settings_for_project(id: ProjectId) {
+pub fn open_project_settings_for_project(id: ProjectId) {
     state().update(|s| {
         s.selected_project = Some(id);
         s.expanded_projects.insert(id);
@@ -10011,7 +10040,7 @@ pub(crate) fn open_project_settings_for_project(id: ProjectId) {
     main_window().focus();
 }
 
-pub(crate) fn open_project_settings_tab(tab: ProjectSettingsTab) {
+pub fn open_project_settings_tab(tab: ProjectSettingsTab) {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -10028,11 +10057,11 @@ pub(crate) fn open_project_settings_tab(tab: ProjectSettingsTab) {
     main_window().focus();
 }
 
-pub(crate) fn project_settings_tab() -> ProjectSettingsTab {
+pub fn project_settings_tab() -> ProjectSettingsTab {
     state().with(|s| s.project_settings_tab)
 }
 
-pub(crate) fn set_project_settings_tab(tab: ProjectSettingsTab) {
+pub fn set_project_settings_tab(tab: ProjectSettingsTab) {
     state().update(|s| {
         s.project_settings_tab = tab;
         s.project_settings_error = None;
@@ -10040,26 +10069,26 @@ pub(crate) fn set_project_settings_tab(tab: ProjectSettingsTab) {
     });
 }
 
-pub(crate) fn active_project_settings() -> ProjectSettings {
+pub fn active_project_settings() -> ProjectSettings {
     state().with(AppState::active_project_settings_clone)
 }
 
-pub(crate) fn project_settings_error() -> Option<String> {
+pub fn project_settings_error() -> Option<String> {
     state().with(|s| s.project_settings_error.clone())
 }
 
-pub(crate) fn project_settings_feedback() -> Option<String> {
+pub fn project_settings_feedback() -> Option<String> {
     state().with(|s| s.project_settings_feedback.clone())
 }
 
-pub(crate) fn clear_project_settings_messages() {
+pub fn clear_project_settings_messages() {
     state().update(|s| {
         s.project_settings_error = None;
         s.project_settings_feedback = None;
     });
 }
 
-pub(crate) fn set_project_issue_source(source: IssueSourceKind) {
+pub fn set_project_issue_source(source: IssueSourceKind) {
     state().update(|s| {
         let result = s.ensure_project_settings_mut().set_issue_source(source);
         match result {
@@ -10077,7 +10106,7 @@ pub(crate) fn set_project_issue_source(source: IssueSourceKind) {
     });
 }
 
-pub(crate) fn set_project_github_repo(repo: &str) {
+pub fn set_project_github_repo(repo: &str) {
     let repo = repo.to_owned();
     state().update(|s| {
         let demo = s.demo_mode;
@@ -10096,7 +10125,7 @@ pub(crate) fn set_project_github_repo(repo: &str) {
     });
 }
 
-pub(crate) fn set_project_fallback_workflow(workflow: &str) {
+pub fn set_project_fallback_workflow(workflow: &str) {
     let workflow = workflow.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut()
@@ -10108,7 +10137,7 @@ pub(crate) fn set_project_fallback_workflow(workflow: &str) {
     });
 }
 
-pub(crate) fn set_project_itsaplan_workspace(workspace: &str) {
+pub fn set_project_itsaplan_workspace(workspace: &str) {
     let workspace = workspace.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().itsaplan_workspace = workspace;
@@ -10117,7 +10146,7 @@ pub(crate) fn set_project_itsaplan_workspace(workspace: &str) {
     });
 }
 
-pub(crate) fn set_project_itsaplan_agent_member(member: &str) {
+pub fn set_project_itsaplan_agent_member(member: &str) {
     let member = member.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().itsaplan_agent_member = member;
@@ -10126,7 +10155,7 @@ pub(crate) fn set_project_itsaplan_agent_member(member: &str) {
     });
 }
 
-pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
+pub fn set_project_github_token(raw_token: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         let demo = s.demo_mode;
@@ -10221,7 +10250,7 @@ pub(crate) fn set_project_github_token(raw_token: &str) -> bool {
 }
 
 /// Selects a reusable named App-level GitHub PAT for the active project.
-pub(crate) fn select_project_github_pat(secret_id: &str) {
+pub fn select_project_github_pat(secret_id: &str) {
     state().update(|s| {
         let last4 = s
             .secrets
@@ -10242,7 +10271,7 @@ pub(crate) fn select_project_github_pat(secret_id: &str) {
     });
 }
 
-pub(crate) fn use_project_github_cli() {
+pub fn use_project_github_cli() {
     state().update(|s| {
         let demo = s.demo_mode;
         let settings = s.ensure_project_settings_mut();
@@ -10257,7 +10286,7 @@ pub(crate) fn use_project_github_cli() {
     });
 }
 
-pub(crate) fn add_project_intake_rule(label: &str, workflow_name: &str) -> bool {
+pub fn add_project_intake_rule(label: &str, workflow_name: &str) -> bool {
     let mut added = false;
     state().update(|s| {
         match s
@@ -10284,7 +10313,7 @@ pub(crate) fn add_project_intake_rule(label: &str, workflow_name: &str) -> bool 
     added
 }
 
-pub(crate) fn add_project_intake_filter(clause: GitHubFilterClause) -> bool {
+pub fn add_project_intake_filter(clause: GitHubFilterClause) -> bool {
     let mut added = false;
     state().update(|s| {
         let token = clause.to_github_query_token();
@@ -10305,7 +10334,7 @@ pub(crate) fn add_project_intake_filter(clause: GitHubFilterClause) -> bool {
     added
 }
 
-pub(crate) fn remove_project_intake_filter(index: usize) {
+pub fn remove_project_intake_filter(index: usize) {
     state().update(|s| {
         if s.ensure_project_settings_mut().remove_intake_filter(index) {
             s.project_settings_error = None;
@@ -10317,7 +10346,7 @@ pub(crate) fn remove_project_intake_filter(index: usize) {
     });
 }
 
-pub(crate) fn add_project_intake_rule_with_clauses(
+pub fn add_project_intake_rule_with_clauses(
     clauses: Vec<GitHubFilterClause>,
     workflow_name: &str,
 ) -> bool {
@@ -10352,7 +10381,7 @@ pub(crate) fn add_project_intake_rule_with_clauses(
     added
 }
 
-pub(crate) fn remove_project_intake_rule(rule_id: u64) {
+pub fn remove_project_intake_rule(rule_id: u64) {
     state().update(|s| {
         if s.ensure_project_settings_mut().remove_intake_rule(rule_id) {
             s.project_settings_error = None;
@@ -10364,7 +10393,7 @@ pub(crate) fn remove_project_intake_rule(rule_id: u64) {
     });
 }
 
-pub(crate) fn set_project_max_concurrent_runs_str(value: &str) {
+pub fn set_project_max_concurrent_runs_str(value: &str) {
     state().update(|s| {
         match s
             .ensure_project_settings_mut()
@@ -10383,7 +10412,7 @@ pub(crate) fn set_project_max_concurrent_runs_str(value: &str) {
     });
 }
 
-pub(crate) fn step_project_max_concurrent_runs(delta: i32) {
+pub fn step_project_max_concurrent_runs(delta: i32) {
     state().update(|s| {
         s.ensure_project_settings_mut()
             .step_max_concurrent_runs(delta);
@@ -10394,7 +10423,7 @@ pub(crate) fn step_project_max_concurrent_runs(delta: i32) {
     });
 }
 
-pub(crate) fn toggle_project_auto_start() {
+pub fn toggle_project_auto_start() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_start_matching_work = !settings.auto_start_matching_work;
@@ -10402,7 +10431,7 @@ pub(crate) fn toggle_project_auto_start() {
     });
 }
 
-pub(crate) fn toggle_project_add_working_label() {
+pub fn toggle_project_add_working_label() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.add_working_label = !settings.add_working_label;
@@ -10410,7 +10439,7 @@ pub(crate) fn toggle_project_add_working_label() {
     });
 }
 
-pub(crate) fn toggle_project_comment_summary() {
+pub fn toggle_project_comment_summary() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.comment_with_run_summary = !settings.comment_with_run_summary;
@@ -10418,7 +10447,7 @@ pub(crate) fn toggle_project_comment_summary() {
     });
 }
 
-pub(crate) fn toggle_project_link_pr_closes_issue() {
+pub fn toggle_project_link_pr_closes_issue() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.link_pr_closes_issue = !settings.link_pr_closes_issue;
@@ -10426,7 +10455,7 @@ pub(crate) fn toggle_project_link_pr_closes_issue() {
     });
 }
 
-pub(crate) fn set_project_default_branch(branch: &str) {
+pub fn set_project_default_branch(branch: &str) {
     let branch = branch.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().default_branch = branch;
@@ -10434,7 +10463,7 @@ pub(crate) fn set_project_default_branch(branch: &str) {
     });
 }
 
-pub(crate) fn set_project_branch_prefix(prefix: &str) {
+pub fn set_project_branch_prefix(prefix: &str) {
     let prefix = prefix.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().branch_prefix = prefix;
@@ -10442,7 +10471,7 @@ pub(crate) fn set_project_branch_prefix(prefix: &str) {
     });
 }
 
-pub(crate) fn toggle_project_isolated_worktrees() {
+pub fn toggle_project_isolated_worktrees() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.use_isolated_worktrees = !settings.use_isolated_worktrees;
@@ -10450,7 +10479,7 @@ pub(crate) fn toggle_project_isolated_worktrees() {
     });
 }
 
-pub(crate) fn toggle_project_draft_prs() {
+pub fn toggle_project_draft_prs() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.open_prs_as_draft = !settings.open_prs_as_draft;
@@ -10458,7 +10487,7 @@ pub(crate) fn toggle_project_draft_prs() {
     });
 }
 
-pub(crate) fn toggle_project_auto_cleanup_worktrees() {
+pub fn toggle_project_auto_cleanup_worktrees() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_cleanup_worktrees = !settings.auto_cleanup_worktrees;
@@ -10466,7 +10495,7 @@ pub(crate) fn toggle_project_auto_cleanup_worktrees() {
     });
 }
 
-pub(crate) fn toggle_project_archived() {
+pub fn toggle_project_archived() {
     state().update(|s| {
         let archived = {
             let settings = s.ensure_project_settings_mut();
@@ -10482,21 +10511,21 @@ pub(crate) fn toggle_project_archived() {
     });
 }
 
-pub(crate) fn set_project_default_provider(provider: ProviderKind) {
+pub fn set_project_default_provider(provider: ProviderKind) {
     state().update(|s| {
         s.ensure_project_settings_mut().default_provider = provider;
         s.persist_active_project_settings();
     });
 }
 
-pub(crate) fn set_project_openrouter_key(key_id: Option<String>) {
+pub fn set_project_openrouter_key(key_id: Option<String>) {
     state().update(|s| {
         s.ensure_project_settings_mut().openrouter_key_id = key_id;
         s.persist_active_project_settings();
     });
 }
 
-pub(crate) fn set_project_model_override(model: &str) {
+pub fn set_project_model_override(model: &str) {
     let model = model.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().model_override = model;
@@ -10504,7 +10533,7 @@ pub(crate) fn set_project_model_override(model: &str) {
     });
 }
 
-pub(crate) fn toggle_project_workflow(name: &str) {
+pub fn toggle_project_workflow(name: &str) {
     let name = name.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().toggle_workflow(&name);
@@ -10512,7 +10541,7 @@ pub(crate) fn toggle_project_workflow(name: &str) {
     });
 }
 
-pub(crate) fn toggle_project_require_review_before_pr() {
+pub fn toggle_project_require_review_before_pr() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.require_review_before_pr = !settings.require_review_before_pr;
@@ -10520,7 +10549,7 @@ pub(crate) fn toggle_project_require_review_before_pr() {
     });
 }
 
-pub(crate) fn toggle_project_auto_reload_workflows() {
+pub fn toggle_project_auto_reload_workflows() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.auto_reload_workflows = !settings.auto_reload_workflows;
@@ -10528,7 +10557,7 @@ pub(crate) fn toggle_project_auto_reload_workflows() {
     });
 }
 
-pub(crate) fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bool {
+pub fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bool {
     if is_secret {
         return create_project_keychain_secret(key, value, Exposure::McpOnly);
     }
@@ -10553,7 +10582,7 @@ pub(crate) fn add_project_env_var(key: &str, value: &str, is_secret: bool) -> bo
     added
 }
 
-pub(crate) fn remove_project_env_var(id: u64) {
+pub fn remove_project_env_var(id: u64) {
     state().update(|s| {
         if s.ensure_project_settings_mut().remove_env_var(id) {
             s.project_settings_error = None;
@@ -10563,7 +10592,7 @@ pub(crate) fn remove_project_env_var(id: u64) {
     });
 }
 
-pub(crate) fn toggle_project_load_dotenv() {
+pub fn toggle_project_load_dotenv() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.load_dotenv_local = !settings.load_dotenv_local;
@@ -10571,7 +10600,7 @@ pub(crate) fn toggle_project_load_dotenv() {
     });
 }
 
-pub(crate) fn toggle_project_inherit_host_path() {
+pub fn toggle_project_inherit_host_path() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.inherit_host_path = !settings.inherit_host_path;
@@ -10579,7 +10608,7 @@ pub(crate) fn toggle_project_inherit_host_path() {
     });
 }
 
-pub(crate) fn step_project_max_loop_attempts(delta: i32) {
+pub fn step_project_max_loop_attempts(delta: i32) {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.max_loop_attempts =
@@ -10588,7 +10617,7 @@ pub(crate) fn step_project_max_loop_attempts(delta: i32) {
     });
 }
 
-pub(crate) fn step_project_step_timeout(delta: i32) {
+pub fn step_project_step_timeout(delta: i32) {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.step_timeout_minutes =
@@ -10597,7 +10626,7 @@ pub(crate) fn step_project_step_timeout(delta: i32) {
     });
 }
 
-pub(crate) fn step_project_per_run_budget(delta_cents: i64) {
+pub fn step_project_per_run_budget(delta_cents: i64) {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         let next = (settings.per_run_budget_cents as i64 + delta_cents).clamp(100, 10_000);
@@ -10606,7 +10635,7 @@ pub(crate) fn step_project_per_run_budget(delta_cents: i64) {
     });
 }
 
-pub(crate) fn step_project_monthly_budget(delta_cents: i64) {
+pub fn step_project_monthly_budget(delta_cents: i64) {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         let next = (settings.monthly_budget_cents as i64 + delta_cents).clamp(1_000, 500_000);
@@ -10615,7 +10644,7 @@ pub(crate) fn step_project_monthly_budget(delta_cents: i64) {
     });
 }
 
-pub(crate) fn toggle_project_pause_on_budget() {
+pub fn toggle_project_pause_on_budget() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.pause_on_budget_limit = !settings.pause_on_budget_limit;
@@ -10623,7 +10652,7 @@ pub(crate) fn toggle_project_pause_on_budget() {
     });
 }
 
-pub(crate) fn toggle_project_require_approval_for_ci() {
+pub fn toggle_project_require_approval_for_ci() {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         settings.require_approval_for_ci = !settings.require_approval_for_ci;
@@ -10631,14 +10660,14 @@ pub(crate) fn toggle_project_require_approval_for_ci() {
     });
 }
 
-pub(crate) fn set_project_sandbox_mode(mode: ProjectSandboxMode) {
+pub fn set_project_sandbox_mode(mode: ProjectSandboxMode) {
     state().update(|s| {
         s.ensure_project_settings_mut().sandbox_mode = mode;
         s.persist_active_project_settings();
     });
 }
 
-pub(crate) fn set_project_preferred_runner(runner: &str) {
+pub fn set_project_preferred_runner(runner: &str) {
     let runner = runner.to_owned();
     state().update(|s| {
         s.ensure_project_settings_mut().preferred_runner = runner;
@@ -10662,7 +10691,7 @@ fn apply_project_settings_to_queue(settings: &ProjectSettings, queue: &mut Proje
 
 // --- Workflows Overview state -----------------------------------------------------------
 
-pub(crate) fn open_workflows_for_project(id: ProjectId) {
+pub fn open_workflows_for_project(id: ProjectId) {
     state().update(|s| {
         let project_changed = s.selected_project != Some(id);
         s.selected_project = Some(id);
@@ -10683,7 +10712,7 @@ pub(crate) fn open_workflows_for_project(id: ProjectId) {
     });
 }
 
-pub(crate) fn open_new_workflow_drawer() {
+pub fn open_new_workflow_drawer() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -10698,7 +10727,7 @@ pub(crate) fn open_new_workflow_drawer() {
     });
 }
 
-pub(crate) fn open_import_workflow_drawer() {
+pub fn open_import_workflow_drawer() {
     state().update(|s| {
         if s.selected_project.is_none() {
             s.selected_project = s.factory.projects().first().map(|p| p.id);
@@ -10713,14 +10742,14 @@ pub(crate) fn open_import_workflow_drawer() {
     });
 }
 
-pub(crate) fn active_workflows_overview() -> ProjectWorkflowsOverview {
+pub fn active_workflows_overview() -> ProjectWorkflowsOverview {
     state().with(|s| {
         let name = s.selected_project_name();
         s.workflows_overview_for_name(&name)
     })
 }
 
-pub(crate) fn workflows_overview_for_project(id: ProjectId) -> ProjectWorkflowsOverview {
+pub fn workflows_overview_for_project(id: ProjectId) -> ProjectWorkflowsOverview {
     state().with(|s| {
         let name = s
             .factory
@@ -10731,49 +10760,49 @@ pub(crate) fn workflows_overview_for_project(id: ProjectId) -> ProjectWorkflowsO
     })
 }
 
-pub(crate) fn workflows_filter() -> WorkflowsFilter {
+pub fn workflows_filter() -> WorkflowsFilter {
     state().with(|s| s.workflows_filter)
 }
 
-pub(crate) fn set_workflows_filter(filter: WorkflowsFilter) {
+pub fn set_workflows_filter(filter: WorkflowsFilter) {
     state().update(|s| {
         s.workflows_filter = filter;
     });
 }
 
-pub(crate) fn workflows_sort() -> WorkflowsSort {
+pub fn workflows_sort() -> WorkflowsSort {
     state().with(|s| s.workflows_sort)
 }
 
-pub(crate) fn set_workflows_sort(sort: WorkflowsSort) {
+pub fn set_workflows_sort(sort: WorkflowsSort) {
     state().update(|s| {
         s.workflows_sort = sort;
     });
 }
 
-pub(crate) fn workflows_search() -> String {
+pub fn workflows_search() -> String {
     state().with(|s| s.workflows_search.clone())
 }
 
-pub(crate) fn set_workflows_search(query: &str) {
+pub fn set_workflows_search(query: &str) {
     let query = query.to_owned();
     state().update(|s| {
         s.workflows_search = query;
     });
 }
 
-pub(crate) fn reset_workflows_filters() {
+pub fn reset_workflows_filters() {
     state().update(|s| {
         s.workflows_filter = WorkflowsFilter::All;
         s.workflows_search.clear();
     });
 }
 
-pub(crate) fn selected_workflow_overview_id() -> Option<String> {
+pub fn selected_workflow_overview_id() -> Option<String> {
     state().with(|s| s.workflows_selected_id.clone())
 }
 
-pub(crate) fn select_workflow_overview(id: &str) {
+pub fn select_workflow_overview(id: &str) {
     let id = id.to_owned();
     state().update(|s| {
         s.workflows_selected_id = Some(id);
@@ -10784,21 +10813,21 @@ pub(crate) fn select_workflow_overview(id: &str) {
     });
 }
 
-pub(crate) fn workflows_inspector_visible() -> bool {
+pub fn workflows_inspector_visible() -> bool {
     state().with(|s| s.workflows_inspector_visible)
 }
 
-pub(crate) fn toggle_workflows_inspector() {
+pub fn toggle_workflows_inspector() {
     state().update(|s| {
         s.workflows_inspector_visible = !s.workflows_inspector_visible;
     });
 }
 
-pub(crate) fn workflows_new_drawer_open() -> bool {
+pub fn workflows_new_drawer_open() -> bool {
     state().with(|s| s.workflows_new_drawer_open)
 }
 
-pub(crate) fn set_workflows_new_drawer_open(open: bool) {
+pub fn set_workflows_new_drawer_open(open: bool) {
     state().update(|s| {
         s.workflows_new_drawer_open = open;
         if open {
@@ -10807,11 +10836,11 @@ pub(crate) fn set_workflows_new_drawer_open(open: bool) {
     });
 }
 
-pub(crate) fn workflows_import_drawer_open() -> bool {
+pub fn workflows_import_drawer_open() -> bool {
     state().with(|s| s.workflows_import_drawer_open)
 }
 
-pub(crate) fn set_workflows_import_drawer_open(open: bool) {
+pub fn set_workflows_import_drawer_open(open: bool) {
     state().update(|s| {
         s.workflows_import_drawer_open = open;
         if open {
@@ -10820,11 +10849,11 @@ pub(crate) fn set_workflows_import_drawer_open(open: bool) {
     });
 }
 
-pub(crate) fn workflows_editing_selected() -> bool {
+pub fn workflows_editing_selected() -> bool {
     state().with(|s| s.workflows_editing_selected)
 }
 
-pub(crate) fn set_workflows_editing_selected(editing: bool) {
+pub fn set_workflows_editing_selected(editing: bool) {
     state().update(|s| {
         s.workflows_editing_selected = editing;
         if editing {
@@ -10834,11 +10863,11 @@ pub(crate) fn set_workflows_editing_selected(editing: bool) {
     });
 }
 
-pub(crate) fn workflows_ad_hoc_open() -> bool {
+pub fn workflows_ad_hoc_open() -> bool {
     state().with(|s| s.workflows_ad_hoc_open)
 }
 
-pub(crate) fn set_workflows_ad_hoc_open(open: bool) {
+pub fn set_workflows_ad_hoc_open(open: bool) {
     state().update(|s| {
         s.workflows_ad_hoc_open = open;
         if open {
@@ -10848,11 +10877,11 @@ pub(crate) fn set_workflows_ad_hoc_open(open: bool) {
     });
 }
 
-pub(crate) fn workflows_more_menu_open() -> bool {
+pub fn workflows_more_menu_open() -> bool {
     state().with(|s| s.workflows_more_menu_open)
 }
 
-pub(crate) fn set_workflows_more_menu_open(open: bool) {
+pub fn set_workflows_more_menu_open(open: bool) {
     state().update(|s| {
         s.workflows_more_menu_open = open;
         if open {
@@ -10862,7 +10891,7 @@ pub(crate) fn set_workflows_more_menu_open(open: bool) {
     });
 }
 
-pub(crate) fn reload_active_project_catalog() {
+pub fn reload_active_project_catalog() {
     state().update(|s| {
         if s.demo_mode {
             s.status_message = Some("Demo Mode uses built-in sample workflows".to_owned());
@@ -10884,7 +10913,7 @@ pub(crate) fn reload_active_project_catalog() {
     });
 }
 
-pub(crate) fn active_catalog_agents() -> Vec<AgentDef> {
+pub fn active_catalog_agents() -> Vec<AgentDef> {
     state().with(|s| {
         s.active_catalog_clone()
             .effective_agents()
@@ -10894,7 +10923,7 @@ pub(crate) fn active_catalog_agents() -> Vec<AgentDef> {
     })
 }
 
-pub(crate) fn active_catalog_composites() -> Vec<CompositeDef> {
+pub fn active_catalog_composites() -> Vec<CompositeDef> {
     state().with(|s| {
         s.active_catalog_clone()
             .effective_composites()
@@ -10905,7 +10934,7 @@ pub(crate) fn active_catalog_composites() -> Vec<CompositeDef> {
 }
 
 #[allow(dead_code)]
-pub(crate) fn active_catalog_skills() -> Vec<SkillDef> {
+pub fn active_catalog_skills() -> Vec<SkillDef> {
     state().with(|s| {
         s.active_catalog_clone()
             .effective_skills()
@@ -10915,7 +10944,7 @@ pub(crate) fn active_catalog_skills() -> Vec<SkillDef> {
     })
 }
 
-pub(crate) fn create_overview_workflow(
+pub fn create_overview_workflow(
     name: &str,
     description: &str,
     issue_label: Option<&str>,
@@ -11007,7 +11036,7 @@ pub(crate) fn create_overview_workflow(
     created
 }
 
-pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
+pub fn create_workflow_from_template(template: WorkflowTemplateKind) {
     state().update(|s| {
         let project = s.selected_project_name();
         if !s.demo_mode
@@ -11096,7 +11125,7 @@ pub(crate) fn create_workflow_from_template(template: WorkflowTemplateKind) {
     });
 }
 
-pub(crate) fn import_overview_workflow(file_path: &str) -> bool {
+pub fn import_overview_workflow(file_path: &str) -> bool {
     let mut imported = false;
     let path_owned = file_path.to_owned();
     state().update(|s| {
@@ -11123,12 +11152,7 @@ pub(crate) fn import_overview_workflow(file_path: &str) -> bool {
     imported
 }
 
-pub(crate) fn update_selected_overview_workflow(
-    id: &str,
-    name: &str,
-    description: &str,
-    is_draft: bool,
-) {
+pub fn update_selected_overview_workflow(id: &str, name: &str, description: &str, is_draft: bool) {
     let id_owned = id.to_owned();
     let name_owned = name.to_owned();
     let desc_owned = description.to_owned();
@@ -11147,7 +11171,7 @@ pub(crate) fn update_selected_overview_workflow(
     });
 }
 
-pub(crate) fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
+pub fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
     let mut started = false;
     let id_owned = id.to_owned();
     let summary_owned = summary.to_owned();
@@ -11187,7 +11211,7 @@ pub(crate) fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
     started
 }
 
-pub(crate) fn duplicate_overview_workflow(id: &str) {
+pub fn duplicate_overview_workflow(id: &str) {
     let id_owned = id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
@@ -11209,7 +11233,7 @@ pub(crate) fn duplicate_overview_workflow(id: &str) {
     });
 }
 
-pub(crate) fn duplicate_selected_overview_workflow() {
+pub fn duplicate_selected_overview_workflow() {
     let selected = state().with_untracked(|s| {
         let name = s.selected_project_name();
         let overview = s.workflows_overview_for_name(&name);
@@ -11223,7 +11247,7 @@ pub(crate) fn duplicate_selected_overview_workflow() {
     }
 }
 
-pub(crate) fn toggle_overview_workflow_draft(id: &str) {
+pub fn toggle_overview_workflow_draft(id: &str) {
     let id_owned = id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
@@ -11249,7 +11273,7 @@ pub(crate) fn toggle_overview_workflow_draft(id: &str) {
     });
 }
 
-pub(crate) fn export_overview_workflow(id: &str) {
+pub fn export_overview_workflow(id: &str) {
     let id_owned = id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
@@ -11264,7 +11288,7 @@ pub(crate) fn export_overview_workflow(id: &str) {
     });
 }
 
-pub(crate) fn export_selected_overview_workflow() {
+pub fn export_selected_overview_workflow() {
     let selected = state().with_untracked(|s| {
         let name = s.selected_project_name();
         let overview = s.workflows_overview_for_name(&name);
@@ -11278,7 +11302,7 @@ pub(crate) fn export_selected_overview_workflow() {
     }
 }
 
-pub(crate) fn delete_overview_workflow(id: &str) {
+pub fn delete_overview_workflow(id: &str) {
     let id_owned = id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
@@ -11340,7 +11364,7 @@ pub(crate) fn delete_overview_workflow(id: &str) {
     });
 }
 
-pub(crate) fn open_workflow_run_from_overview(workflow_name: &str) {
+pub fn open_workflow_run_from_overview(workflow_name: &str) {
     let project_id = state().with_untracked(|s| {
         s.selected_project
             .or_else(|| s.factory.projects().first().map(|p| p.id))
@@ -11352,7 +11376,7 @@ pub(crate) fn open_workflow_run_from_overview(workflow_name: &str) {
 
 // --- Visual Workflow Editor state -------------------------------------------------------
 
-pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
+pub fn open_workflow_editor_from_overview(workflow_id: &str) {
     let target_id = workflow_id.to_owned();
     state().update(|s| {
         let project = s.selected_project_name();
@@ -11392,7 +11416,7 @@ pub(crate) fn open_workflow_editor_from_overview(workflow_id: &str) {
     });
 }
 
-pub(crate) fn open_workflow_editor_for_selected_overview() {
+pub fn open_workflow_editor_for_selected_overview() {
     let selected = state().with_untracked(|s| {
         let name = s.selected_project_name();
         let overview = s.workflows_overview_for_name(&name);
@@ -11406,7 +11430,7 @@ pub(crate) fn open_workflow_editor_for_selected_overview() {
     }
 }
 
-pub(crate) fn close_workflow_editor() {
+pub fn close_workflow_editor() {
     state().update(|s| {
         let target = match s.workflow_editor_return_view {
             ActiveView::WorkflowEditor => ActiveView::Workflows,
@@ -11420,7 +11444,7 @@ pub(crate) fn close_workflow_editor() {
     });
 }
 
-pub(crate) fn open_workflows_from_editor() {
+pub fn open_workflows_from_editor() {
     state().update(|s| {
         s.active_view = ActiveView::Workflows;
         s.workflow_editor_history_open = false;
@@ -11430,36 +11454,36 @@ pub(crate) fn open_workflows_from_editor() {
     });
 }
 
-pub(crate) fn active_workflow_editor() -> WorkflowEditorDocument {
+pub fn active_workflow_editor() -> WorkflowEditorDocument {
     state().with(AppState::active_workflow_editor_clone)
 }
 
-pub(crate) fn workflow_editor_palette_search() -> String {
+pub fn workflow_editor_palette_search() -> String {
     state().with(|s| s.workflow_editor_palette_search.clone())
 }
 
-pub(crate) fn set_workflow_editor_palette_search(query: &str) {
+pub fn set_workflow_editor_palette_search(query: &str) {
     let query = query.to_owned();
     state().update(|s| {
         s.workflow_editor_palette_search = query;
     });
 }
 
-pub(crate) fn workflow_editor_inspector_visible() -> bool {
+pub fn workflow_editor_inspector_visible() -> bool {
     state().with(|s| s.workflow_editor_inspector_visible)
 }
 
-pub(crate) fn toggle_workflow_editor_inspector() {
+pub fn toggle_workflow_editor_inspector() {
     state().update(|s| {
         s.workflow_editor_inspector_visible = !s.workflow_editor_inspector_visible;
     });
 }
 
-pub(crate) fn workflow_editor_history_open() -> bool {
+pub fn workflow_editor_history_open() -> bool {
     state().with(|s| s.workflow_editor_history_open)
 }
 
-pub(crate) fn toggle_workflow_editor_history() {
+pub fn toggle_workflow_editor_history() {
     state().update(|s| {
         s.workflow_editor_history_open = !s.workflow_editor_history_open;
         if s.workflow_editor_history_open {
@@ -11468,11 +11492,11 @@ pub(crate) fn toggle_workflow_editor_history() {
     });
 }
 
-pub(crate) fn workflow_editor_ad_hoc_open() -> bool {
+pub fn workflow_editor_ad_hoc_open() -> bool {
     state().with(|s| s.workflow_editor_ad_hoc_open)
 }
 
-pub(crate) fn set_workflow_editor_ad_hoc_open(open: bool) {
+pub fn set_workflow_editor_ad_hoc_open(open: bool) {
     state().update(|s| {
         s.workflow_editor_ad_hoc_open = open;
         if open {
@@ -11481,24 +11505,24 @@ pub(crate) fn set_workflow_editor_ad_hoc_open(open: bool) {
     });
 }
 
-pub(crate) fn workflow_editor_validation() -> Option<ValidationReport> {
+pub fn workflow_editor_validation() -> Option<ValidationReport> {
     state().with(|s| s.workflow_editor_validation.clone())
 }
 
-pub(crate) fn dismiss_workflow_editor_validation() {
+pub fn dismiss_workflow_editor_validation() {
     state().update(|s| {
         s.workflow_editor_validation = None;
     });
 }
 
-pub(crate) fn select_workflow_editor_node(selection: EditorSelection) {
+pub fn select_workflow_editor_node(selection: EditorSelection) {
     state().update(|s| {
         s.ensure_workflow_editor_mut().selected = selection;
         s.workflow_editor_inspector_visible = true;
     });
 }
 
-pub(crate) fn add_workflow_editor_step(kind: StepTypeKind) {
+pub fn add_workflow_editor_step(kind: StepTypeKind) {
     state().update(|s| {
         let doc = s.ensure_workflow_editor_mut();
         doc.add_from_palette(kind);
@@ -11509,7 +11533,7 @@ pub(crate) fn add_workflow_editor_step(kind: StepTypeKind) {
     });
 }
 
-pub(crate) fn add_workflow_editor_catalog_composite(composite_id: &str) {
+pub fn add_workflow_editor_catalog_composite(composite_id: &str) {
     let comp_id = composite_id.to_owned();
     state().update(|s| {
         let catalog = s.active_catalog_clone();
@@ -11524,7 +11548,7 @@ pub(crate) fn add_workflow_editor_catalog_composite(composite_id: &str) {
     });
 }
 
-pub(crate) fn update_workflow_editor_step_agent(step_id: &str, agent_ref: Option<&str>) {
+pub fn update_workflow_editor_step_agent(step_id: &str, agent_ref: Option<&str>) {
     let step_id = step_id.to_owned();
     let agent_owned = agent_ref.map(str::to_owned);
     state().update(|s| {
@@ -11533,7 +11557,7 @@ pub(crate) fn update_workflow_editor_step_agent(step_id: &str, agent_ref: Option
     });
 }
 
-pub(crate) fn update_workflow_editor_step_skills(step_id: &str, raw_skills: &str) {
+pub fn update_workflow_editor_step_skills(step_id: &str, raw_skills: &str) {
     let step_id = step_id.to_owned();
     let raw = raw_skills.to_owned();
     state().update(|s| {
@@ -11542,7 +11566,7 @@ pub(crate) fn update_workflow_editor_step_skills(step_id: &str, raw_skills: &str
     });
 }
 
-pub(crate) fn remove_workflow_editor_step(step_id: &str) {
+pub fn remove_workflow_editor_step(step_id: &str) {
     let step_id = step_id.to_owned();
     state().update(|s| {
         let doc = s.ensure_workflow_editor_mut();
@@ -11555,7 +11579,7 @@ pub(crate) fn remove_workflow_editor_step(step_id: &str) {
     });
 }
 
-pub(crate) fn set_workflow_editor_loop_name(loop_id: &str, name: &str) {
+pub fn set_workflow_editor_loop_name(loop_id: &str, name: &str) {
     let loop_id = loop_id.to_owned();
     let name = name.to_owned();
     state().update(|s| {
@@ -11564,7 +11588,7 @@ pub(crate) fn set_workflow_editor_loop_name(loop_id: &str, name: &str) {
     });
 }
 
-pub(crate) fn set_workflow_editor_loop_repeat(loop_id: &str, mode: LoopRepeatMode) {
+pub fn set_workflow_editor_loop_repeat(loop_id: &str, mode: LoopRepeatMode) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11572,7 +11596,7 @@ pub(crate) fn set_workflow_editor_loop_repeat(loop_id: &str, mode: LoopRepeatMod
     });
 }
 
-pub(crate) fn set_workflow_editor_loop_max_attempts(loop_id: &str, raw: &str) {
+pub fn set_workflow_editor_loop_max_attempts(loop_id: &str, raw: &str) {
     let loop_id = loop_id.to_owned();
     let parsed = raw.trim().parse::<u32>().ok();
     if let Some(value) = parsed {
@@ -11583,7 +11607,7 @@ pub(crate) fn set_workflow_editor_loop_max_attempts(loop_id: &str, raw: &str) {
     }
 }
 
-pub(crate) fn set_workflow_editor_loop_wait(loop_id: &str, wait: LoopWaitBetween) {
+pub fn set_workflow_editor_loop_wait(loop_id: &str, wait: LoopWaitBetween) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11591,7 +11615,7 @@ pub(crate) fn set_workflow_editor_loop_wait(loop_id: &str, wait: LoopWaitBetween
     });
 }
 
-pub(crate) fn toggle_workflow_editor_loop_pass_previous(loop_id: &str) {
+pub fn toggle_workflow_editor_loop_pass_previous(loop_id: &str) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11599,7 +11623,7 @@ pub(crate) fn toggle_workflow_editor_loop_pass_previous(loop_id: &str) {
     });
 }
 
-pub(crate) fn toggle_workflow_editor_loop_discard_changes(loop_id: &str) {
+pub fn toggle_workflow_editor_loop_discard_changes(loop_id: &str) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11607,7 +11631,7 @@ pub(crate) fn toggle_workflow_editor_loop_discard_changes(loop_id: &str) {
     });
 }
 
-pub(crate) fn set_workflow_editor_loop_on_exhausted(loop_id: &str, action: LoopExhaustedAction) {
+pub fn set_workflow_editor_loop_on_exhausted(loop_id: &str, action: LoopExhaustedAction) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11615,7 +11639,7 @@ pub(crate) fn set_workflow_editor_loop_on_exhausted(loop_id: &str, action: LoopE
     });
 }
 
-pub(crate) fn add_workflow_editor_exit_condition(loop_id: &str) {
+pub fn add_workflow_editor_exit_condition(loop_id: &str) {
     let loop_id = loop_id.to_owned();
     state().update(|s| {
         s.ensure_workflow_editor_mut()
@@ -11623,7 +11647,7 @@ pub(crate) fn add_workflow_editor_exit_condition(loop_id: &str) {
     });
 }
 
-pub(crate) fn remove_workflow_editor_exit_condition(loop_id: &str, condition_id: &str) {
+pub fn remove_workflow_editor_exit_condition(loop_id: &str, condition_id: &str) {
     let loop_id = loop_id.to_owned();
     let condition_id = condition_id.to_owned();
     state().update(|s| {
@@ -11632,7 +11656,7 @@ pub(crate) fn remove_workflow_editor_exit_condition(loop_id: &str, condition_id:
     });
 }
 
-pub(crate) fn update_workflow_editor_exit_condition(
+pub fn update_workflow_editor_exit_condition(
     loop_id: &str,
     condition_id: &str,
     step_id: Option<String>,
@@ -11654,7 +11678,7 @@ pub(crate) fn update_workflow_editor_exit_condition(
     });
 }
 
-pub(crate) fn update_workflow_editor_step_name(step_id: &str, name: &str) {
+pub fn update_workflow_editor_step_name(step_id: &str, name: &str) {
     let step_id = step_id.to_owned();
     let name = name.to_owned();
     state().update(|s| {
@@ -11663,7 +11687,7 @@ pub(crate) fn update_workflow_editor_step_name(step_id: &str, name: &str) {
     });
 }
 
-pub(crate) fn update_workflow_editor_step_detail(step_id: &str, detail: &str) {
+pub fn update_workflow_editor_step_detail(step_id: &str, detail: &str) {
     let step_id = step_id.to_owned();
     let detail = detail.to_owned();
     state().update(|s| {
@@ -11672,7 +11696,7 @@ pub(crate) fn update_workflow_editor_step_detail(step_id: &str, detail: &str) {
     });
 }
 
-pub(crate) fn update_workflow_editor_fallback_name(loop_id: &str, name: &str) {
+pub fn update_workflow_editor_fallback_name(loop_id: &str, name: &str) {
     let loop_id = loop_id.to_owned();
     let name = name.to_owned();
     state().update(|s| {
@@ -11681,25 +11705,25 @@ pub(crate) fn update_workflow_editor_fallback_name(loop_id: &str, name: &str) {
     });
 }
 
-pub(crate) fn toggle_workflow_editor_trigger_work_queue() {
+pub fn toggle_workflow_editor_trigger_work_queue() {
     state().update(|s| {
         s.ensure_workflow_editor_mut().toggle_trigger_work_queue();
     });
 }
 
-pub(crate) fn toggle_workflow_editor_trigger_ad_hoc() {
+pub fn toggle_workflow_editor_trigger_ad_hoc() {
     state().update(|s| {
         s.ensure_workflow_editor_mut().toggle_trigger_ad_hoc();
     });
 }
 
-pub(crate) fn toggle_workflow_editor_mcp_project_only() {
+pub fn toggle_workflow_editor_mcp_project_only() {
     state().update(|s| {
         s.ensure_workflow_editor_mut().toggle_mcp_project_only();
     });
 }
 
-pub(crate) fn validate_workflow_editor() {
+pub fn validate_workflow_editor() {
     state().update(|s| {
         let doc = s.active_workflow_editor_clone();
         let report = if s.demo_mode {
@@ -11714,7 +11738,7 @@ pub(crate) fn validate_workflow_editor() {
     });
 }
 
-pub(crate) fn save_workflow_editor() {
+pub fn save_workflow_editor() {
     state().update(|s| {
         let (project, workflow_id) = s.active_workflow_editor_key.clone();
         if !s.demo_mode
@@ -11801,7 +11825,7 @@ fn slugify_workflow_id(input: &str) -> String {
     }
 }
 
-pub(crate) fn launch_editor_ad_hoc_run(summary: &str) -> bool {
+pub fn launch_editor_ad_hoc_run(summary: &str) -> bool {
     let prompt = summary.to_owned();
     let mut launched = false;
     let mut real_launch: Option<(String, String, String)> = None;
@@ -12332,22 +12356,22 @@ fn spawn_real_workflow_run(
 
 /// Summary of an inherited App secret as seen from the active project.
 #[derive(Debug, Clone)]
-pub(crate) struct InheritedAppSecretView {
-    pub(crate) record: SecretRecord,
-    pub(crate) excluded: bool,
-    pub(crate) overridden: bool,
+pub struct InheritedAppSecretView {
+    pub record: SecretRecord,
+    pub excluded: bool,
+    pub overridden: bool,
 }
 
 /// Summary of a `${VAR}` required by any MCP server in the active project.
 #[derive(Debug, Clone)]
-pub(crate) struct NeededMcpVarView {
-    pub(crate) name: String,
-    pub(crate) servers: Vec<String>,
-    pub(crate) status: NeededMcpVarStatus,
+pub struct NeededMcpVarView {
+    pub name: String,
+    pub servers: Vec<String>,
+    pub status: NeededMcpVarStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum NeededMcpVarStatus {
+pub enum NeededMcpVarStatus {
     ProjectSecret {
         source_label: String,
         needs_value: bool,
@@ -12361,42 +12385,42 @@ pub(crate) enum NeededMcpVarStatus {
     Missing,
 }
 
-pub(crate) fn secrets_store_status() -> StoreStatus {
+pub fn secrets_store_status() -> StoreStatus {
     state().with(|s| s.secrets_store_status.clone())
 }
 
-pub(crate) fn secrets_feedback() -> Option<String> {
+pub fn secrets_feedback() -> Option<String> {
     state().with(|s| s.secrets_feedback.clone())
 }
 
-pub(crate) fn secrets_error() -> Option<String> {
+pub fn secrets_error() -> Option<String> {
     state().with(|s| s.secrets_error.clone())
 }
 
-pub(crate) fn clear_secrets_messages() {
+pub fn clear_secrets_messages() {
     state().update(|s| {
         s.secrets_feedback = None;
         s.secrets_error = None;
     });
 }
 
-pub(crate) fn secrets_test_in_progress() -> bool {
+pub fn secrets_test_in_progress() -> bool {
     state().with(|s| s.secrets_test_in_progress)
 }
 
-pub(crate) fn secrets_test_result() -> Option<Result<String, String>> {
+pub fn secrets_test_result() -> Option<Result<String, String>> {
     state().with(|s| s.secrets_test_result.clone())
 }
 
-pub(crate) fn db_path_change_pending() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+pub fn db_path_change_pending() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     state().with(|s| s.db_path_change_pending.clone())
 }
 
-pub(crate) fn legacy_db_files_found() -> Vec<std::path::PathBuf> {
+pub fn legacy_db_files_found() -> Vec<std::path::PathBuf> {
     state().with(|s| s.legacy_db_files_found.clone())
 }
 
-pub(crate) fn take_secrets_prefill() -> (Option<String>, Option<EnvScope>) {
+pub fn take_secrets_prefill() -> (Option<String>, Option<EnvScope>) {
     let mut out = (None, None);
     state().update(|s| {
         out = (
@@ -12407,7 +12431,7 @@ pub(crate) fn take_secrets_prefill() -> (Option<String>, Option<EnvScope>) {
     out
 }
 
-pub(crate) fn app_env_secrets() -> Vec<SecretRecord> {
+pub fn app_env_secrets() -> Vec<SecretRecord> {
     state().with(|s| {
         s.secrets
             .iter()
@@ -12425,7 +12449,7 @@ pub(crate) fn app_env_secrets() -> Vec<SecretRecord> {
     })
 }
 
-pub(crate) fn github_pat_secrets() -> Vec<SecretRecord> {
+pub fn github_pat_secrets() -> Vec<SecretRecord> {
     state().with(|s| {
         s.secrets
             .iter()
@@ -12442,7 +12466,7 @@ pub(crate) fn github_pat_secrets() -> Vec<SecretRecord> {
     })
 }
 
-pub(crate) fn projects_using_github_pat(secret_id: &str) -> Vec<String> {
+pub fn projects_using_github_pat(secret_id: &str) -> Vec<String> {
     state().with(|s| {
         s.project_settings
             .values()
@@ -12453,7 +12477,7 @@ pub(crate) fn projects_using_github_pat(secret_id: &str) -> Vec<String> {
 }
 
 /// Projects' MCP servers (tracked + user + project extra) referencing a secret's env var name.
-pub(crate) fn mcp_servers_referencing_var(var_name: &str) -> Vec<String> {
+pub fn mcp_servers_referencing_var(var_name: &str) -> Vec<String> {
     state().with(|s| {
         let mut names = BTreeSet::new();
         for server in &s.preferences.extensions.mcp_servers {
@@ -12462,7 +12486,8 @@ pub(crate) fn mcp_servers_referencing_var(var_name: &str) -> Vec<String> {
             }
         }
         for project in s.factory.projects() {
-            if let Some(config) = factory_core::mcp::load_project_mcp(&project.root_path).config() {
+            if let Some(config) = factory_config::mcp::load_project_mcp(&project.root_path).config()
+            {
                 for server in &config.servers {
                     if server.env_references().iter().any(|r| r == var_name) {
                         names.insert(format!("{} ({})", server.name, project.name));
@@ -12481,7 +12506,7 @@ pub(crate) fn mcp_servers_referencing_var(var_name: &str) -> Vec<String> {
     })
 }
 
-pub(crate) fn active_project_env_secrets() -> Vec<SecretRecord> {
+pub fn active_project_env_secrets() -> Vec<SecretRecord> {
     state().with(|s| {
         let pname = s.selected_project_name();
         let Some(pid) = s.project_id_by_name(&pname) else {
@@ -12503,7 +12528,7 @@ pub(crate) fn active_project_env_secrets() -> Vec<SecretRecord> {
     })
 }
 
-pub(crate) fn active_project_inherited_app_secrets() -> Vec<InheritedAppSecretView> {
+pub fn active_project_inherited_app_secrets() -> Vec<InheritedAppSecretView> {
     state().with(|s| {
         let pname = s.selected_project_name();
         let Some(pid) = s.project_id_by_name(&pname) else {
@@ -12546,7 +12571,7 @@ pub(crate) fn active_project_inherited_app_secrets() -> Vec<InheritedAppSecretVi
 }
 
 /// Returns `${VAR}` names needed by any MCP server in the active project and their resolution status.
-pub(crate) fn active_project_needed_mcp_vars() -> Vec<NeededMcpVarView> {
+pub fn active_project_needed_mcp_vars() -> Vec<NeededMcpVarView> {
     state().with(|s| {
         let pname = s.selected_project_name();
         let pid = s.project_id_by_name(&pname);
@@ -12554,7 +12579,7 @@ pub(crate) fn active_project_needed_mcp_vars() -> Vec<NeededMcpVarView> {
         let project_root = s.project_root_by_name(&pname);
         let mut by_var: BTreeMap<String, Vec<String>> = BTreeMap::new();
         if let Some(root) = project_root
-            && let Some(config) = factory_core::mcp::load_project_mcp(&root).config()
+            && let Some(config) = factory_config::mcp::load_project_mcp(&root).config()
         {
             for server in &config.servers {
                 if !server.disabled {
@@ -12648,7 +12673,7 @@ pub(crate) fn active_project_needed_mcp_vars() -> Vec<NeededMcpVarView> {
 }
 
 /// Checks if a `${VAR}` referenced by a project MCP server currently resolves to an inherited App secret.
-pub(crate) fn var_resolves_to_inherited_app_secret(var_name: &str) -> bool {
+pub fn var_resolves_to_inherited_app_secret(var_name: &str) -> bool {
     state().with(|s| {
         let pname = s.selected_project_name();
         let Some(pid) = s.project_id_by_name(&pname) else {
@@ -12684,7 +12709,7 @@ pub(crate) fn var_resolves_to_inherited_app_secret(var_name: &str) -> bool {
     })
 }
 
-pub(crate) fn create_app_keychain_secret(
+pub fn create_app_keychain_secret(
     name: &str,
     raw_value: &str,
     sharing: Sharing,
@@ -12753,7 +12778,7 @@ pub(crate) fn create_app_keychain_secret(
     ok
 }
 
-pub(crate) fn create_app_manager_secret(
+pub fn create_app_manager_secret(
     name: &str,
     manager_id: &str,
     reference: &str,
@@ -12812,11 +12837,7 @@ pub(crate) fn create_app_manager_secret(
     ok
 }
 
-pub(crate) fn create_project_keychain_secret(
-    name: &str,
-    raw_value: &str,
-    exposure: Exposure,
-) -> bool {
+pub fn create_project_keychain_secret(name: &str, raw_value: &str, exposure: Exposure) -> bool {
     let mut ok = false;
     state().update(|s| {
         if s.demo_mode {
@@ -12883,7 +12904,7 @@ pub(crate) fn create_project_keychain_secret(
     ok
 }
 
-pub(crate) fn create_project_manager_secret(
+pub fn create_project_manager_secret(
     name: &str,
     manager_id: &str,
     reference: &str,
@@ -12946,7 +12967,7 @@ pub(crate) fn create_project_manager_secret(
     ok
 }
 
-pub(crate) fn create_github_pat_secret(name: &str, raw_token: &str) -> Option<SecretId> {
+pub fn create_github_pat_secret(name: &str, raw_token: &str) -> Option<SecretId> {
     let mut created = None;
     state().update(|s| {
         if s.demo_mode {
@@ -12990,7 +13011,7 @@ pub(crate) fn create_github_pat_secret(name: &str, raw_token: &str) -> Option<Se
     created
 }
 
-pub(crate) fn replace_secret_value(id: &str, new_value: &str) -> bool {
+pub fn replace_secret_value(id: &str, new_value: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         if s.demo_mode {
@@ -13040,7 +13061,7 @@ pub(crate) fn replace_secret_value(id: &str, new_value: &str) -> bool {
     ok
 }
 
-pub(crate) fn update_secret_exposure(id: &str, exposure: Exposure) {
+pub fn update_secret_exposure(id: &str, exposure: Exposure) {
     state().update(|s| {
         if s.demo_mode {
             return;
@@ -13088,7 +13109,7 @@ pub(crate) fn update_secret_exposure(id: &str, exposure: Exposure) {
     });
 }
 
-pub(crate) fn update_app_secret_sharing(id: &str, sharing: Sharing) {
+pub fn update_app_secret_sharing(id: &str, sharing: Sharing) {
     state().update(|s| {
         if s.demo_mode {
             return;
@@ -13128,7 +13149,7 @@ pub(crate) fn update_app_secret_sharing(id: &str, sharing: Sharing) {
     });
 }
 
-pub(crate) fn delete_secret_by_id(id: &str) {
+pub fn delete_secret_by_id(id: &str) {
     state().update(|s| {
         if s.demo_mode {
             return;
@@ -13185,7 +13206,7 @@ pub(crate) fn delete_secret_by_id(id: &str) {
     });
 }
 
-pub(crate) fn toggle_project_exclude_app_secret(secret_id: &str) {
+pub fn toggle_project_exclude_app_secret(secret_id: &str) {
     state().update(|s| {
         let settings = s.ensure_project_settings_mut();
         let excluded = if settings.excluded_app_secrets.contains(secret_id) {
@@ -13206,7 +13227,7 @@ pub(crate) fn toggle_project_exclude_app_secret(secret_id: &str) {
     });
 }
 
-pub(crate) fn confirm_database_moved() {
+pub fn confirm_database_moved() {
     state().update(|s| {
         let outcome = s.db.as_ref().and_then(|db_arc| {
             db_arc.lock().ok().map(|db| {
@@ -13245,7 +13266,7 @@ pub(crate) fn confirm_database_moved() {
     });
 }
 
-pub(crate) fn confirm_database_cloned() {
+pub fn confirm_database_cloned() {
     state().update(|s| {
         let outcome = s.db.as_ref().and_then(|db_arc| {
             db_arc.lock().ok().map(|db| {
@@ -13285,7 +13306,7 @@ pub(crate) fn confirm_database_cloned() {
     });
 }
 
-pub(crate) fn delete_legacy_databases_now() {
+pub fn delete_legacy_databases_now() {
     state().update(|s| {
         let paths = s.legacy_db_files_found.clone();
         if paths.is_empty() {
@@ -13319,7 +13340,7 @@ pub(crate) fn delete_legacy_databases_now() {
 
 // --- 1Password & Generic Command Managers -----------------------------------------------
 
-pub(crate) fn set_one_password_enabled(enabled: bool) {
+pub fn set_one_password_enabled(enabled: bool) {
     state().update(|s| {
         s.preferences.secrets.one_password.enabled = enabled;
         s.secrets_error = None;
@@ -13332,7 +13353,7 @@ pub(crate) fn set_one_password_enabled(enabled: bool) {
     });
 }
 
-pub(crate) fn set_one_password_binary_path(path: &str) {
+pub fn set_one_password_binary_path(path: &str) {
     state().update(|s| {
         let trimmed = path.trim();
         s.preferences.secrets.one_password.binary_path = if trimmed.is_empty() {
@@ -13344,7 +13365,7 @@ pub(crate) fn set_one_password_binary_path(path: &str) {
     });
 }
 
-pub(crate) fn set_one_password_auth_mode(mode: OnePasswordAuthMode) {
+pub fn set_one_password_auth_mode(mode: OnePasswordAuthMode) {
     state().update(|s| {
         s.preferences.secrets.one_password.auth_mode = mode;
         s.secrets_error = None;
@@ -13353,14 +13374,14 @@ pub(crate) fn set_one_password_auth_mode(mode: OnePasswordAuthMode) {
     });
 }
 
-pub(crate) fn set_one_password_desktop_account(account: &str) {
+pub fn set_one_password_desktop_account(account: &str) {
     state().update(|s| {
         s.preferences.secrets.one_password.desktop_account = account.trim().to_owned();
         s.persist_preferences();
     });
 }
 
-pub(crate) fn set_one_password_service_account_token(raw_token: &str) -> bool {
+pub fn set_one_password_service_account_token(raw_token: &str) -> bool {
     let mut ok = false;
     state().update(|s| {
         if s.demo_mode {
@@ -13414,7 +13435,7 @@ pub(crate) fn set_one_password_service_account_token(raw_token: &str) -> bool {
     ok
 }
 
-pub(crate) fn test_one_password_connection_async() {
+pub fn test_one_password_connection_async() {
     let job = state().with_untracked(|s| {
         if s.secrets_test_in_progress {
             return None;
@@ -13439,18 +13460,18 @@ pub(crate) fn test_one_password_connection_async() {
         spawn(async move {
             let outcome = spawn_blocking_task(move || {
                 let mgr = OnePasswordManager::new(cfg, store, db_id);
-                let cancel = factory_core::CancellationToken::new();
+                let cancel = CancellationToken::new();
                 match mgr.status(&cancel) {
-                    factory_core::ManagerStatus::Ready => {
+                    ManagerStatus::Ready => {
                         Ok("1Password CLI is ready and authenticated.".to_owned())
                     }
-                    factory_core::ManagerStatus::Locked => {
+                    ManagerStatus::Locked => {
                         Err("1Password CLI is locked. Unlock 1Password or configure a service account token.".to_owned())
                     }
-                    factory_core::ManagerStatus::NotInstalled => {
+                    ManagerStatus::NotInstalled => {
                         Err("1Password CLI (`op`) was not found on PATH or at the configured binary path.".to_owned())
                     }
-                    factory_core::ManagerStatus::AuthFailed(msg) => Err(if msg.is_empty() {
+                    ManagerStatus::AuthFailed(msg) => Err(if msg.is_empty() {
                         "1Password authentication failed.".to_owned()
                     } else {
                         msg
@@ -13466,7 +13487,7 @@ pub(crate) fn test_one_password_connection_async() {
     });
 }
 
-pub(crate) fn test_one_password_reference_async(reference: &str) {
+pub fn test_one_password_reference_async(reference: &str) {
     let reference = reference.trim().to_owned();
     let job = state().with_untracked(|s| {
         if s.secrets_test_in_progress {
@@ -13492,7 +13513,7 @@ pub(crate) fn test_one_password_reference_async(reference: &str) {
         spawn(async move {
             let outcome = spawn_blocking_task(move || {
                 let mgr = OnePasswordManager::new(cfg, store, db_id);
-                let cancel = factory_core::CancellationToken::new();
+                let cancel = CancellationToken::new();
                 mgr.test_reference(&reference, &cancel)
                     .map(|()| format!("Reference '{reference}' resolved successfully."))
                     .map_err(|failure| failure.to_problem(None).reason)
@@ -13506,7 +13527,7 @@ pub(crate) fn test_one_password_reference_async(reference: &str) {
     });
 }
 
-pub(crate) fn upsert_command_manager(config: CommandManagerConfig) -> bool {
+pub fn upsert_command_manager(config: CommandManagerConfig) -> bool {
     let mut ok = false;
     state().update(|s| {
         if config.id.trim().is_empty()
@@ -13537,7 +13558,7 @@ pub(crate) fn upsert_command_manager(config: CommandManagerConfig) -> bool {
     ok
 }
 
-pub(crate) fn remove_command_manager(id: &str) {
+pub fn remove_command_manager(id: &str) {
     state().update(|s| {
         let removed_auth: Vec<SecretId> = s
             .preferences
@@ -13565,7 +13586,7 @@ pub(crate) fn remove_command_manager(id: &str) {
     });
 }
 
-pub(crate) fn available_secret_managers() -> Vec<(ManagerId, String)> {
+pub fn available_secret_managers() -> Vec<(ManagerId, String)> {
     state().with(|s| {
         let mut out = Vec::new();
         if s.preferences.secrets.one_password.enabled {
@@ -13581,7 +13602,7 @@ pub(crate) fn available_secret_managers() -> Vec<(ManagerId, String)> {
 }
 
 /// Resumes all `NeedsSetup` items in the active (or specified) project's work queue.
-pub(crate) fn resume_queued_work_for_project(project_id: ProjectId) {
+pub fn resume_queued_work_for_project(project_id: ProjectId) {
     let mut resumed_issues = Vec::new();
     state().update(|s| {
         let Some(pname) = s.factory.project(project_id).map(|p| p.name.clone()) else {
@@ -13605,7 +13626,7 @@ pub(crate) fn resume_queued_work_for_project(project_id: ProjectId) {
     }
 }
 
-pub(crate) fn resume_work_queue_issue(issue_number: u32) {
+pub fn resume_work_queue_issue(issue_number: u32) {
     state().update(|s| {
         let pname = s.selected_project_name();
         let queue = s.ensure_queue_mut(&pname);
@@ -13624,7 +13645,7 @@ pub(crate) fn resume_work_queue_issue(issue_number: u32) {
 }
 
 /// Dispatches a `SecretFix` action from Inbox items or inline run/chat banners.
-pub(crate) fn apply_secret_fix(project_name: Option<&str>, fix: &SecretFix) {
+pub fn apply_secret_fix(project_name: Option<&str>, fix: &SecretFix) {
     if let Some(name) = project_name {
         state().update(|s| {
             if let Some(project) = s.factory.projects().iter().find(|p| p.name == name) {

@@ -775,6 +775,7 @@ dependencies = [
  "factory-core",
  "factory-fonts",
  "factory-logging",
+ "factory-store",
  "factory-ui-kit",
  "factory-updater",
  "log",
@@ -967,6 +968,30 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+ "zeroize",
+]
+
+[[package]]
+name = "factory-store"
+version = "0.0.0"
+dependencies = [
+ "factory-chat",
+ "factory-config",
+ "factory-fonts",
+ "factory-github",
+ "factory-logging",
+ "factory-machines",
+ "factory-providers",
+ "factory-runner",
+ "factory-secrets",
+ "factory-storage",
+ "factory-types",
+ "factory-updater",
+ "factory-workflows",
+ "log",
+ "nsh-core",
+ "secrecy",
+ "tempfile",
  "zeroize",
 ]
 
