@@ -9,6 +9,10 @@ on:
         type: boolean
         required: false
         default: false
+    secrets:
+      PNPR_TOKEN:
+        description: pnpr token resolved from the target CI Cache environment
+        required: false
 
 concurrency:
   group: test-${{ github.ref_name }}
@@ -24,7 +28,7 @@ jobs:
   test-platform:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    environment: ${{ github.event_name == 'workflow_call' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
+    environment: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -43,7 +47,7 @@ jobs:
         uses: $/.github/actions/setup-rust
         with:
           pnpr-token: ${{ secrets.PNPR_TOKEN }}
-          sccache-rw-mode: ${{ github.event_name == 'workflow_call' && inputs.cache_write && 'READ_WRITE' || 'READ_ONLY' }}
+          sccache-rw-mode: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'READ_WRITE' || 'READ_ONLY' }}
 
       - name: Run automated tests
         run: cargo test --workspace --locked --no-fail-fast

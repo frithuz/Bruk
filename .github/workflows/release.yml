@@ -127,6 +127,8 @@ jobs:
     uses: $/.github/workflows/lint.yml
     with:
       cache_write: ${{ github.ref == 'refs/heads/main' }}
+    secrets:
+      PNPR_TOKEN: ${{ secrets.PNPR_TOKEN }}
 
   test:
     name: Test
@@ -142,6 +144,8 @@ jobs:
     uses: $/.github/workflows/test.yml
     with:
       cache_write: ${{ github.ref == 'refs/heads/main' }}
+    secrets:
+      PNPR_TOKEN: ${{ secrets.PNPR_TOKEN }}
 
   check-release:
     name: Check release
