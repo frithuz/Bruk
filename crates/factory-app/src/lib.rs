@@ -43,7 +43,9 @@ pub fn App() -> impl IntoElement {
     }
     store::init_default();
     let surface = app_surface();
-    boot_log::schedule_main_thread_ready();
+    boot_log::schedule_main_thread_ready(|cb| {
+        drop(nsh_core::prelude::run_on_main_thread(cb));
+    });
     let summary = format!(
         "needs_home_setup={} active_view={:?}",
         store::needs_home_setup(),
@@ -183,7 +185,7 @@ fn app_surface() -> impl IntoElement {
         ui::menubar::install_menubar_and_attention_surfaces();
     }
     nsh_core::element::desktop::on_app_quit(|| async {
-        updater::finish_staged_update_on_quit();
+        updater::finish_staged_update_on_quit(nsh_core::restart::remember_program);
     });
 
     let _span = boot_log::span("boot.ui.build_root_view");

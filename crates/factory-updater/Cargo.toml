@@ -10,7 +10,6 @@ doctest = false
 [dependencies]
 dirs.workspace = true
 log.workspace = true
-nsh-core.workspace = true
 nsh-updater.workspace = true
 ureq.workspace = true
 

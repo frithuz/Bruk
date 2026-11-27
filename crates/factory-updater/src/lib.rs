@@ -409,10 +409,14 @@ fn download_update_into(
     Ok(archive_path)
 }
 
-/// Replaces the installed `Bruk.app` with the downloaded archive, remembering the bundle path
-/// so the caller can immediately invoke `nsh_core::element::desktop::restart()`.
+/// Replaces the installed `Bruk.app` with the downloaded archive, invoking `before_swap` right
+/// before replacing the bundle (e.g. `nsh_core::restart::remember_program`) so the caller can
+/// immediately restart into the updated binary.
 /// Blocking; call from a background thread.
-pub fn install_downloaded_update(archive_path: &Path) -> Result<(), String> {
+pub fn install_downloaded_update(
+    archive_path: &Path,
+    before_swap: impl FnOnce(),
+) -> Result<(), String> {
     let shipped = load_shipped_config()?.ok_or_else(|| {
         "Cannot install update: Bruk is not running from a packaged .app bundle.".to_owned()
     })?;
@@ -424,7 +428,7 @@ pub fn install_downloaded_update(archive_path: &Path) -> Result<(), String> {
 
     // Capture the original bundle path BEFORE swapping directories, since renaming the running
     // `.app` causes `current_exe()` to point at the moved/deleted bundle.
-    nsh_core::restart::remember_program();
+    before_swap();
 
     installation
         .install(archive_path)
@@ -473,9 +477,10 @@ pub fn clear_staged_update() {
     drop(previous);
 }
 
-/// Completes a staged-on-quit update when the app exits. Safe to call unconditionally from
+/// Completes a staged-on-quit update when the app exits, invoking `before_swap` right before
+/// swapping the bundle in place. Safe to call unconditionally from
 /// `nsh_core::element::desktop::on_app_quit`.
-pub fn finish_staged_update_on_quit() {
+pub fn finish_staged_update_on_quit(before_swap: impl FnOnce()) {
     let pending = STAGED_ON_QUIT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -489,7 +494,7 @@ pub fn finish_staged_update_on_quit() {
         return;
     };
 
-    nsh_core::restart::remember_program();
+    before_swap();
     match staged.finish() {
         Ok(()) => log::info!("updater: installed Bruk {version} on quit"),
         Err(err) => log::error!("updater: failed to install Bruk {version} on quit: {err}"),
