@@ -3,8 +3,9 @@ resolver = "3"
 members = [
     "crates/factory-core",
     "crates/factory-app",
+    "crates/factory-desktop",
 ]
-default-members = ["crates/factory-app"]
+default-members = ["crates/factory-desktop"]
 
 [workspace.package]
 version = "0.0.0"
@@ -12,6 +13,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
+factory-app = { path = "crates/factory-app" }
 factory-core = { path = "crates/factory-core" }
 aho-corasick = "1.1"
 base64 = "0.22"

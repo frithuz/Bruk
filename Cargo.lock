@@ -779,7 +779,6 @@ dependencies = [
  "nsh-base",
  "nsh-core",
  "nsh-engine",
- "nsh-platform-macos",
  "nsh-testing",
  "nsh-updater",
  "objc2",
@@ -817,6 +816,14 @@ dependencies = [
  "uuid",
  "windows-native-keyring-store",
  "zeroize",
+]
+
+[[package]]
+name = "factory-desktop"
+version = "0.0.0"
+dependencies = [
+ "factory-app",
+ "nsh-platform-macos",
 ]
 
 [[package]]

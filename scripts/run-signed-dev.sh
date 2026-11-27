@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds factory-app and signs the debug binary on macOS with a stable
+# Builds factory-desktop and signs the debug binary on macOS with a stable
 # identifier (`dev.frithuz.bruk`) and local dev certificate when available,
 # preventing repeated macOS Keychain ACL prompts across rebuilds.
 
-cargo build -p factory-app
+cargo build -p factory-desktop
 
-BIN="target/debug/factory-app"
+BIN="target/debug/factory-desktop"
 if [ "$(uname -s)" = "Darwin" ] && [ -x "$BIN" ]; then
   IDENTITY="${BRUK_DEV_SIGN_IDENTITY:-}"
   if [ -z "$IDENTITY" ] && security find-identity -v -p codesigning 2>/dev/null | grep -Fq '"Bruk Local Dev"'; then
