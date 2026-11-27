@@ -16,18 +16,30 @@ pub mod codex_settings;
 pub mod dashboard;
 pub mod definitions;
 pub mod engine;
-pub mod github_intake;
+pub use factory_github::github_intake;
 pub mod inbox;
-pub mod machines;
+pub use factory_machines as machines;
 pub mod mcp;
 pub use factory_types::model;
 pub mod preferences;
 pub mod project_settings;
 pub mod runner;
-pub mod secrets;
+pub mod secrets_migration;
+pub mod secrets {
+    pub use factory_secrets::*;
+
+    pub use crate::{
+        runner::{WorkflowSecretRequirements, collect_workflow_secret_requirements},
+        secrets_migration as migration,
+        secrets_migration::{
+            LEGACY_DATABASE_SIDE_EXTENSIONS, MigrationReport, PathChangeResolution,
+            delete_legacy_database_files, find_legacy_database_files, migrate_plaintext_secrets,
+        },
+    };
+}
 pub mod step_context;
 pub mod storage;
-pub mod work_queue;
+pub use factory_github::work_queue;
 pub mod workflow_editor;
 pub mod workflow_run;
 pub mod workflows_overview;

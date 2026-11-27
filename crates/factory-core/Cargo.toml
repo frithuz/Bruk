@@ -5,10 +5,12 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-aho-corasick.workspace = true
 base64.workspace = true
 chrono.workspace = true
 dirs.workspace = true
+factory-github.workspace = true
+factory-machines.workspace = true
+factory-secrets.workspace = true
 factory-types.workspace = true
 log.workspace = true
 rusqlite.workspace = true
@@ -18,21 +20,7 @@ serde_json.workspace = true
 serde-saphyr.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
 zeroize.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-core-foundation.workspace = true
-security-framework.workspace = true
-security-framework-sys.workspace = true
-
-[target.'cfg(target_os = "linux")'.dependencies]
-dbus-secret-service-keyring-store.workspace = true
-keyring-core.workspace = true
-
-[target.'cfg(target_os = "windows")'.dependencies]
-keyring-core.workspace = true
-windows-native-keyring-store.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

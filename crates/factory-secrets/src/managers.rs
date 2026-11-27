@@ -1018,7 +1018,7 @@ impl SecretManager for CommandSecretManager {
 
 fn program_exists(program: &str) -> bool {
     if program.contains('/') {
-        return crate::claude_cli::expand_tilde(program).is_file();
+        return factory_types::expand_tilde(program).is_file();
     }
     let path = std::env::var("PATH").unwrap_or_default();
     path.split(':').filter(|d| !d.is_empty()).any(|dir| {
@@ -1217,7 +1217,7 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::secrets::store::MemoryStore;
+    use crate::store::MemoryStore;
 
     #[test]
     fn validates_op_references_strictly() {

@@ -4,32 +4,25 @@
 //! external managers live strictly in local user state and never enter git.
 
 pub mod managers;
-pub mod migration;
 pub mod redactor;
 pub mod resolver;
 pub mod store;
 
 use std::collections::BTreeMap;
 
+use factory_types::ProjectId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
-use crate::model::ProjectId;
 
 pub use managers::{
     BUILT_IN_COMMAND_MANAGER_PRESETS, CancellationToken, CommandManagerPreset,
     CommandSecretManager, ManagerRegistry, ManagerStatus, OnePasswordManager, SecretManager,
     validate_op_reference,
 };
-pub use migration::{
-    LEGACY_DATABASE_SIDE_EXTENSIONS, MigrationReport, PathChangeResolution,
-    delete_legacy_database_files, find_legacy_database_files, migrate_plaintext_secrets,
-};
-pub use redactor::{SecretRedactor, StreamingRedactor};
+pub use redactor::{Redactable, SecretRedactor, StreamingRedactor};
 pub use resolver::{
     ChatSecretsCache, ResolvedSecrets, ResolvedValue, RunSecretsCache, SecretResolver,
-    SecretsCache, SecretsMetadataSnapshot, ValueOrigin, WorkflowSecretRequirements,
-    collect_workflow_secret_requirements,
+    SecretsCache, SecretsMetadataSnapshot, ValueOrigin,
 };
 #[cfg(target_os = "macos")]
 pub use store::MacOsKeychainStore;
@@ -474,7 +467,7 @@ pub fn looks_like_secret_key(key: &str) -> bool {
 
 /// Whether a string contains a `${...}` reference.
 pub fn contains_env_reference(value: &str) -> bool {
-    !crate::mcp::env_references(value).is_empty()
+    !factory_types::env_references(value).is_empty()
 }
 
 /// Whether `name` looks like an ambient host credential variable that Codex's default

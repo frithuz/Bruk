@@ -10,10 +10,12 @@ use base64::Engine as _;
 use secrecy::{ExposeSecret, SecretString};
 use serde_json::Value;
 
-use crate::{
-    chat::{ChatEntry, ChatSession},
-    workflow_run::{DiffFileChange, StepTranscriptEntry, WorkflowRunViewData},
-};
+use factory_types::DiffFileChange;
+
+/// Types whose user-facing fields can be scrubbed in place by a [`SecretRedactor`].
+pub trait Redactable {
+    fn redact_with(&mut self, redactor: &SecretRedactor);
+}
 
 /// Minimum character length for a secret value to be registered for redaction (§7).
 pub const MIN_REDACT_CHARS: usize = 8;
@@ -180,104 +182,12 @@ impl SecretRedactor {
         }
     }
 
-    /// Final structured redaction pass over a [`WorkflowRunViewData`] before persistence.
-    pub fn redact_workflow_run_view(&self, view: &mut WorkflowRunViewData) {
+    /// Runs a structured redaction pass over any [`Redactable`] domain value.
+    pub fn redact_item<T: Redactable>(&self, item: &mut T) {
         if self.is_empty() {
             return;
         }
-        view.subtitle = self.redact(&view.subtitle);
-        for step in &mut view.steps {
-            step.title = self.redact(&step.title);
-            for entry in &mut step.transcript {
-                match entry {
-                    StepTranscriptEntry::AgentTurn {
-                        attempt_banner,
-                        body,
-                        ..
-                    } => {
-                        *body = self.redact(body);
-                        if let Some(banner) = attempt_banner {
-                            banner.summary = self.redact(&banner.summary);
-                            banner.details = self.redact(&banner.details);
-                        }
-                    }
-                    StepTranscriptEntry::ToolCall {
-                        verb,
-                        target,
-                        status_text,
-                        output_lines,
-                        ..
-                    } => {
-                        *verb = self.redact(verb);
-                        *target = self.redact(target);
-                        *status_text = self.redact(status_text);
-                        for line in output_lines {
-                            line.text = self.redact(&line.text);
-                            if let Some(suffix) = &mut line.muted_suffix {
-                                *suffix = self.redact(suffix);
-                            }
-                        }
-                    }
-                    StepTranscriptEntry::UserSteering { message } => {
-                        *message = self.redact(message);
-                    }
-                    StepTranscriptEntry::McpProblem { problem } => {
-                        problem.reason = self.redact(&problem.reason);
-                    }
-                    StepTranscriptEntry::SecretProblem { problem } => {
-                        problem.reason = self.redact(&problem.reason);
-                    }
-                }
-            }
-            for chip in &mut step.outputs {
-                chip.name = self.redact(&chip.name);
-            }
-        }
-        self.redact_diffs(&mut view.diffs);
-    }
-
-    /// Final structured redaction pass over a [`ChatSession`] before persistence.
-    pub fn redact_chat_session(&self, session: &mut ChatSession) {
-        if self.is_empty() {
-            return;
-        }
-        session.title = self.redact(&session.title);
-        for entry in &mut session.entries {
-            match entry {
-                ChatEntry::User { text, .. } => {
-                    *text = self.redact(text);
-                }
-                ChatEntry::Assistant { text, .. } => {
-                    *text = self.redact(text);
-                }
-                ChatEntry::Tool {
-                    verb,
-                    target,
-                    input,
-                    detail,
-                    output,
-                    ..
-                } => {
-                    *verb = self.redact(verb);
-                    *target = self.redact(target);
-                    *input = self.redact(input);
-                    *detail = self.redact(detail);
-                    *output = self.redact(output);
-                }
-                ChatEntry::Reasoning { text } => {
-                    *text = self.redact(text);
-                }
-                ChatEntry::Notice { text, .. } => {
-                    *text = self.redact(text);
-                }
-                ChatEntry::McpProblem { problem } => {
-                    problem.reason = self.redact(&problem.reason);
-                }
-                ChatEntry::SecretProblem { problem } => {
-                    problem.reason = self.redact(&problem.reason);
-                }
-            }
-        }
+        item.redact_with(self);
     }
 }
 

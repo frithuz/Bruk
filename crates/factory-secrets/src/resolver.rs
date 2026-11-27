@@ -12,13 +12,7 @@ use std::{
 
 use secrecy::SecretString;
 
-use crate::{
-    definitions::{BrukCatalog, WorkflowDef, WorkflowNodeDef},
-    github_intake::current_unix_seconds,
-    mcp::{McpSources, McpSourcesPolicy, resolve_mcp_servers},
-    model::ProjectId,
-    project_settings::IssueSourceAuthMode,
-};
+use factory_types::{ProjectId, current_unix_seconds};
 
 use super::{
     EnvScope, Exposure, ManagerId, SecretFailure, SecretId, SecretKind, SecretRecord, SecretSource,
@@ -1022,137 +1016,6 @@ fn enrich_failure_with_record(err: SecretFailure, rec: &SecretRecord) -> SecretF
     }
 }
 
-// ---------------------------------------------------------------------------------------------
-// Start-of-run Workflow AST Secret Preflight Collector (§9)
-// ---------------------------------------------------------------------------------------------
-
-/// Everything a workflow run needs from the secret resolver before step 1 begins.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct WorkflowSecretRequirements {
-    /// Every `${VAR}` referenced by enabled MCP servers across all agent steps.
-    pub mcp_referenced_vars: BTreeSet<String>,
-    /// True if the workflow contains any agent or shell step (so active `AgentAndSteps` secrets apply).
-    pub needs_agent_and_steps: bool,
-    /// True if any step interacts with GitHub (`CommentOnIssue`, `SetIssueStatus`, `OpenPullRequest`).
-    pub needs_github_pat: bool,
-}
-
-/// Walks the full workflow AST (recursing into composites, loops, agent `extends` chains, and
-/// fallbacks) to collect all secret requirements for a single batched start-of-run preflight.
-pub fn collect_workflow_secret_requirements(
-    workflow: &WorkflowDef,
-    catalog: &BrukCatalog,
-    mcp_sources: &McpSources,
-    github_auth_mode: IssueSourceAuthMode,
-) -> WorkflowSecretRequirements {
-    let mut req = WorkflowSecretRequirements::default();
-    let mut visited_composites = BTreeSet::new();
-    walk_nodes(
-        &workflow.nodes,
-        workflow.mcp_sources,
-        catalog,
-        mcp_sources,
-        github_auth_mode,
-        &mut visited_composites,
-        &mut req,
-    );
-    req
-}
-
-fn walk_nodes(
-    nodes: &[WorkflowNodeDef],
-    policy: McpSourcesPolicy,
-    catalog: &BrukCatalog,
-    mcp_sources: &McpSources,
-    github_auth_mode: IssueSourceAuthMode,
-    visited_composites: &mut BTreeSet<String>,
-    req: &mut WorkflowSecretRequirements,
-) {
-    for node in nodes {
-        match node {
-            WorkflowNodeDef::AgentTask(step) => {
-                req.needs_agent_and_steps = true;
-                let resolved_agent = step
-                    .agent
-                    .as_deref()
-                    .and_then(|a| catalog.resolve_agent(a).ok());
-                let step_policy = policy.stricter(
-                    resolved_agent
-                        .as_ref()
-                        .map(|a| a.mcp_sources)
-                        .unwrap_or_default(),
-                );
-                let mut allowlist: Vec<String> = resolved_agent
-                    .as_ref()
-                    .map(|a| a.mcp.clone())
-                    .unwrap_or_default();
-                for name in step.mcp.iter().map(|n| n.trim()).filter(|n| !n.is_empty()) {
-                    if !allowlist.iter().any(|existing| existing == name) {
-                        allowlist.push(name.to_owned());
-                    }
-                }
-                let set = resolve_mcp_servers(mcp_sources, step_policy, &allowlist);
-                for server in &set.servers {
-                    for var in server.def.env_references() {
-                        req.mcp_referenced_vars.insert(var);
-                    }
-                }
-            }
-            WorkflowNodeDef::ShellCommand(_) => {
-                req.needs_agent_and_steps = true;
-            }
-            WorkflowNodeDef::CommentOnIssue(_)
-            | WorkflowNodeDef::SetIssueStatus(_)
-            | WorkflowNodeDef::OpenPullRequest(_) => {
-                if github_auth_mode == IssueSourceAuthMode::PersonalToken {
-                    req.needs_github_pat = true;
-                }
-            }
-            WorkflowNodeDef::Composite(step) => {
-                if let Some(comp) = catalog.resolve_composite(&step.uses) {
-                    let key = comp.canonical_id();
-                    if visited_composites.insert(key.clone()) {
-                        let child_policy = policy.stricter(comp.mcp_sources);
-                        walk_nodes(
-                            &comp.nodes,
-                            child_policy,
-                            catalog,
-                            mcp_sources,
-                            github_auth_mode,
-                            visited_composites,
-                            req,
-                        );
-                        visited_composites.remove(&key);
-                    }
-                }
-            }
-            WorkflowNodeDef::Loop(lp) => {
-                walk_nodes(
-                    &lp.steps,
-                    policy,
-                    catalog,
-                    mcp_sources,
-                    github_auth_mode,
-                    visited_composites,
-                    req,
-                );
-                if let Some(fallback) = lp.fallback.as_deref() {
-                    walk_nodes(
-                        std::slice::from_ref(fallback),
-                        policy,
-                        catalog,
-                        mcp_sources,
-                        github_auth_mode,
-                        visited_composites,
-                        req,
-                    );
-                }
-            }
-            WorkflowNodeDef::ApprovalGate(_) | WorkflowNodeDef::Condition(_) => {}
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
@@ -1160,7 +1023,7 @@ mod tests {
     use secrecy::ExposeSecret;
 
     use super::*;
-    use crate::secrets::{
+    use crate::{
         InternalPurpose, Sharing,
         managers::{ManagerStatus, SecretManager},
         store::MemoryStore,

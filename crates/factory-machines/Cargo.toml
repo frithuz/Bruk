@@ -1,0 +1,10 @@
+[package]
+name = "factory-machines"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true

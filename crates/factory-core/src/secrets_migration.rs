@@ -28,7 +28,7 @@ use crate::{
     storage::{ProjectDatabase, StorageError},
 };
 
-use super::{
+use factory_secrets::{
     EnvScope, Exposure, InternalPurpose, SecretKind, SecretRecord, SecretSource, SecretState,
     Sharing, compute_preview, contains_env_reference, keychain_account_key, keychain_item_label,
     looks_like_secret_key, new_secret_id,

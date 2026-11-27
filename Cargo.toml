@@ -2,6 +2,9 @@
 resolver = "3"
 members = [
     "crates/factory-types",
+    "crates/factory-machines",
+    "crates/factory-github",
+    "crates/factory-secrets",
     "crates/factory-logging",
     "crates/factory-updater",
     "crates/factory-fonts",
@@ -21,7 +24,10 @@ publish = false
 factory-app = { path = "crates/factory-app" }
 factory-core = { path = "crates/factory-core" }
 factory-fonts = { path = "crates/factory-fonts" }
+factory-github = { path = "crates/factory-github" }
 factory-logging = { path = "crates/factory-logging" }
+factory-machines = { path = "crates/factory-machines" }
+factory-secrets = { path = "crates/factory-secrets" }
 factory-types = { path = "crates/factory-types" }
 factory-ui-kit = { path = "crates/factory-ui-kit" }
 factory-updater = { path = "crates/factory-updater" }
