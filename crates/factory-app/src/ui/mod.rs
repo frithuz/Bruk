@@ -1564,55 +1564,6 @@ fn sidebar_project_children(id: ProjectId) -> impl IntoElement {
                         ),
                 )
         })
-        .child({
-            let is_settings_active = move || {
-                store::active_view() == ActiveView::ProjectSettings
-                    && store::selected_project_id() == Some(id)
-            };
-            let settings_test_id = format!("sidebar-project-settings-{id}");
-            button()
-                .test_id(&settings_test_id)
-                .accessibility_label(move || {
-                    let name = store::project_by_id(id).map(|p| p.name).unwrap_or_default();
-                    Some(SharedString::from(format!("Project settings for {name}")))
-                })
-                .on_press(move || store::open_project_settings_for_project(id))
-                .rounded(px(6.5))
-                .hover(|s| s.bg(palette::sidebar_hover_bg()))
-                .active(|s| s.opacity(0.8))
-                .child(
-                    view()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(7.0))
-                        .px(px(9.0))
-                        .py(px(5.0))
-                        .rounded(px(6.5))
-                        .bg(move || {
-                            if is_settings_active() {
-                                palette::nav_active_bg()
-                            } else {
-                                AdaptiveColor::TRANSPARENT
-                            }
-                        })
-                        .child(icons::settings_gear(12.5, move || {
-                            if is_settings_active() {
-                                palette::nav_active_fg()
-                            } else {
-                                palette::text_muted()
-                            }
-                        }))
-                        .child(text("Project settings").text_size(px(12.0)).text_color(
-                            move || {
-                                if is_settings_active() {
-                                    palette::nav_active_fg()
-                                } else {
-                                    palette::text_primary()
-                                }
-                            },
-                        )),
-                )
-        })
 }
 
 // --- Content Router ---------------------------------------------------------------------

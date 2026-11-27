@@ -10030,19 +10030,6 @@ pub fn open_project_settings() {
     main_window().focus();
 }
 
-pub fn open_project_settings_for_project(id: ProjectId) {
-    state().update(|s| {
-        s.selected_project = Some(id);
-        s.expanded_projects.insert(id);
-        s.project_settings_tab = ProjectSettingsTab::IssuesAndIntake;
-        s.active_view = ActiveView::ProjectSettings;
-        s.project_settings_error = None;
-        s.project_settings_feedback = None;
-        s.status_message = None;
-    });
-    main_window().focus();
-}
-
 pub fn open_project_settings_tab(tab: ProjectSettingsTab) {
     state().update(|s| {
         if s.selected_project.is_none() {

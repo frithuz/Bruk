@@ -322,6 +322,7 @@ fn project_menu(snapshot: &MenuSnapshot) -> MenuItem {
                 }),
             MenuItem::separator(),
             MenuItem::new("Project Settings…")
+                .shortcut("mod+shift+,")
                 .disabled(!snapshot.has_projects)
                 .on_select(store::open_project_settings),
             MenuItem::new("Environment Variables…")

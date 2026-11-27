@@ -271,7 +271,7 @@ fn codex_provider_is_unregistered_by_default_and_can_be_added_and_removed() {
         app.wait_for("Registered project 'my-service'").unwrap();
 
         // Project Settings › Providers must not show Codex as if it were registered.
-        app.press("id:sidebar-project-settings-1").unwrap();
+        app.press_key("mod+shift+,").unwrap();
         app.press("id:ps-tab-providers").unwrap();
         app.wait_for("Available accounts").unwrap();
         assert!(!app.screen().shows("Codex CLI"));
@@ -1189,7 +1189,7 @@ fn project_mcp_servers_need_approval_and_users_can_add_their_own() {
     app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'mcp-service'").unwrap();
 
-    app.press("id:sidebar-project-settings-1").unwrap();
+    app.press_key("mod+shift+,").unwrap();
     app.wait_for("mcp-service · Issues & intake").unwrap();
     app.press("id:ps-tab-mcp-servers").unwrap();
     app.wait_for("Project servers").unwrap();
@@ -1269,8 +1269,9 @@ fn secrets_preferences_and_project_environment_flows() {
     // Plaintext secret value must NEVER be shown on screen.
     assert!(!app.screen().shows("sk_live_app_secret_99887766"));
 
-    // Open Project Settings -> Environment.
-    app.press("id:sidebar-project-settings-1").unwrap();
+    // Open Project Settings -> Environment via the Project menu shortcut (⇧⌘,).
+    app.press_window_close("preferences").unwrap();
+    app.press_key("mod+shift+,").unwrap();
     app.wait_for("secret-demo · Issues & intake").unwrap();
     app.press("id:ps-tab-environment").unwrap();
     app.wait_for("Inherited from App Secrets").unwrap();
