@@ -1,0 +1,111 @@
+name: Set up Rust and sccache
+description: Install the pinned Rust toolchain and configure pnpr sccache WebDAV caching when credentials are available.
+
+inputs:
+  pnpr-token:
+    description: Token for registry.frithuz.dev sccache WebDAV access. Leave empty to skip remote sccache (e.g. fork PRs).
+    required: false
+    default: ""
+  sccache-rw-mode:
+    description: WebDAV access mode for sccache (READ_ONLY or READ_WRITE).
+    required: false
+    default: "READ_ONLY"
+  enable-sccache:
+    description: Whether to install and configure sccache when pnpr-token is set.
+    required: false
+    default: "true"
+  compiler-cache-url:
+    description: pnpr sccache WebDAV endpoint URL.
+    required: false
+    default: "https://registry.frithuz.dev/-/pnpr/v0/compiler-cache/frithuz"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up pinned Rust toolchain
+      shell: bash
+      env:
+        RUSTUP_AUTO_SELF_UPDATE: disable
+      run: |
+        export PATH="$HOME/.cargo/bin:$PATH"
+        # rustup reads rust-toolchain.toml in the workspace root and installs the
+        # pinned channel and components automatically.
+        rustup show active-toolchain
+        rustc --version
+        cargo --version
+
+    - name: Install and configure sccache
+      shell: bash
+      env:
+        PNPR_TOKEN: ${{ inputs.pnpr-token }}
+        ENABLE_SCCACHE: ${{ inputs.enable-sccache }}
+        SCCACHE_RW_MODE: ${{ inputs.sccache-rw-mode }}
+        COMPILER_CACHE_URL: ${{ inputs.compiler-cache-url }}
+        SCCACHE_VERSION: "0.20.1"
+      run: |
+        if [ "$ENABLE_SCCACHE" != "true" ]; then
+          echo "sccache disabled for this job."
+          exit 0
+        fi
+
+        token="$(printf '%s' "${PNPR_TOKEN:-}" | tr -d '\r\n')"
+        if [ -z "$token" ]; then
+          echo "No pnpr token provided (e.g. fork PR); building without remote sccache."
+          exit 0
+        fi
+
+        case "$SCCACHE_RW_MODE" in
+          READ_ONLY|READ_WRITE) ;;
+          *)
+            echo "error: sccache-rw-mode '${SCCACHE_RW_MODE}' must be READ_ONLY or READ_WRITE" >&2
+            exit 1
+            ;;
+        esac
+
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          macOS-ARM64)
+            target="aarch64-apple-darwin"
+            sha256="d2658c9a24bab25a24fdc1917cb5b614b7c20a4ce8f363e5303d37b7e699d5ec"
+            ;;
+          Linux-X64)
+            target="x86_64-unknown-linux-musl"
+            sha256="c9f6c5a3ae84d9da0956b28c357a365827bda33f3383647fc0b67484c74a5ea9"
+            ;;
+          Linux-ARM64)
+            target="aarch64-unknown-linux-musl"
+            sha256="505324daad5fcbb1a3cab5d57d26ef42baf4d10b236df7de93a008196f1f2230"
+            ;;
+          *)
+            echo "error: unsupported runner platform ${RUNNER_OS}-${RUNNER_ARCH} for sccache" >&2
+            exit 1
+            ;;
+        esac
+
+        archive="${RUNNER_TEMP}/sccache.tar.gz"
+        asset_dir="sccache-v${SCCACHE_VERSION}-${target}"
+        url="https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/${asset_dir}.tar.gz"
+
+        curl -fsSL "$url" -o "$archive"
+        if command -v sha256sum >/dev/null 2>&1; then
+          printf '%s  %s\n' "$sha256" "$archive" | sha256sum -c -
+        else
+          printf '%s  %s\n' "$sha256" "$archive" | shasum -a 256 -c -
+        fi
+
+        # Install into $HOME/.cargo/bin (already on PATH on GitHub macOS/Linux runners).
+        mkdir -p "$HOME/.cargo/bin"
+        tar -xzf "$archive" -C "$HOME/.cargo/bin" --strip-components=1 "${asset_dir}/sccache"
+        rm -f "$archive"
+        chmod +x "$HOME/.cargo/bin/sccache"
+
+        "$HOME/.cargo/bin/sccache" --version
+
+        {
+          echo "RUSTC_WRAPPER=sccache"
+          echo "CARGO_INCREMENTAL=0"
+          echo "SCCACHE_MULTILEVEL_CHAIN=disk,webdav"
+          echo "SCCACHE_WEBDAV_ENDPOINT=${COMPILER_CACHE_URL}"
+          echo "SCCACHE_WEBDAV_TOKEN=${token}"
+          echo "SCCACHE_WEBDAV_RW_MODE=${SCCACHE_RW_MODE}"
+        } >> "$GITHUB_ENV"
+        echo "Configured sccache (${SCCACHE_RW_MODE}) -> ${COMPILER_CACHE_URL}"

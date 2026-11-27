@@ -3,6 +3,12 @@ name: Lint
 on:
   pull_request:
   workflow_call:
+    inputs:
+      cache_write:
+        description: Allow sccache to write to the pnpr WebDAV cache
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: lint-${{ github.ref_name }}
@@ -15,10 +21,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  lint:
-    name: Lint
-    runs-on: macos-26
-    timeout-minutes: 30
+  checks:
+    name: Checks (Linux)
+    runs-on: ubuntu-slim
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -28,23 +34,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Set up Rust toolchain
-        run: |
-          rustup toolchain install stable --profile minimal --component rustfmt,clippy --no-self-update
-          rustup default stable
-
-      - name: Cache Cargo artifacts
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-
       - name: Check formatting
         id: rustfmt
         background: true
-        run: cargo fmt --all -- --check
-
-      - name: Run Clippy
-        id: clippy
-        background: true
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        env:
+          RUSTUP_AUTO_SELF_UPDATE: disable
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if ! command -v rustup >/dev/null 2>&1; then
+            curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs \
+              | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+          fi
+          rustup show active-toolchain
+          cargo fmt --all -- --check
 
       - name: Lint commit trailers
         id: commit-trailers
@@ -75,5 +77,54 @@ jobs:
           advanced-security: false
           annotations: true
 
-      - name: Wait for lint checks
+      - name: Wait for OS-independent checks
         wait-all: true
+
+  clippy:
+    name: Clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    environment: ${{ github.event_name == 'workflow_call' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust and sccache
+        uses: $/.github/actions/setup-rust
+        with:
+          pnpr-token: ${{ secrets.PNPR_TOKEN }}
+          sccache-rw-mode: ${{ github.event_name == 'workflow_call' && inputs.cache_write && 'READ_WRITE' || 'READ_ONLY' }}
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Show sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats
+
+  lint:
+    name: Lint
+    needs: [checks, clippy]
+    if: always() && !cancelled()
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Verify lint jobs succeeded
+        env:
+          CHECKS_RESULT: ${{ needs.checks.result }}
+          CLIPPY_RESULT: ${{ needs.clippy.result }}
+        run: |
+          if [ "$CHECKS_RESULT" != "success" ] || [ "$CLIPPY_RESULT" != "success" ]; then
+            echo "error: lint failed (checks=${CHECKS_RESULT}, clippy=${CLIPPY_RESULT})" >&2
+            exit 1
+          fi
