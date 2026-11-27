@@ -233,13 +233,18 @@ impl RunControlHandle {
         self.shared.active_child_pid.store(0, Ordering::SeqCst);
     }
 
-    fn wait_for_gate(&self, gate_id: &str) -> GateDecision {
+    /// Marks `gate_id` as pending and discards any stale decision. Must be called before the
+    /// gate is announced (`ApprovalRequested`) so a decision that arrives before
+    /// [`Self::wait_for_gate`] starts waiting is kept rather than overwritten.
+    fn open_gate(&self, gate_id: &str) {
         let mut guard = self.shared.gate.lock().expect("gate mutex poisoned");
-        if self.is_stopped() {
-            return GateDecision::Stop;
-        }
         guard.pending_gate_id = Some(gate_id.to_owned());
         guard.decision = None;
+    }
+
+    /// Blocks until the gate opened by [`Self::open_gate`] is resolved or the run is stopped.
+    fn wait_for_gate(&self) -> GateDecision {
+        let mut guard = self.shared.gate.lock().expect("gate mutex poisoned");
         while guard.decision.is_none() && !self.is_stopped() {
             guard = self
                 .shared
@@ -1631,6 +1636,9 @@ fn execute_approval_gate(
     let _ = cursor.tx.send(RunnerEvent::DiffUpdated { diffs });
 
     let gate_id = format!("gate-{}-{step_index}", cursor.request.run_id);
+    // Open the gate before announcing it: listeners may resolve it as soon as they receive
+    // ApprovalRequested, possibly before this thread reaches wait_for_gate.
+    cursor.control.open_gate(&gate_id);
     let _ = cursor.tx.send(RunnerEvent::ApprovalRequested {
         gate_id: gate_id.clone(),
         step_index,
@@ -1650,7 +1658,7 @@ fn execute_approval_gate(
         step_name,
     );
 
-    let decision = cursor.control.wait_for_gate(&gate_id);
+    let decision = cursor.control.wait_for_gate();
     let duration_ms = started.elapsed().as_millis() as u64;
     let decision_label = match &decision {
         GateDecision::Approve { .. } => "approve",
@@ -2914,6 +2922,37 @@ mod tests {
     }
 
     #[test]
+    fn gate_decision_made_before_wait_starts_is_not_lost() {
+        let control = RunControlHandle::new();
+        control.open_gate("gate-1");
+        control.resolve_gate(GateDecision::Approve {
+            note: Some("early".to_owned()),
+        });
+        assert!(matches!(
+            control.wait_for_gate(),
+            GateDecision::Approve { note: Some(ref n) } if n == "early"
+        ));
+    }
+
+    #[test]
+    fn opening_a_gate_discards_a_stale_decision() {
+        let control = RunControlHandle::new();
+        control.resolve_gate(GateDecision::Approve { note: None });
+        control.open_gate("gate-1");
+        let waiter = {
+            let control = control.clone();
+            std::thread::spawn(move || control.wait_for_gate())
+        };
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!waiter.is_finished());
+        control.resolve_gate(GateDecision::RequestChanges { note: None });
+        assert!(matches!(
+            waiter.join().unwrap(),
+            GateDecision::RequestChanges { .. }
+        ));
+    }
+
+    #[test]
     fn executes_real_workflow_with_worktree_loop_retry_fake_claude_diff_and_approval_gate() {
         let temp = TempDir::new().unwrap();
         let repo = temp.path().join("demo-repo");
@@ -3057,7 +3096,18 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
         let mut saw_approval = false;
         let mut final_state = None;
 
-        for event in rx {
+        // Bound the wait so a runner hang fails this test instead of stalling the whole suite.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let event = match rx.recv_timeout(remaining) {
+                Ok(event) => event,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    control.stop();
+                    panic!("workflow run did not finish within 60s");
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
             apply_runner_event_to_view_data(&mut view, &event, 500);
             match event {
                 RunnerEvent::ApprovalRequested { .. } => {
