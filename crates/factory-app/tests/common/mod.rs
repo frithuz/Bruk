@@ -24,6 +24,29 @@ pub fn start_with_db_and_claude_path(db_path: PathBuf, path_env: OsString) -> He
     app
 }
 
+/// Waits for the launch-time provider probes to settle, then presses a provider row in
+/// Preferences until that provider's detail pane shows `pane`.
+///
+/// Provider CLI probes finish on background threads after launch and rebuild Preferences.
+/// `Headless::press` dispatches to the node it found on its last screen snapshot, so a probe that
+/// lands mid-press swaps that node out and the press is silently dropped (a real pointer would
+/// hit-test the new row). Selecting a provider is idempotent, so pressing again is safe.
+pub fn select_provider(app: &mut Headless, row: &str, pane: &str) {
+    app.wait_for(row).unwrap();
+    // Let the launch probes and the detail refreshes they trigger land before pressing anything.
+    app.idle(std::time::Duration::from_millis(750)).unwrap();
+    for _ in 0..5 {
+        app.press(row).unwrap();
+        if app
+            .wait_for_within(pane, std::time::Duration::from_secs(1))
+            .is_ok()
+        {
+            return;
+        }
+    }
+    app.wait_for(pane).unwrap();
+}
+
 pub fn enable_demo_mode_in_db(db_path: &std::path::Path) {
     let db = factory_core::ProjectDatabase::open(db_path).unwrap();
     let mut prefs = db

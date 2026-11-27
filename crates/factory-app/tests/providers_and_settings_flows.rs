@@ -302,9 +302,7 @@ fn codex_provider_is_unregistered_by_default_and_can_be_added_and_removed() {
     {
         let mut reopened = start_with_db(db_path.clone());
         reopened.press_key("mod+,").unwrap();
-        reopened.wait_for("role:button[Codex]").unwrap();
-        reopened.press("role:button[Codex]").unwrap();
-        reopened.wait_for("id:prefs-codex-remove").unwrap();
+        select_provider(&mut reopened, "role:button[Codex]", "id:prefs-codex-remove");
         reopened.press("id:prefs-codex-remove").unwrap();
         reopened.wait_for("id:prefs-codex-confirm-remove").unwrap();
         reopened.press("id:prefs-codex-confirm-remove").unwrap();
@@ -436,8 +434,7 @@ done
     // Reopen against the same SQLite DB and verify Luna stays hidden and usage reloads.
     let mut reopened = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
     reopened.press_key("mod+,").unwrap();
-    reopened.wait_for("role:button[Codex]").unwrap();
-    reopened.press("role:button[Codex]").unwrap();
+    select_provider(&mut reopened, "role:button[Codex]", "id:prefs-codex-remove");
     reopened.wait_for("Usage remaining").unwrap();
     reopened.wait_for("76% remaining").unwrap();
     reopened.press("id:prefs-cli-model-change").unwrap();
@@ -999,8 +996,7 @@ done
     let mut reopened =
         start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
     reopened.press_key("mod+,").unwrap();
-    reopened.wait_for("role:button[Codex]").unwrap();
-    reopened.press("role:button[Codex]").unwrap();
+    select_provider(&mut reopened, "role:button[Codex]", "id:prefs-codex-remove");
     reopened.wait_for("10 overrides").unwrap();
     reopened
         .press("id:prefs-codex-spawn-preview-toggle")
