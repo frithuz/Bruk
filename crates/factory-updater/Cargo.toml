@@ -1,0 +1,16 @@
+[package]
+name = "factory-updater"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+dirs.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+nsh-updater.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile.workspace = true

@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/factory-logging",
+    "crates/factory-updater",
     "crates/factory-core",
     "crates/factory-app",
     "crates/factory-desktop",
@@ -15,6 +17,8 @@ publish = false
 [workspace.dependencies]
 factory-app = { path = "crates/factory-app" }
 factory-core = { path = "crates/factory-core" }
+factory-logging = { path = "crates/factory-logging" }
+factory-updater = { path = "crates/factory-updater" }
 aho-corasick = "1.1"
 base64 = "0.22"
 cc = "1"

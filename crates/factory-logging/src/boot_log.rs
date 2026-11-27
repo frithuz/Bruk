@@ -41,7 +41,12 @@ static MAIN_THREAD_READY_SCHEDULED: AtomicBool = AtomicBool::new(false);
 /// the boot origin. Headless UI tests that mount `AppWithDb` / `AppWithHome` never call
 /// `init`, keeping OS logs quiet during `cargo test`.
 pub fn init(entrypoint: &'static str) {
-    system_log::init(entrypoint);
+    init_with_metadata(entrypoint, env!("CARGO_PKG_VERSION"), 0);
+}
+
+/// Initializes system logging and boot instrumentation with explicit version/schema metadata.
+pub fn init_with_metadata(entrypoint: &'static str, app_version: &str, data_schema: u32) {
+    system_log::init_with_metadata(entrypoint, app_version, data_schema);
 
     let mut initialized_here = false;
     let session = SESSION.get_or_init(|| {
@@ -63,18 +68,18 @@ pub fn init(entrypoint: &'static str) {
 }
 
 /// Returns whether boot instrumentation has been initialized for this process.
-pub(crate) fn is_initialized() -> bool {
+pub fn is_initialized() -> bool {
     SESSION.get().is_some()
 }
 
 /// Returns whether the synchronous application boot phase is currently active.
-pub(crate) fn is_booting() -> bool {
+pub fn is_booting() -> bool {
     SESSION.get().is_some() && SYNC_BOOT_ACTIVE.load(Ordering::Acquire)
 }
 
 /// Ends the synchronous boot phase so later runtime actions (such as toggling Demo Mode or
 /// manually refreshing providers in Preferences) do not log into the `boot` category.
-pub(crate) fn finish_sync_boot(detail: &str) {
+pub fn finish_sync_boot(detail: &str) {
     if !SYNC_BOOT_ACTIVE.swap(false, Ordering::AcqRel) {
         return;
     }
@@ -96,7 +101,7 @@ pub(crate) fn finish_sync_boot(detail: &str) {
 
 /// Schedules a one-shot callback on the main AppKit thread to record when the main run loop
 /// becomes responsive after initial mount.
-pub(crate) fn schedule_main_thread_ready() {
+pub fn schedule_main_thread_ready() {
     if !is_initialized() || MAIN_THREAD_READY_SCHEDULED.swap(true, Ordering::AcqRel) {
         return;
     }
@@ -130,7 +135,7 @@ pub fn span(phase: &'static str) -> BootSpan {
 
 /// Starts a timed span for an asynchronous follow-up task belonging to the initial boot
 /// (even if the synchronous boot phase has already completed).
-pub(crate) fn async_span(phase: &'static str, from_boot: bool) -> BootSpan {
+pub fn async_span(phase: &'static str, from_boot: bool) -> BootSpan {
     if from_boot && is_initialized() {
         start_span(phase)
     } else {
@@ -140,7 +145,7 @@ pub(crate) fn async_span(phase: &'static str, from_boot: bool) -> BootSpan {
 
 /// Starts a one-shot timed boot span guarded by `gate`, active whenever [`init`] was called
 /// (even for lazy initial UI builds that run right after `App()` returns).
-pub(crate) fn once_span(phase: &'static str, gate: &'static AtomicBool) -> BootSpan {
+pub fn once_span(phase: &'static str, gate: &'static AtomicBool) -> BootSpan {
     if is_initialized() && !gate.swap(true, Ordering::AcqRel) {
         start_span(phase)
     } else {
@@ -159,7 +164,7 @@ pub fn event(name: &'static str, detail: &str) {
 }
 
 /// Emits a boot error event while the synchronous boot phase is active.
-pub(crate) fn error(name: &'static str, detail: &str) {
+pub fn error(name: &'static str, detail: &str) {
     if !is_booting() {
         return;
     }
@@ -169,7 +174,7 @@ pub(crate) fn error(name: &'static str, detail: &str) {
 }
 
 /// Returns milliseconds elapsed since kernel process start (`kp_proc.p_starttime`) on macOS.
-pub(crate) fn process_age_ms() -> Option<f64> {
+pub fn process_age_ms() -> Option<f64> {
     system_log::process_age_ms()
 }
 
@@ -219,7 +224,7 @@ impl BootSpan {
     }
 
     /// Finishes the span with an error log level and structured `detail`.
-    pub(crate) fn finish_error(mut self, detail: impl AsRef<str>) {
+    pub fn finish_error(mut self, detail: impl AsRef<str>) {
         if let Some(active) = self.active.take() {
             complete_span(active, OsLogLevel::Error, detail.as_ref());
         }

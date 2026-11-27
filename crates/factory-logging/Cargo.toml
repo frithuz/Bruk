@@ -1,0 +1,13 @@
+[package]
+name = "factory-logging"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+env_logger.workspace = true
+log.workspace = true
+nsh-core.workspace = true
+
+[build-dependencies]
+cc.workspace = true

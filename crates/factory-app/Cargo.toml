@@ -6,18 +6,14 @@ publish.workspace = true
 
 [dependencies]
 dirs.workspace = true
-env_logger.workspace = true
 factory-core.workspace = true
+factory-logging.workspace = true
+factory-updater.workspace = true
 log.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
-nsh-updater.workspace = true
 secrecy.workspace = true
-ureq.workspace = true
 zeroize.workspace = true
-
-[build-dependencies]
-cc.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2.workspace = true

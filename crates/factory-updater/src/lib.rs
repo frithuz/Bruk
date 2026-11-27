@@ -45,7 +45,7 @@ const PROGRESS_THROTTLE: Duration = Duration::from_millis(80);
 
 /// Metadata for an available newer release on GitHub Releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AvailableUpdate {
+pub struct AvailableUpdate {
     pub version: String,
     pub notes: Option<String>,
     pub url: String,
@@ -57,7 +57,7 @@ pub(crate) struct AvailableUpdate {
 
 /// Reactive UI state of the application auto-updater.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) enum UpdaterState {
+pub enum UpdaterState {
     #[default]
     Idle,
     Checking,
@@ -87,7 +87,7 @@ pub(crate) enum UpdaterState {
 
 impl UpdaterState {
     /// Whether a background check, download, or install is currently running.
-    pub(crate) fn is_busy(&self) -> bool {
+    pub fn is_busy(&self) -> bool {
         matches!(
             self,
             Self::Checking | Self::Downloading { .. } | Self::Installing { .. }
@@ -95,7 +95,7 @@ impl UpdaterState {
     }
 
     /// Download progress as a 0–100 percentage when total size is known.
-    pub(crate) fn download_percent(&self) -> Option<u8> {
+    pub fn download_percent(&self) -> Option<u8> {
         let Self::Downloading {
             received,
             total: Some(total),
@@ -114,7 +114,7 @@ impl UpdaterState {
 
 /// Outcome of a single update check against the configured release source.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum CheckOutcome {
+pub enum CheckOutcome {
     /// Running outside a packaged `.app` bundle (e.g. `cargo run` or tests).
     Unavailable(String),
     /// Running version is equal to or newer than the latest release.
@@ -140,7 +140,7 @@ static DOWNLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Returns the running Bruk version: the packaged `nsh-updater.json` version when running
 /// inside a packaged `.app` bundle, or `CARGO_PKG_VERSION` in dev/test builds.
-pub(crate) fn current_version() -> String {
+pub fn current_version() -> String {
     load_shipped_config()
         .ok()
         .flatten()
@@ -150,7 +150,7 @@ pub(crate) fn current_version() -> String {
 
 /// Whether this process is running from a packaged `.app` bundle with an embedded
 /// `nsh-updater.json` configuration.
-pub(crate) fn has_packaged_updater_config() -> bool {
+pub fn has_packaged_updater_config() -> bool {
     std::env::current_exe()
         .ok()
         .and_then(|exe| shipped_config_path_for_exe(&exe))
@@ -158,7 +158,7 @@ pub(crate) fn has_packaged_updater_config() -> bool {
 }
 
 /// Resolves `<Name>.app/Contents/Resources/nsh/assets/nsh-updater.json` from a bundle executable.
-pub(crate) fn shipped_config_path_for_exe(exe: &Path) -> Option<PathBuf> {
+pub fn shipped_config_path_for_exe(exe: &Path) -> Option<PathBuf> {
     let macos_dir = exe.parent()?;
     let contents_dir = macos_dir.parent()?;
     let bundle_dir = contents_dir.parent()?;
@@ -200,7 +200,7 @@ fn load_shipped_config() -> Result<Option<ShippedConfig>, String> {
 }
 
 /// Formats a byte count for display in the download UI (e.g. `14.2 MB`).
-pub(crate) fn format_bytes(bytes: u64) -> String {
+pub fn format_bytes(bytes: u64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = 1024.0 * 1024.0;
     const GB: f64 = 1024.0 * 1024.0 * 1024.0;
@@ -218,7 +218,7 @@ pub(crate) fn format_bytes(bytes: u64) -> String {
 
 /// Checks GitHub Releases (or any configured manifest source in `nsh-updater.json`) for a
 /// newer version of Bruk. Blocking; call from a background thread.
-pub(crate) fn check_for_update() -> Result<CheckOutcome, String> {
+pub fn check_for_update() -> Result<CheckOutcome, String> {
     let Some(shipped) = load_shipped_config()? else {
         return Ok(CheckOutcome::Unavailable(
             "Auto-updates are only available in packaged Bruk.app releases.".to_owned(),
@@ -316,7 +316,7 @@ fn to_available_update(
 
 /// Downloads and verifies the release archive into Bruk's cache directory.
 /// Blocking; call from a background thread.
-pub(crate) fn download_update(
+pub fn download_update(
     update: &AvailableUpdate,
     on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<PathBuf, String> {
@@ -412,7 +412,7 @@ fn download_update_into(
 /// Replaces the installed `Bruk.app` with the downloaded archive, remembering the bundle path
 /// so the caller can immediately invoke `nsh_core::element::desktop::restart()`.
 /// Blocking; call from a background thread.
-pub(crate) fn install_downloaded_update(archive_path: &Path) -> Result<(), String> {
+pub fn install_downloaded_update(archive_path: &Path) -> Result<(), String> {
     let shipped = load_shipped_config()?.ok_or_else(|| {
         "Cannot install update: Bruk is not running from a packaged .app bundle.".to_owned()
     })?;
@@ -437,7 +437,7 @@ pub(crate) fn install_downloaded_update(archive_path: &Path) -> Result<(), Strin
 /// Unpacks and verifies the downloaded archive next to `Bruk.app` so it can be swapped in
 /// cleanly when the user quits (`finish_staged_update_on_quit`).
 /// Blocking; call from a background thread.
-pub(crate) fn stage_downloaded_update_for_quit(
+pub fn stage_downloaded_update_for_quit(
     version: String,
     archive_path: PathBuf,
 ) -> Result<(), String> {
@@ -465,7 +465,7 @@ pub(crate) fn stage_downloaded_update_for_quit(
 }
 
 /// Drops any pending staged-on-quit update (which removes its staging directory on drop).
-pub(crate) fn clear_staged_update() {
+pub fn clear_staged_update() {
     let previous = STAGED_ON_QUIT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -475,7 +475,7 @@ pub(crate) fn clear_staged_update() {
 
 /// Completes a staged-on-quit update when the app exits. Safe to call unconditionally from
 /// `nsh_core::element::desktop::on_app_quit`.
-pub(crate) fn finish_staged_update_on_quit() {
+pub fn finish_staged_update_on_quit() {
     let pending = STAGED_ON_QUIT
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())

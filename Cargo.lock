@@ -771,23 +771,21 @@ dependencies = [
 name = "factory-app"
 version = "0.0.0"
 dependencies = [
- "cc",
  "dirs",
- "env_logger",
  "factory-core",
+ "factory-logging",
+ "factory-updater",
  "log",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
  "nsh-testing",
- "nsh-updater",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "secrecy",
  "serde_json",
  "tempfile",
- "ureq",
  "zeroize",
 ]
 
@@ -824,6 +822,29 @@ version = "0.0.0"
 dependencies = [
  "factory-app",
  "nsh-platform-macos",
+]
+
+[[package]]
+name = "factory-logging"
+version = "0.0.0"
+dependencies = [
+ "cc",
+ "env_logger",
+ "log",
+ "nsh-core",
+]
+
+[[package]]
+name = "factory-updater"
+version = "0.0.0"
+dependencies = [
+ "dirs",
+ "log",
+ "nsh-core",
+ "nsh-updater",
+ "serde_json",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

@@ -184,6 +184,12 @@ static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 /// Safe to call from multiple entrypoints (`main.rs`, `native()`, `App()`); subsequent calls are
 /// no-ops. Headless tests do not call `init`, keeping OS logs silent during `cargo test`.
 pub fn init(entrypoint: &'static str) {
+    init_with_metadata(entrypoint, env!("CARGO_PKG_VERSION"), 0);
+}
+
+/// Initializes the global macOS Unified Logging bridge with explicit application version and
+/// data schema metadata.
+pub fn init_with_metadata(entrypoint: &'static str, app_version: &str, data_schema: u32) {
     let mut initialized_here = false;
     let logger = LOGGER.get_or_init(|| {
         initialized_here = true;
@@ -205,8 +211,8 @@ pub fn init(entrypoint: &'static str) {
             target: "bruk::app",
             "system_log.init entrypoint={entrypoint} pid={} version={} schema={} stderr_mirror={}",
             std::process::id(),
-            factory_core::BRUK_APP_VERSION,
-            factory_core::BRUK_DATA_SCHEMA,
+            app_version,
+            data_schema,
             logger.stderr_enabled,
         );
     }
@@ -391,44 +397,95 @@ pub(crate) fn classify_target(target: &str) -> (Category, bool) {
         return (cat, true);
     }
 
-    if target == "factory_core" || target.starts_with("factory_core::") {
-        let module = target
-            .strip_prefix("factory_core::")
-            .and_then(|rest| rest.split("::").next())
-            .unwrap_or("");
-        let cat = match module {
-            "storage" | "bruk_home" => Category::Storage,
-            "definitions" | "project_settings" => Category::Projects,
-            "claude_cli" | "codex_cli" | "antigravity_cli" | "claude_settings"
-            | "codex_settings" => Category::Providers,
-            "chat" | "chat_attachment" => Category::Chat,
-            "runner" | "engine" | "step_context" | "workflow_editor" | "workflow_run"
-            | "workflows_overview" => Category::Workflow,
-            "mcp" => Category::Mcp,
-            "secrets" => Category::Secrets,
-            "github_intake" => Category::GitHub,
-            "work_queue" => Category::WorkQueue,
-            "inbox" => Category::Inbox,
-            "machines" => Category::Machines,
-            "preferences" => Category::Preferences,
-            _ => Category::App,
-        };
-        return (cat, true);
-    }
-
-    if target == "factory_app" || target.starts_with("factory_app::") {
-        let module = target
-            .strip_prefix("factory_app::")
-            .and_then(|rest| rest.split("::").next())
-            .unwrap_or("");
-        let cat = match module {
-            "boot_log" => Category::Boot,
+    if let Some((crate_name, module)) = split_factory_target(target) {
+        let cat = match crate_name {
+            "factory_core" => match module {
+                "storage" | "bruk_home" => Category::Storage,
+                "definitions" | "project_settings" => Category::Projects,
+                "claude_cli" | "codex_cli" | "antigravity_cli" | "claude_settings"
+                | "codex_settings" => Category::Providers,
+                "chat" | "chat_attachment" | "chat_git" => Category::Chat,
+                "runner" | "engine" | "step_context" | "workflow_editor" | "workflow_run"
+                | "workflows_overview" => Category::Workflow,
+                "mcp" => Category::Mcp,
+                "secrets" => Category::Secrets,
+                "github_intake" => Category::GitHub,
+                "work_queue" => Category::WorkQueue,
+                "inbox" => Category::Inbox,
+                "machines" => Category::Machines,
+                "preferences" => Category::Preferences,
+                _ => Category::App,
+            },
+            "factory_storage" => Category::Storage,
+            "factory_providers" => Category::Providers,
+            "factory_chat" => Category::Chat,
+            "factory_workflows" => match module {
+                "definitions" => Category::Projects,
+                _ => Category::Workflow,
+            },
+            "factory_runner" => Category::Workflow,
+            "factory_secrets" => Category::Secrets,
+            "factory_github" => match module {
+                "work_queue" => Category::WorkQueue,
+                _ => Category::GitHub,
+            },
+            "factory_machines" => Category::Machines,
+            "factory_config" => match module {
+                "mcp" => Category::Mcp,
+                "inbox" => Category::Inbox,
+                "preferences" => Category::Preferences,
+                "project_settings" => Category::Projects,
+                _ => Category::App,
+            },
+            "factory_logging" => match module {
+                "boot_log" => Category::Boot,
+                _ => Category::App,
+            },
+            "factory_app" => match module {
+                "boot_log" => Category::Boot,
+                _ => Category::App,
+            },
             _ => Category::App,
         };
         return (cat, true);
     }
 
     (Category::Runtime, false)
+}
+
+fn split_factory_target(target: &str) -> Option<(&str, &str)> {
+    let mut parts = target.split("::");
+    let crate_name = parts.next()?;
+    let is_first_party = matches!(
+        crate_name,
+        "factory_core"
+            | "factory_types"
+            | "factory_machines"
+            | "factory_github"
+            | "factory_secrets"
+            | "factory_providers"
+            | "factory_workflows"
+            | "factory_config"
+            | "factory_storage"
+            | "factory_chat"
+            | "factory_runner"
+            | "factory_logging"
+            | "factory_updater"
+            | "factory_fonts"
+            | "factory_ui_kit"
+            | "factory_store"
+            | "factory_ui_preferences"
+            | "factory_ui_workflows"
+            | "factory_ui_chat"
+            | "factory_ui_ops"
+            | "factory_app"
+            | "factory_desktop"
+    );
+    if !is_first_party {
+        return None;
+    }
+    let module = parts.next().unwrap_or("");
+    Some((crate_name, module))
 }
 
 fn format_record(record: &Record<'_>, category: Category, first_party: bool) -> String {
@@ -459,16 +516,11 @@ fn format_record(record: &Record<'_>, category: Category, first_party: bool) -> 
 
 /// Extracts a concise submodule label when the target adds specificity beyond `category`.
 fn concise_submodule(target: &str, category: Category) -> Option<&str> {
-    if let Some(rest) = target.strip_prefix("factory_core::") {
-        let tail = rest.rsplit("::").next().unwrap_or(rest);
-        if tail != category.as_str() {
-            return Some(tail);
-        }
-    } else if let Some(rest) = target.strip_prefix("factory_app::") {
-        let tail = rest.rsplit("::").next().unwrap_or(rest);
-        if tail != category.as_str() && tail != "store" {
-            return Some(tail);
-        }
+    let (crate_name, _) = split_factory_target(target)?;
+    let rest = target.strip_prefix(crate_name)?.strip_prefix("::")?;
+    let tail = rest.rsplit("::").next().unwrap_or(rest);
+    if tail != category.as_str() && !(crate_name == "factory_app" && tail == "store") {
+        return Some(tail);
     }
     None
 }

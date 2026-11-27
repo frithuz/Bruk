@@ -1,12 +1,12 @@
 //! Software Factory macOS desktop UI built with Native Shell (`nsh`).
 
-pub mod boot_log;
+pub use factory_logging::{boot_log, system_log};
+pub(crate) use factory_updater as updater;
+
 mod fonts;
 mod menu;
 mod store;
-pub mod system_log;
 mod ui;
-mod updater;
 
 use std::{ffi::OsString, path::PathBuf};
 
@@ -17,7 +17,11 @@ use nsh_core::{element::Root, prelude::*};
 /// Registers this crate's Native Shell UI set (`nsh.json` `"rust"`).
 #[native_module("software-factory/native")]
 fn native(registry: &mut Registry) {
-    boot_log::init("nsh_native_module");
+    boot_log::init_with_metadata(
+        "nsh_native_module",
+        factory_core::BRUK_APP_VERSION,
+        factory_core::BRUK_DATA_SCHEMA,
+    );
     let _span = boot_log::span("boot.native_module.register");
     registry.register::<App>().assets(assets!());
 }
@@ -28,7 +32,11 @@ fn native(registry: &mut Registry) {
 /// first-launch setup when no folder has been chosen yet.
 #[component]
 pub fn App() -> impl IntoElement {
-    boot_log::init("app_component");
+    boot_log::init_with_metadata(
+        "app_component",
+        factory_core::BRUK_APP_VERSION,
+        factory_core::BRUK_DATA_SCHEMA,
+    );
     let mount_span = boot_log::span("boot.app.mount");
     if let Some(age_ms) = boot_log::process_age_ms() {
         boot_log::event("boot.app.mount.enter", &format!("proc_age_ms={age_ms:.1}"));
