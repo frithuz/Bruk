@@ -20,13 +20,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    mcp::{McpSourcesPolicy, ProjectMcpState},
-    preferences::ProviderKind,
-    project_settings::ProjectSandboxMode,
-    workflow_editor::{
-        ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
-    },
+use factory_config::mcp::{McpSourcesPolicy, ProjectMcpState};
+use factory_types::{
+    ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
+    ProjectSandboxMode, ProviderKind,
 };
 
 /// Relative root directory for project-checked-in Bruk definitions.
@@ -1075,7 +1072,7 @@ impl BrukCatalog {
             });
         }
 
-        catalog.project_mcp = crate::mcp::load_project_mcp(&project_root);
+        catalog.project_mcp = factory_config::mcp::load_project_mcp(&project_root);
         if let ProjectMcpState::Invalid { file, message } = &catalog.project_mcp {
             catalog.load_diagnostics.push(CatalogDiagnostic {
                 severity: DiagnosticSeverity::Error,
@@ -1971,7 +1968,7 @@ fn resolve_module_directory(
 /// Default cache directory for fetched git modules: `<Bruk folder>/cache/modules`
 /// (never holds user-authored definitions).
 pub fn default_module_cache_dir() -> Result<PathBuf, CatalogError> {
-    crate::bruk_home::resolve_system_home()
+    factory_config::bruk_home::resolve_system_home()
         .map(|home| home.module_cache_dir())
         .ok_or_else(|| CatalogError::ModuleLoad {
             name: "cache".to_owned(),
@@ -2167,6 +2164,45 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     hash
+}
+
+/// Synchronizes discovered workflows from a resolved [`BrukCatalog`] into a
+/// [`factory_config::ProjectSettings`], preserving any previously saved per-workflow enabled toggles.
+pub fn sync_project_workflows_from_catalog(
+    settings: &mut factory_config::ProjectSettings,
+    catalog: &BrukCatalog,
+) {
+    let prev_enabled: BTreeMap<String, bool> = settings
+        .workflows
+        .iter()
+        .map(|wf| (wf.name.clone(), wf.enabled))
+        .collect();
+    settings.workflows = catalog
+        .effective_workflows()
+        .into_iter()
+        .map(|wf| {
+            let trigger_label = if wf.triggers.work_queue {
+                "Intake"
+            } else {
+                "Ad-hoc only"
+            };
+            let steps = wf.step_count();
+            let summary = format!(
+                "{steps} step{} · {}",
+                if steps == 1 { "" } else { "s" },
+                wf.origin.badge_label()
+            );
+            factory_config::ProjectWorkflowSetting {
+                name: wf.name.clone(),
+                file_path: wf
+                    .origin
+                    .display_path("workflows", &format!("{}.yaml", wf.id)),
+                trigger_label: trigger_label.to_owned(),
+                summary,
+                enabled: prev_enabled.get(&wf.name).copied().unwrap_or(!wf.draft),
+            }
+        })
+        .collect();
 }
 
 #[cfg(test)]
@@ -2459,7 +2495,7 @@ mod tests {
         let catalog = BrukCatalog::load_for_project(repo);
         assert_eq!(
             catalog.project_mcp.file(),
-            Some(crate::mcp::ProjectMcpFile::RootMcpJson)
+            Some(factory_types::ProjectMcpFile::RootMcpJson)
         );
         let wf = catalog.resolve_workflow("strict").cloned().unwrap();
         assert_eq!(wf.mcp_sources, McpSourcesPolicy::Project);

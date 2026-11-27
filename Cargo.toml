@@ -5,6 +5,9 @@ members = [
     "crates/factory-machines",
     "crates/factory-github",
     "crates/factory-secrets",
+    "crates/factory-providers",
+    "crates/factory-config",
+    "crates/factory-workflows",
     "crates/factory-logging",
     "crates/factory-updater",
     "crates/factory-fonts",
@@ -22,15 +25,18 @@ publish = false
 
 [workspace.dependencies]
 factory-app = { path = "crates/factory-app" }
+factory-config = { path = "crates/factory-config" }
 factory-core = { path = "crates/factory-core" }
 factory-fonts = { path = "crates/factory-fonts" }
 factory-github = { path = "crates/factory-github" }
 factory-logging = { path = "crates/factory-logging" }
 factory-machines = { path = "crates/factory-machines" }
+factory-providers = { path = "crates/factory-providers" }
 factory-secrets = { path = "crates/factory-secrets" }
 factory-types = { path = "crates/factory-types" }
 factory-ui-kit = { path = "crates/factory-ui-kit" }
 factory-updater = { path = "crates/factory-updater" }
+factory-workflows = { path = "crates/factory-workflows" }
 aho-corasick = "1.1"
 base64 = "0.22"
 cc = "1"

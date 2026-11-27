@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use factory_config::mcp::McpSourcesPolicy;
+use factory_types::ProviderKind;
+
 use crate::{
     definitions::{
         AgentTaskStepDef, ApprovalGateStepDef, BrukCatalog, CommentOnIssueStepDef, CompositeDef,
@@ -12,8 +15,6 @@ use crate::{
         OpenPullRequestStepDef, SetIssueStatusStepDef, ShellCommandStepDef, WorkflowDef,
         WorkflowNodeDef, WorkflowTriggersDef,
     },
-    mcp::McpSourcesPolicy,
-    preferences::ProviderKind,
     workflows_overview::{
         WorkflowOverviewEntry, WorkflowStepGroup, WorkflowStepPreview, WorkflowTriggerKind,
     },

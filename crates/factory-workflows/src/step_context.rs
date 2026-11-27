@@ -17,7 +17,13 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
+use factory_config::mcp::{
+    ANTIGRAVITY_LOG_FILE, AntigravityMcpDelivery, CODEX_DISABLE_APPS_ARG, CODEX_MCP_RUST_LOG,
+    CodexMcpDelivery, McpSources, McpSourcesPolicy, ResolvedMcpSet, antigravity_mcp_delivery,
+    claude_mcp_config, claude_mcp_config_path, codex_mcp_delivery, codex_mcp_delivery_with_secrets,
+    preflight_mcp_servers, preflight_mcp_servers_with_secrets, resolve_mcp_servers,
+};
+use factory_providers::{
     antigravity_cli::{ANTIGRAVITY_DISABLE_AUTO_UPDATE_ENV, ANTIGRAVITY_DISABLE_AUTO_UPDATE_VALUE},
     claude_settings::{
         CLAUDE_DISABLE_AUTOUPDATER_ENV, CLAUDE_DISABLE_AUTOUPDATER_VALUE, ClaudeSettingsError,
@@ -27,18 +33,12 @@ use crate::{
         CODEX_DISABLE_UPDATE_CHECK_ARG, CodexSettingValue, CodexSettingsError, CodexSpawnOptions,
         CodexSpawnPlan, CodexSpawnSettings, build_codex_spawn_plan,
     },
-    definitions::{AgentTaskStepDef, AgentToolsPolicy, BrukCatalog, CatalogError, ResolvedAgent},
-    mcp::{
-        ANTIGRAVITY_LOG_FILE, AntigravityMcpDelivery, CODEX_DISABLE_APPS_ARG, CODEX_MCP_RUST_LOG,
-        CodexMcpDelivery, McpSources, McpSourcesPolicy, ResolvedMcpSet, antigravity_mcp_delivery,
-        claude_mcp_config, claude_mcp_config_path, codex_mcp_delivery,
-        codex_mcp_delivery_with_secrets, preflight_mcp_servers, preflight_mcp_servers_with_secrets,
-        resolve_mcp_servers,
-    },
-    model::ProjectId,
-    preferences::ProviderKind,
-    project_settings::ProjectSandboxMode,
-    secrets::{ResolvedSecrets, SecretProblem, is_ambient_credential_var_name},
+};
+use factory_secrets::{ResolvedSecrets, SecretProblem, is_ambient_credential_var_name};
+use factory_types::{ProjectId, ProjectSandboxMode, ProviderKind};
+
+use crate::definitions::{
+    AgentTaskStepDef, AgentToolsPolicy, BrukCatalog, CatalogError, ResolvedAgent,
 };
 
 /// Errors returned while compiling or materializing a step context bundle.
@@ -653,7 +653,7 @@ pub fn materialize_step_context(
 /// Default out-of-repo runtime directory for a workflow run step: `<Bruk folder>/runs/<run-id>/`,
 /// or the system temp directory when no Bruk folder has been set up.
 pub fn default_step_runtime_dir(run_id: &str, step_index: usize) -> PathBuf {
-    let base = crate::bruk_home::resolve_system_home()
+    let base = factory_config::bruk_home::resolve_system_home()
         .map(|home| home.run_dir(run_id))
         .unwrap_or_else(|| std::env::temp_dir().join("bruk-runs").join(run_id));
     base.join(format!("step-{step_index:03}"))
@@ -1608,14 +1608,16 @@ mod tests {
     }
 
     fn mcp_sources_for(repo: &Path) -> McpSources {
-        let project = crate::mcp::load_project_mcp(repo);
+        let project = factory_config::mcp::load_project_mcp(repo);
         let fingerprint = project.config().map(|c| c.fingerprint.clone());
         McpSources {
             project,
             allow_project_servers: true,
             approved_fingerprint: fingerprint,
             project_extras: Vec::new(),
-            user_extras: vec![crate::mcp::McpServerDef::from_form("mine", "sh", "", "").unwrap()],
+            user_extras: vec![
+                factory_config::mcp::McpServerDef::from_form("mine", "sh", "", "").unwrap(),
+            ],
         }
     }
 
@@ -1801,13 +1803,13 @@ mod tests {
         assert!(
             overrides
                 .iter()
-                .any(|o| *o == crate::mcp::CODEX_DISABLE_APPS_ARG)
+                .any(|o| *o == factory_config::mcp::CODEX_DISABLE_APPS_ARG)
         );
         assert!(!overrides.iter().any(|o| o.contains("p-secret")));
         assert_eq!(plan.env.get("TOKEN").map(String::as_str), Some("p-secret"));
         assert_eq!(
             plan.env.get("RUST_LOG").map(String::as_str),
-            Some(crate::mcp::CODEX_MCP_RUST_LOG)
+            Some(factory_config::mcp::CODEX_MCP_RUST_LOG)
         );
     }
 
@@ -1943,7 +1945,7 @@ mod tests {
                 .mcp
                 .problems
                 .iter()
-                .any(|p| p.blocking && p.fix == crate::mcp::McpFix::ChangeProvider),
+                .any(|p| p.blocking && p.fix == factory_config::mcp::McpFix::ChangeProvider),
             "{:?}",
             bundle.mcp.problems
         );
@@ -1999,9 +2001,13 @@ mod tests {
                     .to_owned(),
             ..Default::default()
         };
-        let mut plan =
-            crate::build_claude_spawn_plan("/usr/bin/claude", None, &settings, &Default::default())
-                .unwrap();
+        let mut plan = factory_providers::build_claude_spawn_plan(
+            "/usr/bin/claude",
+            None,
+            &settings,
+            &Default::default(),
+        )
+        .unwrap();
 
         let delivery = StepSecretsDelivery {
             env: [("AGENT_ONLY".to_owned(), "agent_secret_val_1234".to_owned())]
@@ -2059,9 +2065,13 @@ mod tests {
     #[test]
     fn codex_secrets_delivery_sets_ignore_default_excludes_and_merges_exclusions() {
         let settings = CodexSpawnSettings::default();
-        let mut plan =
-            crate::build_codex_spawn_plan("/usr/bin/codex", None, &settings, &Default::default())
-                .unwrap();
+        let mut plan = factory_providers::build_codex_spawn_plan(
+            "/usr/bin/codex",
+            None,
+            &settings,
+            &Default::default(),
+        )
+        .unwrap();
 
         let delivery = StepSecretsDelivery {
             env: [(

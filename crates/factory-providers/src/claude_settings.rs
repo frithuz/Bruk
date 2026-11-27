@@ -361,7 +361,7 @@ pub struct ClaudeSpawnSettings {
     pub env_vars: BTreeMap<String, String>,
     /// Secret-backed environment variables mapped to `Internal { purpose: ProviderSpawnEnv }` ids.
     #[serde(default)]
-    pub secret_env_vars: BTreeMap<String, crate::secrets::SecretId>,
+    pub secret_env_vars: BTreeMap<String, factory_types::SecretId>,
     /// Extra raw CLI arguments appended verbatim (shell-word split) when spawning Claude.
     #[serde(default)]
     pub extra_cli_args: String,
@@ -466,7 +466,7 @@ impl ClaudeSpawnSettings {
     pub fn set_secret_env_var(
         &mut self,
         key: &str,
-        secret_id: crate::secrets::SecretId,
+        secret_id: factory_types::SecretId,
     ) -> Result<(), ClaudeSettingsError> {
         let key = key.trim();
         validate_env_var_name(key)?;

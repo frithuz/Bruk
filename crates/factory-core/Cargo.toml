@@ -6,19 +6,18 @@ publish.workspace = true
 
 [dependencies]
 base64.workspace = true
-chrono.workspace = true
-dirs.workspace = true
+factory-config.workspace = true
 factory-github.workspace = true
 factory-machines.workspace = true
+factory-providers.workspace = true
 factory-secrets.workspace = true
 factory-types.workspace = true
+factory-workflows.workspace = true
 log.workspace = true
 rusqlite.workspace = true
 secrecy.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-serde-saphyr.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 zeroize.workspace = true
 

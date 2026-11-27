@@ -5,15 +5,13 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    github_intake::{
-        DetectedGitRemote, GitHubFilterClause, GitHubFilterQualifier, build_github_search_query,
-        current_unix_seconds, format_synced_relative,
-    },
-    mcp::McpServerDef,
-    preferences::{ProviderKind, format_dollars_cents},
-    secrets::SecretId,
+use factory_github::github_intake::{
+    DetectedGitRemote, GitHubFilterClause, GitHubFilterQualifier, build_github_search_query,
+    current_unix_seconds, format_synced_relative,
 };
+use factory_types::{ProviderKind, SecretId, format_dollars_cents};
+
+use crate::mcp::McpServerDef;
 
 /// Left-rail navigation sections inside the Project Settings window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -986,42 +984,6 @@ impl ProjectSettings {
         if let Some(wf) = self.workflows.iter_mut().find(|w| w.name == name) {
             wf.enabled = !wf.enabled;
         }
-    }
-
-    /// Synchronizes discovered workflows from a resolved [`crate::definitions::BrukCatalog`],
-    /// preserving any previously saved per-workflow enabled toggles.
-    pub fn sync_workflows_from_catalog(&mut self, catalog: &crate::definitions::BrukCatalog) {
-        let prev_enabled: std::collections::BTreeMap<String, bool> = self
-            .workflows
-            .iter()
-            .map(|wf| (wf.name.clone(), wf.enabled))
-            .collect();
-        self.workflows = catalog
-            .effective_workflows()
-            .into_iter()
-            .map(|wf| {
-                let trigger_label = if wf.triggers.work_queue {
-                    "Intake"
-                } else {
-                    "Ad-hoc only"
-                };
-                let steps = wf.step_count();
-                let summary = format!(
-                    "{steps} step{} · {}",
-                    if steps == 1 { "" } else { "s" },
-                    wf.origin.badge_label()
-                );
-                ProjectWorkflowSetting {
-                    name: wf.name.clone(),
-                    file_path: wf
-                        .origin
-                        .display_path("workflows", &format!("{}.yaml", wf.id)),
-                    trigger_label: trigger_label.to_owned(),
-                    summary,
-                    enabled: prev_enabled.get(&wf.name).copied().unwrap_or(!wf.draft),
-                }
-            })
-            .collect();
     }
 }
 

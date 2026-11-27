@@ -4,25 +4,20 @@
 //! workflow orchestration, persistence, and agent integrations can be tested
 //! and reused across the macOS app, CLI tools, or background daemons.
 
-pub mod antigravity_cli;
-pub mod bruk_home;
+pub use factory_config::{bruk_home, inbox, mcp, preferences, project_settings};
+pub use factory_github::{github_intake, work_queue};
+pub use factory_machines as machines;
+pub use factory_providers::{
+    antigravity_cli, claude_cli, claude_settings, codex_cli, codex_settings,
+};
+pub use factory_types::model;
+pub use factory_workflows::{
+    definitions, engine, step_context, workflow_editor, workflow_run, workflows_overview,
+};
 pub mod chat;
 pub mod chat_attachment;
 pub mod chat_git;
-pub mod claude_cli;
-pub mod claude_settings;
-pub mod codex_cli;
-pub mod codex_settings;
 pub mod dashboard;
-pub mod definitions;
-pub mod engine;
-pub use factory_github::github_intake;
-pub mod inbox;
-pub use factory_machines as machines;
-pub mod mcp;
-pub use factory_types::model;
-pub mod preferences;
-pub mod project_settings;
 pub mod runner;
 pub mod secrets_migration;
 pub mod secrets {
@@ -37,12 +32,7 @@ pub mod secrets {
         },
     };
 }
-pub mod step_context;
 pub mod storage;
-pub use factory_github::work_queue;
-pub mod workflow_editor;
-pub mod workflow_run;
-pub mod workflows_overview;
 
 pub use antigravity_cli::{
     ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,
@@ -126,7 +116,7 @@ pub use definitions::{
     LoadedModuleInfo, LoopExitConditionDef, LoopNodeDef, ModuleDecl, ModuleFetchPolicy,
     ModuleSource, OpenPullRequestStepDef, PROJECT_NAMESPACE, ResolvedAgent, SetIssueStatusStepDef,
     ShellCommandStepDef, SkillDef, WorkflowDef, WorkflowNodeDef, WorkflowTriggersDef,
-    default_module_cache_dir, validate_identifier,
+    default_module_cache_dir, sync_project_workflows_from_catalog, validate_identifier,
 };
 pub use engine::{DryRunExecutor, FactoryError, FactoryState, StepExecutor, StepOutcome};
 pub use github_intake::{

@@ -29,11 +29,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::{
-    model::ProjectId,
-    preferences::ProviderKind,
-    secrets::{Exposure, ResolvedSecrets, SecretProblem, ValueOrigin},
-};
+use factory_secrets::{ResolvedSecrets, ValueOrigin};
+use factory_types::{Exposure, ProjectId, ProviderKind, SecretProblem};
 
 pub use factory_types::{
     AGENTS_MCP_CONFIG_PATH, McpFix, McpOrigin, McpProblem, ProjectMcpFile, ROOT_MCP_JSON_PATH,
@@ -146,7 +143,7 @@ impl McpServerDef {
                 sse: false,
             }
         } else {
-            let args = crate::claude_settings::split_shell_words(args_text)
+            let args = factory_providers::claude_settings::split_shell_words(args_text)
                 .map_err(|err| err.to_string())?;
             let mut env = BTreeMap::new();
             for line in pairs_text.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -1021,7 +1018,7 @@ fn server_texts(def: &McpServerDef) -> Vec<&str> {
 fn command_exists(command: &str, path_env: Option<&str>) -> bool {
     let command = command.trim();
     if command.contains('/') {
-        return crate::expand_tilde(command).is_file();
+        return factory_types::expand_tilde(command).is_file();
     }
     let path = path_env
         .map(str::to_owned)

@@ -126,10 +126,10 @@ pub enum StepTranscriptEntry {
     },
     /// An MCP server that didn't reach the agent, shown as a banner in the step.
     McpProblem {
-        problem: crate::mcp::McpProblem,
+        problem: factory_types::McpProblem,
     },
     SecretProblem {
-        problem: crate::secrets::SecretProblem,
+        problem: factory_types::SecretProblem,
     },
 }
 

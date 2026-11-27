@@ -186,7 +186,7 @@ pub enum AttentionRequestBody {
 /// An MCP server that didn't reach an agent, with what to do about it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpProblemDetail {
-    pub problem: crate::mcp::McpProblem,
+    pub problem: factory_types::McpProblem,
     /// Whether it stopped the step or chat turn.
     pub stopped_work: bool,
 }
@@ -194,7 +194,7 @@ pub struct McpProblemDetail {
 /// A secret or secret-manager problem surfaced in Inbox *Setup* and banners.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretProblemDetail {
-    pub problem: crate::secrets::SecretProblem,
+    pub problem: factory_types::SecretProblem,
     /// Whether it stopped the step, chat turn, sync, or queued run.
     pub stopped_work: bool,
 }
@@ -939,7 +939,7 @@ impl InboxState {
     pub fn clear_mcp_problems(
         &mut self,
         project_name: &str,
-        mut resolved: impl FnMut(&crate::mcp::McpProblem) -> bool,
+        mut resolved: impl FnMut(&factory_types::McpProblem) -> bool,
     ) -> Vec<String> {
         let ids: Vec<String> = self
             .pending
@@ -962,7 +962,7 @@ impl InboxState {
     /// Returns the ids cleared so their OS notifications can be closed.
     pub fn clear_secret_problems(
         &mut self,
-        mut resolved: impl FnMut(&crate::secrets::SecretProblem) -> bool,
+        mut resolved: impl FnMut(&factory_types::SecretProblem) -> bool,
     ) -> Vec<String> {
         let ids: Vec<String> = self
             .pending

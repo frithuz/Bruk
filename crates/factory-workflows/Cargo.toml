@@ -1,0 +1,20 @@
+[package]
+name = "factory-workflows"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-config.workspace = true
+factory-providers.workspace = true
+factory-secrets.workspace = true
+factory-types.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde-saphyr.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+secrecy.workspace = true
+tempfile.workspace = true

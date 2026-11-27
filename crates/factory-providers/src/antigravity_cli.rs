@@ -709,6 +709,82 @@ fn validate_executable_file(path: PathBuf) -> Result<PathBuf, AntigravityBinaryE
     Ok(path)
 }
 
+/// Every token an Antigravity `usage` block counts: fresh input, cache reads, output and
+/// thinking.
+pub fn antigravity_usage_tokens(usage: Option<&Value>) -> u64 {
+    [
+        "input_tokens",
+        "cache_read_tokens",
+        "output_tokens",
+        "thinking_tokens",
+    ]
+    .into_iter()
+    .map(|key| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    })
+    .fold(0u64, u64::saturating_add)
+}
+
+/// The verb and target Bruk shows for an Antigravity tool call.
+pub fn antigravity_tool_label(name: &str, parameters: Option<&Value>) -> (String, String) {
+    let verb = match name {
+        "run_command" | "send_command_input" => "Shell",
+        "view_file" | "read_file" => "Read",
+        "write_to_file"
+        | "write_file"
+        | "edit_file"
+        | "replace_file_content"
+        | "multi_replace_file_content"
+        | "sed_file" => "Edit",
+        "grep_search" => "Search",
+        "find_by_name" => "Find",
+        "list_dir" => "List",
+        "search_web" => "Web search",
+        "read_url_content" => "Fetch",
+        "invoke_subagent" | "browser_subagent" => "Subagent",
+        other => other,
+    };
+    let mut target = String::new();
+    if let Some(Value::Object(params)) = parameters {
+        let preferred = [
+            "commandline",
+            "command",
+            "absolutepath",
+            "targetfile",
+            "path",
+            "file",
+            "directorypath",
+            "searchdirectory",
+            "query",
+            "pattern",
+            "url",
+            "task",
+            "description",
+        ];
+        target = preferred
+            .iter()
+            .find_map(|key| {
+                params
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(key))
+                    .and_then(|(_, v)| v.as_str())
+                    .filter(|v| !v.trim().is_empty())
+            })
+            .or_else(|| {
+                params
+                    .values()
+                    .filter_map(Value::as_str)
+                    .find(|v| !v.trim().is_empty())
+            })
+            .unwrap_or_default()
+            .to_owned();
+    }
+    (verb.to_owned(), target)
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;

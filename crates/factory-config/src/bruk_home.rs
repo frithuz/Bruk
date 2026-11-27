@@ -29,7 +29,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::{claude_cli::expand_tilde, storage::ProjectDatabase};
+use factory_types::expand_tilde;
 
 /// Environment variable that points Bruk at an explicit folder, skipping first-launch setup.
 pub const BRUK_HOME_ENV: &str = "BRUK_HOME";
@@ -284,12 +284,14 @@ impl HomeEnvironment {
             .cloned()
     }
 
-    /// Completes first-launch setup for the folder typed or picked by the user.
-    ///
-    /// Creates the folder layout, optionally copies the legacy database in (only when the
-    /// folder has no database yet), and remembers the location for future launches. The
-    /// legacy database is left untouched.
-    pub fn set_up(&self, root_input: &str, import_legacy: bool) -> Result<HomeSetup, HomeError> {
+    /// Completes first-launch setup for the folder typed or picked by the user, delegating
+    /// legacy database copying to `copy_database` (typically `ProjectDatabase::copy_database`).
+    pub fn set_up_with_importer<E: std::fmt::Display>(
+        &self,
+        root_input: &str,
+        import_legacy: bool,
+        copy_database: impl FnOnce(&Path, &Path) -> Result<(), E>,
+    ) -> Result<HomeSetup, HomeError> {
         let trimmed = root_input.trim();
         if trimmed.is_empty() {
             return Err(HomeError::EmptyPath);
@@ -311,11 +313,9 @@ impl HomeEnvironment {
             && !adopted_existing
             && let Some(legacy) = self.legacy_database()
         {
-            ProjectDatabase::copy_database(&legacy, home.database_path()).map_err(|err| {
-                HomeError::Import {
-                    path: legacy.clone(),
-                    message: err.to_string(),
-                }
+            copy_database(&legacy, home.database_path()).map_err(|err| HomeError::Import {
+                path: legacy.clone(),
+                message: err.to_string(),
             })?;
             imported_from = Some(legacy);
         }
@@ -904,13 +904,21 @@ mod tests {
         );
     }
 
+    fn copy_file_for_test(src: &Path, dst: &Path) -> Result<(), io::Error> {
+        fs::copy(src, dst).map(|_| ())
+    }
+
     #[test]
     fn default_folder_setup_writes_no_locator_and_resolves_afterwards() {
         let temp = TempDir::new().unwrap();
         let env = test_environment(temp.path());
 
         let setup = env
-            .set_up(&env.default_root.display().to_string(), true)
+            .set_up_with_importer(
+                &env.default_root.display().to_string(),
+                true,
+                copy_file_for_test,
+            )
             .unwrap();
         assert_eq!(setup.imported_from, None);
         assert!(!setup.adopted_existing);
@@ -919,7 +927,7 @@ mod tests {
         }
         assert!(!env.locator_path.exists());
 
-        ProjectDatabase::open_home(&setup.home).unwrap();
+        fs::write(setup.home.database_path(), b"db").unwrap();
         assert_eq!(
             env.resolve(),
             HomeResolution::Ready(BrukHome::at(env.default_root.clone()))
@@ -931,16 +939,14 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let env = test_environment(temp.path());
         let legacy_path = env.legacy_database_paths[0].clone();
-        {
-            let legacy = ProjectDatabase::open(&legacy_path).unwrap();
-            legacy
-                .register_project("billing-api", "/Users/dev/billing-api", "main", "")
-                .unwrap();
-        }
+        fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
+        fs::write(&legacy_path, b"legacy-db-contents").unwrap();
         assert_eq!(env.legacy_database(), Some(legacy_path.clone()));
 
         let custom = temp.path().join("Data").join("Bruk");
-        let setup = env.set_up(&custom.display().to_string(), true).unwrap();
+        let setup = env
+            .set_up_with_importer(&custom.display().to_string(), true, copy_file_for_test)
+            .unwrap();
         assert_eq!(setup.imported_from, Some(legacy_path.clone()));
         assert_eq!(env.remembered_root(), Some(custom.clone()));
         assert_eq!(
@@ -948,21 +954,27 @@ mod tests {
             HomeResolution::Ready(BrukHome::at(custom.clone()))
         );
 
-        let db = ProjectDatabase::open_home(&setup.home).unwrap();
-        let projects = db.list_projects().unwrap();
-        assert_eq!(projects.len(), 1);
-        assert_eq!(projects[0].name, "billing-api");
+        assert_eq!(
+            fs::read(setup.home.database_path()).unwrap(),
+            b"legacy-db-contents"
+        );
         // The legacy database is left in place.
         assert!(legacy_path.is_file());
 
         // Choosing the same folder again adopts it instead of re-importing.
-        let again = env.set_up(&custom.display().to_string(), true).unwrap();
+        let again = env
+            .set_up_with_importer(&custom.display().to_string(), true, copy_file_for_test)
+            .unwrap();
         assert!(again.adopted_existing);
         assert_eq!(again.imported_from, None);
 
         // Switching back to the default folder clears the locator.
-        env.set_up(&env.default_root.display().to_string(), false)
-            .unwrap();
+        env.set_up_with_importer(
+            &env.default_root.display().to_string(),
+            false,
+            copy_file_for_test,
+        )
+        .unwrap();
         assert!(!env.locator_path.exists());
     }
 
@@ -985,15 +997,18 @@ mod tests {
     fn rejects_empty_relative_and_file_paths() {
         let temp = TempDir::new().unwrap();
         let env = test_environment(temp.path());
-        assert!(matches!(env.set_up("  ", false), Err(HomeError::EmptyPath)));
         assert!(matches!(
-            env.set_up("relative/Bruk", false),
+            env.set_up_with_importer("  ", false, copy_file_for_test),
+            Err(HomeError::EmptyPath)
+        ));
+        assert!(matches!(
+            env.set_up_with_importer("relative/Bruk", false, copy_file_for_test),
             Err(HomeError::RelativePath(_))
         ));
         let file_path = temp.path().join("file.txt");
         fs::write(&file_path, "x").unwrap();
         assert!(matches!(
-            env.set_up(&file_path.display().to_string(), false),
+            env.set_up_with_importer(&file_path.display().to_string(), false, copy_file_for_test),
             Err(HomeError::NotADirectory(_))
         ));
     }

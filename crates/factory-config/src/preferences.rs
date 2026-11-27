@@ -5,12 +5,11 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
+use factory_providers::{
     antigravity_cli::{
         ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,
         AntigravityCliDetails, AntigravityCliProbe,
     },
-    bruk_home::BrukHome,
     claude_cli::{
         ClaudeCliDetails, ClaudeCliProbe, ClaudeModelOption, ClaudeUsageSummary, ClaudeUsageWindow,
     },
@@ -23,8 +22,10 @@ use crate::{
         CodexSettingsError, CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings,
         build_codex_spawn_plan,
     },
-    secrets::{SecretId, SecretsSettings},
 };
+use factory_secrets::{SecretId, SecretsSettings};
+
+use crate::bruk_home::BrukHome;
 
 /// Top-level toolbar tabs inside the macOS Preferences window.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -317,7 +318,7 @@ impl GeneralSettings {
     pub fn projects_dir(&self, home: &BrukHome) -> PathBuf {
         match self.default_projects_dir.trim() {
             "" => home.projects_dir(),
-            custom => crate::claude_cli::expand_tilde(custom),
+            custom => factory_types::expand_tilde(custom),
         }
     }
 
@@ -466,7 +467,7 @@ pub struct SshAgentPreset {
 impl SshAgentPreset {
     /// Whether the agent's socket exists on this machine.
     pub fn is_installed(&self) -> bool {
-        crate::claude_cli::expand_tilde(self.socket_path).exists()
+        factory_types::expand_tilde(self.socket_path).exists()
     }
 }
 
@@ -498,7 +499,7 @@ impl AdvancedSettings {
         match self.ssh_auth_sock.trim() {
             "" => None,
             custom => Some(
-                crate::claude_cli::expand_tilde(custom)
+                factory_types::expand_tilde(custom)
                     .to_string_lossy()
                     .into_owned(),
             ),
@@ -1823,7 +1824,7 @@ mod tests {
     fn claude_probe_updates_account_status_and_custom_path() {
         use std::path::PathBuf;
 
-        use crate::claude_cli::ClaudeBinaryError;
+        use factory_providers::claude_cli::ClaudeBinaryError;
 
         let mut prefs = AppPreferences::empty();
         assert!(!prefs.claude.binary_found);
@@ -1955,7 +1956,7 @@ mod tests {
     fn antigravity_account_is_opt_in_and_tracks_probe_state() {
         use std::path::PathBuf;
 
-        use crate::antigravity_cli::AntigravityBinaryError;
+        use factory_providers::antigravity_cli::AntigravityBinaryError;
 
         let mut prefs = AppPreferences::empty();
         assert!(prefs.antigravity.is_none());
@@ -2042,7 +2043,7 @@ mod tests {
     fn codex_probe_and_model_family_filter_update_account_state() {
         use std::path::PathBuf;
 
-        use crate::codex_cli::CodexBinaryError;
+        use factory_providers::codex_cli::CodexBinaryError;
 
         let mut prefs = AppPreferences::empty();
         prefs.add_codex_account("", "").unwrap();

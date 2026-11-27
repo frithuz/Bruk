@@ -798,7 +798,7 @@ impl AppState {
 
                     let t_catalog = std::time::Instant::now();
                     let catalog = load_catalog(home.as_ref(), &project.root_path);
-                    settings.sync_workflows_from_catalog(&catalog);
+                    factory_core::sync_project_workflows_from_catalog(&mut settings, &catalog);
                     let catalog_ms = t_catalog.elapsed().as_secs_f64() * 1000.0;
 
                     let t_queue = std::time::Instant::now();
@@ -1332,7 +1332,7 @@ impl AppState {
             .unwrap_or_else(BrukCatalog::builtin_only);
         let overview = ProjectWorkflowsOverview::from_catalog(project_name, &catalog);
         if let Some(settings) = self.project_settings.get_mut(project_name) {
-            settings.sync_workflows_from_catalog(&catalog);
+            factory_core::sync_project_workflows_from_catalog(settings, &catalog);
         }
         self.workflows_overviews
             .insert(project_name.to_owned(), overview);
@@ -1966,10 +1966,11 @@ pub(crate) fn complete_home_setup() {
         return;
     };
     let legacy_paths = draft.environment.legacy_database_paths.clone();
-    match draft
-        .environment
-        .set_up(&draft.root_input, draft.import_legacy)
-    {
+    match draft.environment.set_up_with_importer(
+        &draft.root_input,
+        draft.import_legacy,
+        ProjectDatabase::copy_database,
+    ) {
         Ok(setup) => {
             let root_display = display_with_tilde(setup.home.root());
             log::info!(
@@ -2959,7 +2960,7 @@ fn register_project_with_branch(name: &str, path: &str, default_branch: &str) ->
                         clean.apply_detected_git_remote(&detected);
                     }
                     let catalog = load_catalog(s.home.as_ref(), Path::new(&saved_path));
-                    clean.sync_workflows_from_catalog(&catalog);
+                    factory_core::sync_project_workflows_from_catalog(&mut clean, &catalog);
                     (clean, Some(catalog))
                 };
                 if !demo
