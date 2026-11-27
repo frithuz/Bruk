@@ -2,20 +2,17 @@
 //!
 //! Default `Issues & intake` pane matches `05 ProjectSettings.png`.
 
-use factory_core::{
-    GitHubFilterClause, GitHubFilterQualifier, IssueSourceAuthMode, IssueSourceKind,
-    ProjectIntakeRule, ProjectSandboxMode, ProjectSettingsTab, ProviderKind,
-};
+use factory_config::{ProjectIntakeRule, ProjectSettingsTab};
+use factory_github::{GitHubFilterClause, GitHubFilterQualifier};
+use factory_types::{IssueSourceAuthMode, IssueSourceKind, ProjectSandboxMode, ProviderKind};
 use nsh_base::{SelectItem, SelectValue, button, input, select};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 /// Main-panel Project Settings split view: section rail on the left, settings content on the right.
-pub(crate) fn project_settings_view() -> impl IntoElement {
+pub fn project_settings_view() -> impl IntoElement {
     view()
         .flex_1()
         .min_w(px(0.0))
@@ -176,7 +173,7 @@ fn settings_content_pane() -> impl IntoElement {
         ))
         .child(when(
             || store::project_settings_tab() == ProjectSettingsTab::McpServers,
-            crate::ui::mcp::project_mcp_tab,
+            factory_ui_common::mcp::project_mcp_tab,
         ))
         .child(when(
             || store::project_settings_tab() == ProjectSettingsTab::AgentsAndLimits,
@@ -1868,7 +1865,7 @@ fn providers_tab() -> impl IntoElement {
                             "Open Provider Preferences...",
                             || {
                                 store::open_preferences_tab(
-                                    factory_core::PreferencesTab::Providers,
+                                    factory_config::PreferencesTab::Providers,
                                 );
                             },
                         )),
@@ -1954,7 +1951,7 @@ fn environment_tab() -> impl IntoElement {
     let draft_key = signal(String::new());
     let draft_value = signal(String::new());
     let draft_secret = signal(false);
-    let draft_exposure = signal(factory_core::Exposure::McpOnly);
+    let draft_exposure = signal(factory_types::Exposure::McpOnly);
     let draft_manager = signal("keychain".to_owned());
     let replacing_secret_id: Signal<Option<String>> = signal(None);
     let draft_replace_value = signal(String::new());
@@ -2081,20 +2078,20 @@ fn environment_tab() -> impl IntoElement {
                         let is_replacing =
                             replacing_secret_id.get().as_deref() == Some(sec_id.as_str());
                         let exposure = match sec.kind {
-                            factory_core::SecretKind::Env { exposure, .. } => exposure,
-                            _ => factory_core::Exposure::McpOnly,
+                            factory_types::SecretKind::Env { exposure, .. } => exposure,
+                            _ => factory_types::Exposure::McpOnly,
                         };
                         let next_exposure = match exposure {
-                            factory_core::Exposure::McpOnly => {
-                                factory_core::Exposure::AgentAndSteps
+                            factory_types::Exposure::McpOnly => {
+                                factory_types::Exposure::AgentAndSteps
                             }
-                            factory_core::Exposure::AgentAndSteps => {
-                                factory_core::Exposure::McpOnly
+                            factory_types::Exposure::AgentAndSteps => {
+                                factory_types::Exposure::McpOnly
                             }
                         };
                         let value_text = match &sec.source {
-                            factory_core::SecretSource::Keychain => {
-                                if sec.state == factory_core::SecretState::NeedsValue {
+                            factory_types::SecretSource::Keychain => {
+                                if sec.state == factory_types::SecretState::NeedsValue {
                                     "Needs value".to_owned()
                                 } else {
                                     sec.preview
@@ -2102,7 +2099,7 @@ fn environment_tab() -> impl IntoElement {
                                         .unwrap_or_else(|| "••••••••".to_owned())
                                 }
                             }
-                            factory_core::SecretSource::Manager { reference, .. } => {
+                            factory_types::SecretSource::Manager { reference, .. } => {
                                 reference.clone()
                             }
                         };
@@ -2154,7 +2151,7 @@ fn environment_tab() -> impl IntoElement {
                                                 .text_size(px(12.0))
                                                 .text_color(
                                                     if sec.state
-                                                        == factory_core::SecretState::NeedsValue
+                                                        == factory_types::SecretState::NeedsValue
                                                     {
                                                         palette::destructive_text()
                                                     } else {
@@ -2191,10 +2188,10 @@ fn environment_tab() -> impl IntoElement {
                                                 .hover(|s| s.bg(palette::subtle_surface_bg()))
                                                 .child(
                                                     text(match exposure {
-                                                        factory_core::Exposure::McpOnly => {
+                                                        factory_types::Exposure::McpOnly => {
                                                             "MCP Only"
                                                         }
-                                                        factory_core::Exposure::AgentAndSteps => {
+                                                        factory_types::Exposure::AgentAndSteps => {
                                                             "Agent + Steps"
                                                         }
                                                     })
@@ -2206,7 +2203,7 @@ fn environment_tab() -> impl IntoElement {
                                             {
                                                 let is_kc = matches!(
                                                     sec.source,
-                                                    factory_core::SecretSource::Keychain
+                                                    factory_types::SecretSource::Keychain
                                                 );
                                                 move || is_kc
                                             },
@@ -2326,7 +2323,7 @@ fn environment_tab() -> impl IntoElement {
                                 draft_key.set(String::new());
                                 draft_value.set(String::new());
                                 draft_secret.set(false);
-                                draft_exposure.set(factory_core::Exposure::McpOnly);
+                                draft_exposure.set(factory_types::Exposure::McpOnly);
                                 draft_manager.set("keychain".to_owned());
                                 add_var_open.set(!show_add);
                             }),
@@ -2340,7 +2337,7 @@ fn environment_tab() -> impl IntoElement {
                     let exposure = draft_exposure.get();
                     let current_val = draft_value.get();
                     let ws_warning =
-                        is_secret && is_keychain && factory_core::has_surrounding_whitespace(&current_val);
+                        is_secret && is_keychain && factory_secrets::has_surrounding_whitespace(&current_val);
 
                     let save_var = move || {
                         let key = draft_key.get_untracked();
@@ -2480,15 +2477,15 @@ fn environment_tab() -> impl IntoElement {
                                     )
                                     .child(segment_button(
                                         "MCP servers only",
-                                        exposure == factory_core::Exposure::McpOnly,
-                                        move || draft_exposure.set(factory_core::Exposure::McpOnly),
+                                        exposure == factory_types::Exposure::McpOnly,
+                                        move || draft_exposure.set(factory_types::Exposure::McpOnly),
                                     ))
                                     .child(segment_button(
                                         "Agent and steps",
-                                        exposure == factory_core::Exposure::AgentAndSteps,
+                                        exposure == factory_types::Exposure::AgentAndSteps,
                                         move || {
                                             draft_exposure
-                                                .set(factory_core::Exposure::AgentAndSteps)
+                                                .set(factory_types::Exposure::AgentAndSteps)
                                         },
                                     )),
                             );
@@ -2573,7 +2570,7 @@ fn environment_tab() -> impl IntoElement {
                             "Excluded in this project"
                         } else {
                             match rec.kind {
-                                factory_core::SecretKind::Env { exposure, .. } => exposure.label(),
+                                factory_types::SecretKind::Env { exposure, .. } => exposure.label(),
                                 _ => "",
                             }
                         };
@@ -2739,7 +2736,7 @@ fn environment_tab() -> impl IntoElement {
                                 draft_key.set(var_name.clone());
                                 draft_value.set(String::new());
                                 draft_secret.set(true);
-                                draft_exposure.set(factory_core::Exposure::McpOnly);
+                                draft_exposure.set(factory_types::Exposure::McpOnly);
                                 add_var_open.set(true);
                             }));
                         }

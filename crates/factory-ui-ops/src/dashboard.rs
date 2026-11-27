@@ -1,18 +1,18 @@
 //! Dashboard landing page: KPI overview, daily token usage chart/table, project & provider
 //! breakdowns, project activity table, highest token runs, wait latency, and insights.
 
-use factory_core::{
-    DashboardInsight, DashboardSnapshot, HighTokenRun, PreferencesTab, ProjectActivityRow,
-    ProjectColor, ProjectTokens, ProviderUsage, TokenBucket, format_axis_tokens, format_currency,
-    format_tenths_hours, format_tokens, format_wait_minutes,
+use factory_config::PreferencesTab;
+use factory_storage::{
+    DashboardInsight, DashboardSnapshot, HighTokenRun, ProjectActivityRow, ProjectTokens,
+    ProviderUsage, TokenBucket, format_axis_tokens, format_currency, format_tenths_hours,
+    format_tokens, format_wait_minutes,
 };
+use factory_types::ProjectColor;
 use nsh_base::button;
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const RIGHT_COLUMN_WIDTH: f32 = 344.0;
 const CHART_PLOT_HEIGHT: f32 = 196.0;
@@ -20,9 +20,10 @@ const CHART_PLOT_HEIGHT: f32 = 196.0;
 const CHART_AXIS_WIDTH: f32 = 50.0;
 
 /// Main scrollable Dashboard canvas matching the reference overview layout.
-pub(crate) fn dashboard_view() -> impl IntoElement {
+pub fn dashboard_view() -> impl IntoElement {
     static FIRST_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _boot_span = crate::boot_log::once_span("boot.ui.dashboard_first_build", &FIRST_BUILD);
+    let _boot_span =
+        factory_logging::boot_log::once_span("boot.ui.dashboard_first_build", &FIRST_BUILD);
     // Memoize the dashboard inputs so unrelated AppState updates (such as background provider
     // probes or usage refreshes completing after boot) do not tear down and rebuild the canvas.
     let dashboard_state = computed(|| {
@@ -1192,7 +1193,7 @@ fn insight_row(insight: &DashboardInsight) -> impl IntoElement {
         )
 }
 
-pub(crate) fn project_dot(color: ProjectColor) -> impl IntoElement {
+pub fn project_dot(color: ProjectColor) -> impl IntoElement {
     view()
         .w(px(8.0))
         .h(px(8.0))

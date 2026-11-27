@@ -1,29 +1,20 @@
 //! Main macOS desktop shell: unified header toolbar, left navigation rail, and active canvas.
 
-mod chat;
-mod claude_spawn_settings;
-mod codex_spawn_settings;
-mod dashboard;
-pub(crate) mod home_setup;
+pub(crate) use factory_ui_chat::{chat, workspace};
 pub(crate) use factory_ui_kit::{icons, palette};
-pub(crate) mod inbox;
-mod machines;
-mod mcp;
-pub(crate) mod menubar;
-pub(crate) mod preferences;
-mod project_settings;
-mod register_project;
-pub(crate) mod secrets;
-mod work_queue;
-mod workflow_editor;
-mod workflow_run;
-mod workflows;
-mod workspace;
-
-use factory_core::{
-    DashboardGranularity, PreferencesTab, ProjectColor, ProjectId, RunExecutionState,
-    WorkQueueViewMode,
+pub(crate) use factory_ui_ops::{
+    dashboard, home_setup, inbox, machines, menubar, register_project,
 };
+pub(crate) use factory_ui_preferences::preferences;
+pub(crate) use factory_ui_workflows::{
+    project_settings, work_queue, workflow_editor, workflow_run, workflows,
+};
+
+use factory_config::PreferencesTab;
+use factory_github::WorkQueueViewMode;
+use factory_storage::DashboardGranularity;
+use factory_types::{ProjectColor, ProjectId};
+use factory_workflows::RunExecutionState;
 use nsh_base::{SelectItem, SelectValue, button, select};
 use nsh_core::prelude::*;
 

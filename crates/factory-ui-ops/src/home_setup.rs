@@ -5,12 +5,14 @@ use std::path::Path;
 use nsh_base::{button, input, theme};
 use nsh_core::{file_dialog::OpenDialog, prelude::*};
 
-use crate::{store, ui::palette};
+use factory_store as store;
+use factory_ui_kit::palette;
 
 /// Full-window first-launch screen shown until a Bruk folder is chosen.
-pub(crate) fn home_setup_view() -> impl IntoElement {
+pub fn home_setup_view() -> impl IntoElement {
     static FIRST_BUILD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    let _boot_span = crate::boot_log::once_span("boot.ui.home_setup_first_build", &FIRST_BUILD);
+    let _boot_span =
+        factory_logging::boot_log::once_span("boot.ui.home_setup_first_build", &FIRST_BUILD);
     view()
         .flex_1()
         .bg(palette::canvas_bg())
@@ -225,9 +227,9 @@ fn choose_folder() {
         if let Ok(Some(paths)) = answer.await
             && let Some(chosen) = paths.into_iter().next()
         {
-            store::set_home_setup_root_input(&factory_core::display_with_tilde(&bruk_folder_for(
-                &chosen,
-            )));
+            store::set_home_setup_root_input(&factory_config::display_with_tilde(
+                &bruk_folder_for(&chosen),
+            ));
         }
     });
 }
@@ -235,11 +237,11 @@ fn choose_folder() {
 /// Picking a non-empty folder that isn't already a Bruk folder (say `~/Code`) proposes a
 /// `Bruk` subfolder inside it, so Bruk's files don't mix with what's already there.
 fn bruk_folder_for(chosen: &Path) -> std::path::PathBuf {
-    let is_bruk_folder = factory_core::BrukHome::at(chosen).is_initialized();
+    let is_bruk_folder = factory_config::BrukHome::at(chosen).is_initialized();
     let is_empty = std::fs::read_dir(chosen).is_ok_and(|mut entries| entries.next().is_none());
     if is_bruk_folder || is_empty {
         chosen.to_path_buf()
     } else {
-        chosen.join(factory_core::DEFAULT_HOME_DIR_NAME)
+        chosen.join(factory_config::DEFAULT_HOME_DIR_NAME)
     }
 }

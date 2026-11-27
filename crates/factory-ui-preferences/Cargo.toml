@@ -1,0 +1,17 @@
+[package]
+name = "factory-ui-preferences"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-config.workspace = true
+factory-machines.workspace = true
+factory-providers.workspace = true
+factory-store.workspace = true
+factory-types.workspace = true
+factory-ui-common.workspace = true
+factory-ui-kit.workspace = true
+factory-updater.workspace = true
+nsh-base.workspace = true
+nsh-core.workspace = true

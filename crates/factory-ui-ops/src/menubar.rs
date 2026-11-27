@@ -1,7 +1,7 @@
 //! Native macOS menu bar item (`NSStatusItem`), Dock badge sync, notification
 //! listener, and floating "Waiting on you" popover window (`10 AttentionSurfaces.png`).
 
-use factory_core::AttentionRequest;
+use factory_config::AttentionRequest;
 use nsh_base::button;
 use nsh_core::{
     desktop::{
@@ -17,7 +17,8 @@ use nsh_core::{
     prelude::*,
 };
 
-use crate::{store, ui::palette};
+use factory_store as store;
+use factory_ui_kit::palette;
 
 /// Builds a menu bar template icon (`NSStatusBarButton`): an inbox status dot
 /// above the app icon's tiered pine, whose strokes are copied as-is from
@@ -56,16 +57,16 @@ const POPOVER_MAX_ITEMS: usize = 6;
 
 /// Reactive snapshot driving the native macOS menu bar item and Dock badge.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct TraySnapshot {
-    pub(crate) pending_count: usize,
-    pub(crate) any_overdue: bool,
-    pub(crate) active_agents: u32,
-    pub(crate) all_agents_paused: bool,
-    pub(crate) snoozed_minutes: Option<u32>,
+pub struct TraySnapshot {
+    pub pending_count: usize,
+    pub any_overdue: bool,
+    pub active_agents: u32,
+    pub all_agents_paused: bool,
+    pub snoozed_minutes: Option<u32>,
 }
 
 impl TraySnapshot {
-    pub(crate) fn current() -> Self {
+    pub fn current() -> Self {
         let inbox = store::inbox_state();
         Self {
             pending_count: inbox.pending_count(),
@@ -76,7 +77,7 @@ impl TraySnapshot {
         }
     }
 
-    pub(crate) fn tooltip(&self) -> String {
+    pub fn tooltip(&self) -> String {
         if self.pending_count == 0 {
             if self.all_agents_paused {
                 "Bruk — All caught up · Agents paused".to_owned()
@@ -100,7 +101,7 @@ impl TraySnapshot {
 
     /// The menu bar icon: the dot above the tree fills in while anything is
     /// waiting on the user.
-    pub(crate) fn icon_svg(&self) -> &'static str {
+    pub fn icon_svg(&self) -> &'static str {
         if self.pending_count == 0 {
             TRAY_ICON_IDLE_SVG
         } else {
@@ -108,7 +109,7 @@ impl TraySnapshot {
         }
     }
 
-    pub(crate) fn title_runs(&self) -> Vec<TrayTitleRun> {
+    pub fn title_runs(&self) -> Vec<TrayTitleRun> {
         if self.pending_count == 0 {
             return Vec::new();
         }
@@ -123,7 +124,7 @@ impl TraySnapshot {
 
 /// Installs the reactive macOS menu bar status item, Dock badge updater, and
 /// notification click handler for the application root.
-pub(crate) fn install_menubar_and_attention_surfaces() {
+pub fn install_menubar_and_attention_surfaces() {
     let snapshot = computed(TraySnapshot::current);
     effect(move || {
         let snap = snapshot.get();
@@ -231,7 +232,7 @@ fn compute_popover_origin(anchor: Option<Bounds<Points>>, height: f32) -> Point<
 }
 
 /// Declarative floating popover window anchored beneath the macOS menu bar status item.
-pub(crate) fn menubar_popover_window() -> impl IntoElement {
+pub fn menubar_popover_window() -> impl IntoElement {
     let mut attrs = WindowAttributes::default();
     attrs.frame = Some(WindowFrameStyle::None);
     attrs.resizable = Some(false);

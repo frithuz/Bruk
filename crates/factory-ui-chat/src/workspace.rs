@@ -1,12 +1,13 @@
 //! Project workflow workspace: workflow selector, task launcher, run history, and step inspector.
 
-use factory_core::{RunId, RunStatus, StepRunStatus, WorkflowId};
+use factory_types::{RunId, RunStatus, StepRunStatus, WorkflowId};
 use nsh_base::{button, input, theme};
 use nsh_core::prelude::*;
 
-use crate::{store, ui::palette};
+use factory_store as store;
+use factory_ui_kit::palette;
 
-pub(crate) fn workflow_workspace() -> impl IntoElement {
+pub fn workflow_workspace() -> impl IntoElement {
     let task_prompt = signal(String::new());
     let submit_run = move || {
         let prompt = task_prompt.get_untracked();

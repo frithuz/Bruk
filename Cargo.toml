@@ -16,6 +16,11 @@ members = [
     "crates/factory-fonts",
     "crates/factory-ui-kit",
     "crates/factory-store",
+    "crates/factory-ui-common",
+    "crates/factory-ui-preferences",
+    "crates/factory-ui-workflows",
+    "crates/factory-ui-chat",
+    "crates/factory-ui-ops",
     "crates/factory-core",
     "crates/factory-app",
     "crates/factory-desktop",
@@ -42,7 +47,12 @@ factory-secrets = { path = "crates/factory-secrets" }
 factory-storage = { path = "crates/factory-storage" }
 factory-store = { path = "crates/factory-store" }
 factory-types = { path = "crates/factory-types" }
+factory-ui-chat = { path = "crates/factory-ui-chat" }
+factory-ui-common = { path = "crates/factory-ui-common" }
 factory-ui-kit = { path = "crates/factory-ui-kit" }
+factory-ui-ops = { path = "crates/factory-ui-ops" }
+factory-ui-preferences = { path = "crates/factory-ui-preferences" }
+factory-ui-workflows = { path = "crates/factory-ui-workflows" }
 factory-updater = { path = "crates/factory-updater" }
 factory-workflows = { path = "crates/factory-workflows" }
 aho-corasick = "1.1"

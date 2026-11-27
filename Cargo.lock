@@ -771,22 +771,27 @@ dependencies = [
 name = "factory-app"
 version = "0.0.0"
 dependencies = [
- "dirs",
+ "factory-config",
  "factory-core",
  "factory-fonts",
+ "factory-github",
  "factory-logging",
+ "factory-storage",
  "factory-store",
+ "factory-types",
+ "factory-ui-chat",
  "factory-ui-kit",
+ "factory-ui-ops",
+ "factory-ui-preferences",
+ "factory-ui-workflows",
  "factory-updater",
- "log",
+ "factory-workflows",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
  "nsh-testing",
- "secrecy",
  "serde_json",
  "tempfile",
- "zeroize",
 ]
 
 [[package]]
@@ -1005,10 +1010,85 @@ dependencies = [
 ]
 
 [[package]]
+name = "factory-ui-chat"
+version = "0.0.0"
+dependencies = [
+ "factory-chat",
+ "factory-storage",
+ "factory-store",
+ "factory-types",
+ "factory-ui-common",
+ "factory-ui-kit",
+ "nsh-base",
+ "nsh-core",
+]
+
+[[package]]
+name = "factory-ui-common"
+version = "0.0.0"
+dependencies = [
+ "factory-config",
+ "factory-secrets",
+ "factory-store",
+ "factory-types",
+ "factory-ui-kit",
+ "nsh-base",
+ "nsh-core",
+]
+
+[[package]]
 name = "factory-ui-kit"
 version = "0.0.0"
 dependencies = [
  "factory-types",
+ "nsh-core",
+]
+
+[[package]]
+name = "factory-ui-ops"
+version = "0.0.0"
+dependencies = [
+ "factory-config",
+ "factory-logging",
+ "factory-machines",
+ "factory-storage",
+ "factory-store",
+ "factory-types",
+ "factory-ui-common",
+ "factory-ui-kit",
+ "nsh-base",
+ "nsh-core",
+]
+
+[[package]]
+name = "factory-ui-preferences"
+version = "0.0.0"
+dependencies = [
+ "factory-config",
+ "factory-machines",
+ "factory-providers",
+ "factory-store",
+ "factory-types",
+ "factory-ui-common",
+ "factory-ui-kit",
+ "factory-updater",
+ "nsh-base",
+ "nsh-core",
+]
+
+[[package]]
+name = "factory-ui-workflows"
+version = "0.0.0"
+dependencies = [
+ "factory-config",
+ "factory-github",
+ "factory-secrets",
+ "factory-store",
+ "factory-types",
+ "factory-ui-common",
+ "factory-ui-kit",
+ "factory-workflows",
+ "nsh-base",
  "nsh-core",
 ]
 

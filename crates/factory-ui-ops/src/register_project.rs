@@ -1,10 +1,12 @@
 //! Project registration: clone a repository, create a new local repository, or link an existing clone.
 
-use factory_core::{ProjectId, display_with_tilde};
+use factory_config::display_with_tilde;
+use factory_types::ProjectId;
 use nsh_base::{button, input, theme};
 use nsh_core::{file_dialog::OpenDialog, prelude::*};
 
-use crate::{store, ui::palette};
+use factory_store as store;
+use factory_ui_kit::palette;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RegisterMode {
@@ -17,7 +19,7 @@ enum RegisterMode {
 }
 
 /// Full-canvas view for adding projects and managing tracked projects.
-pub(crate) fn register_project_view() -> impl IntoElement {
+pub fn register_project_view() -> impl IntoElement {
     let mode = signal(RegisterMode::Clone);
 
     scroll().flex_1().bg(palette::canvas_bg()).child(

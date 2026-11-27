@@ -2,22 +2,20 @@
 //! catch-up event banners, machine metadata cards, live sessions table, and inline
 //! Update Cores / Add Machine / Machine settings drawers matching `21 Machines.png`.
 
-use factory_core::{
+use factory_machines::{
     MachineCatchUpSummary, MachineConnectionStatus, MachinePlatform, MachineRecord, MachineSession,
     MachinesFleet, NewMachineDraft, SchemaCompatibility, SessionNowTone,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const MACHINE_LIST_WIDTH: f32 = 312.0;
 
 /// Header toolbar controls shown on the right when `ActiveView::Machines` is active.
-pub(crate) fn machines_header_controls() -> impl IntoElement {
+pub fn machines_header_controls() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -79,7 +77,7 @@ pub(crate) fn machines_header_controls() -> impl IntoElement {
 }
 
 /// Master-detail Machines canvas: scrollable machine list on the left, selected machine detail on the right.
-pub(crate) fn machines_view() -> impl IntoElement {
+pub fn machines_view() -> impl IntoElement {
     let draft_name = signal(String::new());
     let draft_platform = signal(MachinePlatform::Linux);
     let draft_ssh = signal(String::new());

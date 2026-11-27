@@ -2,20 +2,18 @@
 //! workflow runs and the Inbox: the project's tracked servers and their approval, the user's own
 //! servers, and the banner shown when a server doesn't reach an agent.
 
-use factory_core::mcp::{McpProblem, McpServerDef, ProjectMcpFile, ProjectMcpState};
+use factory_config::mcp::{McpProblem, McpServerDef, ProjectMcpFile, ProjectMcpState};
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store::{self, McpServerScope},
-    ui::{icons, palette},
-};
+use factory_store::{self as store, self, McpServerScope};
+use factory_ui_kit::{icons, palette};
 
 // --- Problem banner ---------------------------------------------------------------------
 
 /// A banner for an MCP server that didn't reach the agent: what went wrong and a button that
 /// takes the user to the fix. Red when it stopped the step or turn, amber otherwise.
-pub(crate) fn mcp_problem_banner(problem: McpProblem, project_name: Option<String>) -> View {
+pub fn mcp_problem_banner(problem: McpProblem, project_name: Option<String>) -> View {
     let blocking = problem.blocking;
     let (bg, border, fg) = if blocking {
         (
@@ -95,7 +93,7 @@ pub(crate) fn mcp_problem_banner(problem: McpProblem, project_name: Option<Strin
 
 /// The MCP servers tab: the project's tracked file (with its approval) and the user's own
 /// servers for this project.
-pub(crate) fn project_mcp_tab() -> impl IntoElement {
+pub fn project_mcp_tab() -> impl IntoElement {
     let form = AddServerForm::new();
     scroll().flex_1().bg(palette::canvas_bg()).child(
         view()
@@ -261,7 +259,7 @@ fn approval_control(overview: &store::ProjectMcpOverview) -> AnyElement {
 // --- Preferences › Extensions -------------------------------------------------------------
 
 /// The user's servers for every project, for Preferences › Extensions.
-pub(crate) fn user_mcp_servers_section() -> impl IntoElement {
+pub fn user_mcp_servers_section() -> impl IntoElement {
     let form = AddServerForm::new();
     view().gap(px(12.0)).child(dynamic(move || {
         let servers = store::user_mcp_servers();
@@ -463,11 +461,11 @@ impl AddServerForm {
             };
             let k = raw_k.trim();
             let v = raw_v.trim();
-            if v.is_empty() || factory_core::contains_env_reference(v) {
+            if v.is_empty() || factory_secrets::contains_env_reference(v) {
                 continue;
             }
-            let default_secret =
-                k.eq_ignore_ascii_case("authorization") || factory_core::looks_like_secret_key(k);
+            let default_secret = k.eq_ignore_ascii_case("authorization")
+                || factory_secrets::looks_like_secret_key(k);
             let is_secret = overrides.get(&idx).copied().unwrap_or(default_secret);
             if is_secret {
                 out.insert(idx);
@@ -559,12 +557,12 @@ impl AddServerForm {
                     };
                     let k = raw_k.trim();
                     let v = raw_v.trim();
-                    if v.is_empty() || factory_core::contains_env_reference(v) {
+                    if v.is_empty() || factory_secrets::contains_env_reference(v) {
                         continue;
                     }
                     any = true;
                     let default_secret = k.eq_ignore_ascii_case("authorization")
-                        || factory_core::looks_like_secret_key(k);
+                        || factory_secrets::looks_like_secret_key(k);
                     let is_secret = overrides.get(&idx).copied().unwrap_or(default_secret);
                     rows =
                         rows.child(

@@ -2,7 +2,7 @@
 //! strip, starter template cards, inline create/import drawers, and right-hand workflow inspector
 //! matching `12 Workflows.png`.
 
-use factory_core::{
+use factory_workflows::{
     ProjectWorkflowsOverview, RecentRunStatus, RunOutcomeDot, WorkflowNowTone,
     WorkflowOverviewEntry, WorkflowRecentRun, WorkflowStepGroup, WorkflowStepPreview,
     WorkflowTemplateKind, WorkflowTriggerKind, WorkflowsFilter, WorkflowsSort,
@@ -10,15 +10,13 @@ use factory_core::{
 use nsh_base::{SelectItem, SelectValue, button, input, select};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const INSPECTOR_WIDTH: f32 = 300.0;
 
 /// Header bar controls shown on the right when `ActiveView::Workflows` is active.
-pub(crate) fn workflows_header_controls() -> impl IntoElement {
+pub fn workflows_header_controls() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -127,7 +125,7 @@ pub(crate) fn workflows_header_controls() -> impl IntoElement {
 }
 
 /// Main Workflows overview split canvas (table & templates on left, workflow inspector on right).
-pub(crate) fn workflows_view() -> impl IntoElement {
+pub fn workflows_view() -> impl IntoElement {
     let new_name = signal(String::new());
     let new_desc = signal(String::new());
     let new_label = signal(String::new());

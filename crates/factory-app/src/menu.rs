@@ -5,10 +5,9 @@
 //! actions; unimplemented commands remain visible as disabled entries matching
 //! the reference menu specification.
 
-use factory_core::{
-    PreferencesTab, ProjectId, ProjectSettingsTab, RunDetailTab, RunExecutionState, RunStatus,
-    StepTypeKind,
-};
+use factory_config::{PreferencesTab, ProjectSettingsTab};
+use factory_types::{ProjectId, RunStatus};
+use factory_workflows::{RunDetailTab, RunExecutionState, StepTypeKind};
 use nsh_core::{
     desktop::{MenuRole, WindowMode},
     element::{

@@ -1,0 +1,15 @@
+[package]
+name = "factory-ui-chat"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-chat.workspace = true
+factory-storage.workspace = true
+factory-store.workspace = true
+factory-types.workspace = true
+factory-ui-common.workspace = true
+factory-ui-kit.workspace = true
+nsh-base.workspace = true
+nsh-core.workspace = true

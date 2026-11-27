@@ -1,22 +1,20 @@
 //! Project Work Queue view: intake banner, Board/List modes, unmatched issues drawer,
 //! and right-hand issue inspector matching `04 WorkQueue.png`.
 
-use factory_core::{
-    ProjectSettingsTab, ProjectWorkQueue, UnmatchedIssue, WorkQueueItem, WorkQueueStage,
-    WorkQueueViewMode,
+use factory_config::ProjectSettingsTab;
+use factory_github::{
+    ProjectWorkQueue, UnmatchedIssue, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const INSPECTOR_WIDTH: f32 = 294.0;
 
 /// Main Work Queue split view (board/list canvas on left, contextual inspector on right).
-pub(crate) fn work_queue_view() -> impl IntoElement {
+pub fn work_queue_view() -> impl IntoElement {
     let workflow_picker_open = signal(false);
     let ad_hoc_workflow = signal("Release prep".to_owned());
     let ad_hoc_title = signal(String::new());
@@ -1551,7 +1549,9 @@ fn inspector_actions(
             .child(
                 button()
                     .test_id("wq-inspector-open-secrets")
-                    .on_press(|| store::open_preferences_tab(factory_core::PreferencesTab::Secrets))
+                    .on_press(|| {
+                        store::open_preferences_tab(factory_config::PreferencesTab::Secrets)
+                    })
                     .px(px(11.0))
                     .py(px(6.0))
                     .rounded(px(7.0))

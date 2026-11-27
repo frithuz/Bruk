@@ -6,7 +6,7 @@
 //! shortcuts, inline command editing, Always Allow rule previews, and answered
 //! history.
 
-use factory_core::{
+use factory_config::{
     AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AttentionRequest, AttentionRequestBody,
     AttentionRequestKind, InboxFilter, LoopExhaustedDetail, PermissionDetail, QuestionDetail,
     ReviewDetail,
@@ -18,13 +18,11 @@ use nsh_core::{
     prelude::*,
 };
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 /// Right-hand toolbar controls rendered in the main window header while viewing Inbox.
-pub(crate) fn inbox_header_controls() -> impl IntoElement {
+pub fn inbox_header_controls() -> impl IntoElement {
     view()
         .flex_row()
         .items_center()
@@ -35,7 +33,7 @@ pub(crate) fn inbox_header_controls() -> impl IntoElement {
 }
 
 /// Primary-window Inbox view: oldest-first master-detail split plus shortcut footer bar.
-pub(crate) fn inbox_view() -> impl IntoElement {
+pub fn inbox_view() -> impl IntoElement {
     bind_inbox_shortcuts();
 
     view()
@@ -1553,7 +1551,7 @@ fn review_detail_section(req: &AttentionRequest, detail: &ReviewDetail) -> impl 
 
 fn mcp_problem_detail_section(
     req: &AttentionRequest,
-    detail: &factory_core::inbox::McpProblemDetail,
+    detail: &factory_config::inbox::McpProblemDetail,
 ) -> impl IntoElement {
     let mut actions = view().flex_row().items_center().gap(px(10.0));
     if let Some(label) = detail.problem.fix.button_label() {
@@ -1600,7 +1598,7 @@ fn mcp_problem_detail_section(
     );
     view()
         .gap(px(14.0))
-        .child(crate::ui::mcp::mcp_problem_banner(
+        .child(factory_ui_common::mcp::mcp_problem_banner(
             detail.problem.clone(),
             Some(req.project_name.clone()),
         ))
@@ -1618,7 +1616,7 @@ fn mcp_problem_detail_section(
 
 fn secret_problem_detail_section(
     req: &AttentionRequest,
-    detail: &factory_core::SecretProblemDetail,
+    detail: &factory_config::SecretProblemDetail,
 ) -> impl IntoElement {
     let mut actions = view().flex_row().items_center().gap(px(10.0));
     if let Some(label) = detail.problem.fix.button_label() {
@@ -1665,7 +1663,7 @@ fn secret_problem_detail_section(
     );
     view()
         .gap(px(14.0))
-        .child(crate::ui::secrets::secret_problem_banner(
+        .child(factory_ui_common::secrets::secret_problem_banner(
             detail.problem.clone(),
             Some(req.project_name.clone()),
         ))

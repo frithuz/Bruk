@@ -2,18 +2,18 @@
 //! left step-types palette, centered visual flow canvas with loop & fallback branch,
 //! and contextual right-hand inspector matching `13 WorkflowEditor.png`.
 
-use factory_core::{
-    EditorLoopBlock, EditorNode, EditorSelection, EditorStep, ExitField, ExitOperator,
-    LoopExhaustedAction, LoopExitCondition, LoopRepeatMode, LoopWaitBetween, PaletteCategory,
+use factory_types::{
+    ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween,
+};
+use factory_workflows::{
+    EditorLoopBlock, EditorNode, EditorSelection, EditorStep, LoopExitCondition, PaletteCategory,
     StepTypeKind, WorkflowEditorDocument,
 };
 use nsh_base::{SelectItem, SelectValue, button, input, select};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const PALETTE_WIDTH: f32 = 252.0;
 const INSPECTOR_WIDTH: f32 = 316.0;
@@ -23,7 +23,7 @@ const FALLBACK_BRANCH_WIDTH: f32 = 186.0;
 // --- Top Header Bar (Full-Width Editor Mode) --------------------------------------------
 
 /// Top header bar shown when `ActiveView::WorkflowEditor` is active.
-pub(crate) fn workflow_editor_header() -> impl IntoElement {
+pub fn workflow_editor_header() -> impl IntoElement {
     view()
         .h(px(54.0))
         .flex_shrink_0()
@@ -275,7 +275,7 @@ fn header_actions_cluster() -> impl IntoElement {
 // --- Main Three-Pane Layout -------------------------------------------------------------
 
 /// Main visual workflow editor surface: step palette, visual flow canvas, and right inspector.
-pub(crate) fn workflow_editor_view() -> impl IntoElement {
+pub fn workflow_editor_view() -> impl IntoElement {
     let ad_hoc_prompt = signal(String::new());
 
     view()
@@ -2657,7 +2657,7 @@ fn trigger_inspector() -> impl IntoElement {
                                 .child(dynamic(|| {
                                     checkbox_box(
                                         store::active_workflow_editor().mcp_sources
-                                            == factory_core::mcp::McpSourcesPolicy::Project,
+                                            == factory_config::mcp::McpSourcesPolicy::Project,
                                     )
                                 }))
                                 .child(

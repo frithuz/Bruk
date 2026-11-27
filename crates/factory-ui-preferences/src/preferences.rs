@@ -1,12 +1,17 @@
 //! Native macOS Preferences window (`⌘,`) with tabbed settings and provider account management.
 
-use factory_core::{
+use factory_config::{
+    CliAccount, ConnectionTestState, DefaultLandingView, OpenRouterKey, PreferencesTab,
+};
+use factory_machines::{
+    CoreUpdatePolicy, MachineAgentKind, MachineConnectionStatus, MachinePlatform, MachineRecord,
+    SchemaCompatibility,
+};
+use factory_providers::format_reset_schedule_now;
+use factory_types::{
     AppearanceMode, ClaudeModelOption, ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow,
-    CliAccount, ConnectionTestState, CoreUpdatePolicy, DEFAULT_MONO_FONT_FAMILY,
-    DEFAULT_UI_FONT_FAMILY, DefaultLandingView, FontPreference, MachineAgentKind,
-    MachineConnectionStatus, MachinePlatform, MachineRecord, OpenRouterKey, PreferencesTab,
-    ProviderKind, SchemaCompatibility, format_reset_schedule_now, format_whole_or_cents,
-    model_family_from_id,
+    DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FontPreference, ProviderKind,
+    format_whole_or_cents, model_family_from_id,
 };
 use nsh_base::{button, input};
 use nsh_core::{
@@ -16,13 +21,12 @@ use nsh_core::{
     prelude::*,
 };
 
+use factory_store::{self as store, GeneralFlag};
+use factory_ui_kit::{icons, palette};
+
 use crate::{
-    store::{self, GeneralFlag},
-    ui::{
-        claude_spawn_settings::{ClaudeSpawnUiState, claude_spawn_settings_card},
-        codex_spawn_settings::{CodexSpawnUiState, codex_spawn_settings_card},
-        icons, palette,
-    },
+    claude_spawn_settings::{ClaudeSpawnUiState, claude_spawn_settings_card},
+    codex_spawn_settings::{CodexSpawnUiState, codex_spawn_settings_card},
 };
 
 /// Active inline editor inside the Providers detail pane.
@@ -55,7 +59,7 @@ enum MachinePrefsEditor {
 }
 
 /// Declarative secondary macOS window hosting application Preferences.
-pub(crate) fn preferences_window() -> impl IntoElement {
+pub fn preferences_window() -> impl IntoElement {
     let mut title_bar = TitleBarOptions::default();
     title_bar.style = TitleBarStyle::Hidden;
     title_bar.height = Some(px(38.0));
@@ -120,7 +124,7 @@ fn preferences_surface() -> impl IntoElement {
                 ))
                 .child(when(
                     || store::preferences_tab() == PreferencesTab::Secrets,
-                    crate::ui::secrets::preferences_secrets_tab,
+                    factory_ui_common::secrets::preferences_secrets_tab,
                 ))
                 .child(when(
                     || store::preferences_tab() == PreferencesTab::Advanced,
@@ -467,8 +471,9 @@ fn providers_left_rail(
                                     add_menu_open.set(false);
                                     store::clear_preferences_messages();
                                     draft_primary.set("agy".to_owned());
-                                    draft_model
-                                        .set(factory_core::ANTIGRAVITY_DEFAULT_MODEL.to_owned());
+                                    draft_model.set(
+                                        factory_providers::ANTIGRAVITY_DEFAULT_MODEL.to_owned(),
+                                    );
                                     active_editor.set(Some(ProviderEditor::AddAntigravityAccount));
                                 })
                                 .into_element()
@@ -909,7 +914,7 @@ fn add_cli_account_card(
     let label = provider.label();
     let slug = provider.slug();
     let (binary_placeholder, model_placeholder) = if is_antigravity {
-        ("agy", factory_core::ANTIGRAVITY_DEFAULT_MODEL)
+        ("agy", factory_providers::ANTIGRAVITY_DEFAULT_MODEL)
     } else {
         ("codex", "gpt-5.3-codex")
     };
@@ -2859,7 +2864,7 @@ fn general_tab() -> impl IntoElement {
 }
 
 fn software_updates_card(auto_check_updates: bool) -> impl IntoElement {
-    use crate::updater::{UpdaterState, format_bytes};
+    use factory_updater::{UpdaterState, format_bytes};
 
     let current_version = store::current_app_version();
     let update_state = store::updater_state();
@@ -4910,7 +4915,7 @@ fn extensions_tab() -> impl IntoElement {
                                 store::toggle_allow_project_mcp_servers,
                             )),
                     )
-                    .child(crate::ui::mcp::user_mcp_servers_section())
+                    .child(factory_ui_common::mcp::user_mcp_servers_section())
             })),
     )
 }
@@ -5042,7 +5047,7 @@ fn ssh_agent_card(draft: Signal<String>, apply: impl Fn(&str) + Copy + 'static) 
         (false, None) => "Agents use this socket. No SSH agent was detected.".to_owned(),
     };
     let missing =
-        !configured.trim().is_empty() && !factory_core::expand_tilde(configured.trim()).exists();
+        !configured.trim().is_empty() && !factory_types::expand_tilde(configured.trim()).exists();
 
     let mut card = grouped_card("SSH Agent")
         .child(card_divider())
@@ -5087,7 +5092,7 @@ fn ssh_agent_card(draft: Signal<String>, apply: impl Fn(&str) + Copy + 'static) 
                 .text_size(px(11.5))
                 .text_color(palette::text_secondary()),
         );
-    for preset in factory_core::SSH_AGENT_PRESETS {
+    for preset in factory_config::SSH_AGENT_PRESETS {
         let label = if preset.is_installed() {
             format!("{} ✓", preset.label)
         } else {

@@ -1,45 +1,43 @@
-//! Collapsible `<details>`-style Preferences editor for all custom Claude Code spawn settings
-//! (CLI launch flags, `--settings` JSON user settings, environment variables, and raw overrides),
+//! Collapsible `<details>`-style Preferences editor for all custom Codex CLI spawn settings
+//! (CLI launch flags, `-c` `config.toml` overrides, environment variables, and raw overrides),
 //! with global filtering that hides empty groups and non-matching settings.
 
 use std::collections::BTreeSet;
 
-use factory_core::{
-    CLAUDE_DISABLE_AUTOUPDATER_ENV, CLAUDE_DISABLE_AUTOUPDATER_VALUE, CLAUDE_ENV_PRESETS,
-    ClaudeEnvPreset, ClaudeSettingCategory, ClaudeSettingKind, ClaudeSettingSpec,
-    ClaudeSettingValue, ClaudeSpawnSettings, claude_setting_specs_for_category,
+use factory_providers::{
+    CODEX_DISABLE_UPDATE_CHECK_KEY, CODEX_DISABLE_UPDATE_CHECK_VALUE, CODEX_ENV_PRESETS,
+    CodexEnvPreset, CodexSettingCategory, CodexSettingKind, CodexSettingSpec, CodexSettingValue,
+    CodexSpawnSettings, codex_setting_specs_for_category,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
-/// Persistent UI state for the Claude Spawn Settings card, owned outside `dynamic(...)`
+/// Persistent UI state for the Codex Spawn Settings card, owned outside `dynamic(...)`
 /// blocks in `providers_tab()` so edits never drop search text, open editors, or collapse state.
 #[derive(Clone, Copy)]
-pub(crate) struct ClaudeSpawnUiState {
-    pub(crate) expanded_categories: Signal<BTreeSet<ClaudeSettingCategory>>,
-    pub(crate) filter_collapsed: Signal<BTreeSet<ClaudeSettingCategory>>,
-    pub(crate) search: Signal<String>,
-    pub(crate) modified_only: Signal<bool>,
-    pub(crate) preview_open: Signal<bool>,
-    pub(crate) editing_spec: Signal<Option<&'static str>>,
-    pub(crate) draft_value: Signal<String>,
-    pub(crate) env_editor_open: Signal<bool>,
-    pub(crate) draft_env_key: Signal<String>,
-    pub(crate) draft_env_value: Signal<String>,
-    pub(crate) draft_env_secret: Signal<bool>,
-    pub(crate) editing_extra_args: Signal<bool>,
-    pub(crate) draft_extra_args: Signal<String>,
-    pub(crate) editing_extra_json: Signal<bool>,
-    pub(crate) draft_extra_json: Signal<String>,
+pub struct CodexSpawnUiState {
+    pub expanded_categories: Signal<BTreeSet<CodexSettingCategory>>,
+    pub filter_collapsed: Signal<BTreeSet<CodexSettingCategory>>,
+    pub search: Signal<String>,
+    pub modified_only: Signal<bool>,
+    pub preview_open: Signal<bool>,
+    pub editing_spec: Signal<Option<&'static str>>,
+    pub draft_value: Signal<String>,
+    pub env_editor_open: Signal<bool>,
+    pub draft_env_key: Signal<String>,
+    pub draft_env_value: Signal<String>,
+    pub draft_env_secret: Signal<bool>,
+    pub editing_extra_args: Signal<bool>,
+    pub draft_extra_args: Signal<String>,
+    pub editing_extra_config: Signal<bool>,
+    pub draft_extra_config: Signal<String>,
 }
 
-impl ClaudeSpawnUiState {
-    pub(crate) fn new() -> Self {
+impl CodexSpawnUiState {
+    pub fn new() -> Self {
         Self {
             expanded_categories: signal(BTreeSet::new()),
             filter_collapsed: signal(BTreeSet::new()),
@@ -54,12 +52,12 @@ impl ClaudeSpawnUiState {
             draft_env_secret: signal(false),
             editing_extra_args: signal(false),
             draft_extra_args: signal(String::new()),
-            editing_extra_json: signal(false),
-            draft_extra_json: signal(String::new()),
+            editing_extra_config: signal(false),
+            draft_extra_config: signal(String::new()),
         }
     }
 
-    fn is_section_expanded(&self, category: ClaudeSettingCategory, filtering: bool) -> bool {
+    fn is_section_expanded(&self, category: CodexSettingCategory, filtering: bool) -> bool {
         if filtering {
             !self.filter_collapsed.get().contains(&category)
         } else {
@@ -67,7 +65,7 @@ impl ClaudeSpawnUiState {
         }
     }
 
-    fn toggle_section(&self, category: ClaudeSettingCategory, filtering: bool) {
+    fn toggle_section(&self, category: CodexSettingCategory, filtering: bool) {
         if filtering {
             self.filter_collapsed.update(|set| {
                 if !set.remove(&category) {
@@ -84,9 +82,15 @@ impl ClaudeSpawnUiState {
     }
 }
 
-/// Complete `Spawn Settings` card rendered inside `Preferences › Providers › Claude`.
-pub(crate) fn claude_spawn_settings_card(ui: ClaudeSpawnUiState) -> impl IntoElement {
-    let settings = store::claude_spawn_settings();
+impl Default for CodexSpawnUiState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Complete `Spawn Settings` card rendered inside `Preferences › Providers › Codex`.
+pub fn codex_spawn_settings_card(ui: CodexSpawnUiState) -> impl IntoElement {
+    let settings = store::codex_spawn_settings();
     let total_overrides = settings.override_count();
 
     view()
@@ -125,14 +129,14 @@ pub(crate) fn claude_spawn_settings_card(ui: ClaudeSpawnUiState) -> impl IntoEle
         ))
         .child(divider())
         .child(dynamic(move || {
-            let current_settings = store::claude_spawn_settings();
+            let current_settings = store::codex_spawn_settings();
             let query = ui.search.get();
             let modified_only = ui.modified_only.get();
             collapsible_groups_body(ui, &current_settings, &query, modified_only)
         }))
 }
 
-fn card_header(ui: ClaudeSpawnUiState, total_overrides: usize) -> impl IntoElement {
+fn card_header(ui: CodexSpawnUiState, total_overrides: usize) -> impl IntoElement {
     let count_badge = if total_overrides == 0 {
         "All defaults".to_owned()
     } else if total_overrides == 1 {
@@ -197,7 +201,7 @@ fn card_header(ui: ClaudeSpawnUiState, total_overrides: usize) -> impl IntoEleme
                         .gap(px(6.0))
                         .child(
                             button()
-                                .test_id("prefs-claude-spawn-preview-toggle")
+                                .test_id("prefs-codex-spawn-preview-toggle")
                                 .on_press(move || ui.preview_open.update(|open| *open = !*open))
                                 .px(px(9.0))
                                 .py(px(3.5))
@@ -234,14 +238,14 @@ fn card_header(ui: ClaudeSpawnUiState, total_overrides: usize) -> impl IntoEleme
                         )
                         .child(
                             button()
-                                .test_id("prefs-claude-spawn-reset-all")
+                                .test_id("prefs-codex-spawn-reset-all")
                                 .disabled(total_overrides == 0)
                                 .on_press(move || {
                                     ui.editing_spec.set(None);
                                     ui.env_editor_open.set(false);
                                     ui.editing_extra_args.set(false);
-                                    ui.editing_extra_json.set(false);
-                                    store::reset_all_claude_spawn_settings();
+                                    ui.editing_extra_config.set(false);
+                                    store::reset_all_codex_spawn_settings();
                                 })
                                 .px(px(9.0))
                                 .py(px(3.5))
@@ -263,14 +267,14 @@ fn card_header(ui: ClaudeSpawnUiState, total_overrides: usize) -> impl IntoEleme
         )
         .child(
             text(
-                "Custom CLI flags, user settings (--settings JSON), and environment variables passed whenever Bruk spawns Claude. Unset options inherit your Claude CLI defaults.",
+                "Custom CLI flags, config.toml overrides (-c key=value), and environment variables passed whenever Bruk spawns Codex. Unset options inherit your ~/.codex/config.toml defaults.",
             )
             .text_size(px(11.5))
             .text_color(palette::text_muted()),
         )
 }
 
-fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
+fn global_filter_bar(ui: CodexSpawnUiState) -> impl IntoElement {
     view()
         .px(px(16.0))
         .py(px(10.0))
@@ -279,13 +283,13 @@ fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
         .gap(px(8.0))
         .child(
             input()
-                .test_id("prefs-claude-spawn-search")
+                .test_id("prefs-codex-spawn-search")
                 .value(move || ui.search.get())
                 .on_change(move |v: &str| {
                     ui.search.set(v.to_owned());
                     ui.filter_collapsed.set(BTreeSet::new());
                 })
-                .placeholder("Filter all Claude flags, settings, and env vars...")
+                .placeholder("Filter all Codex flags, config.toml keys, and env vars...")
                 .flex_1()
                 .px(px(9.0))
                 .py(px(5.5))
@@ -297,7 +301,7 @@ fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
         )
         .child(
             button()
-                .test_id("prefs-claude-spawn-modified-only")
+                .test_id("prefs-codex-spawn-modified-only")
                 .on_press(move || {
                     ui.modified_only.update(|m| *m = !*m);
                     ui.filter_collapsed.set(BTreeSet::new());
@@ -339,15 +343,15 @@ fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
             move || ui.search.get().trim().is_empty() && !ui.modified_only.get(),
             move || {
                 button()
-                    .test_id("prefs-claude-spawn-expand-toggle")
+                    .test_id("prefs-codex-spawn-expand-toggle")
                     .on_press(move || {
                         let all_expanded = ui.expanded_categories.get_untracked().len()
-                            == ClaudeSettingCategory::ALL.len();
+                            == CodexSettingCategory::ALL.len();
                         if all_expanded {
                             ui.expanded_categories.set(BTreeSet::new());
                         } else {
-                            let all: BTreeSet<ClaudeSettingCategory> =
-                                ClaudeSettingCategory::ALL.iter().copied().collect();
+                            let all: BTreeSet<CodexSettingCategory> =
+                                CodexSettingCategory::ALL.iter().copied().collect();
                             ui.expanded_categories.set(all);
                         }
                     })
@@ -361,8 +365,7 @@ fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
                     .active(|s| s.opacity(0.8))
                     .child(
                         text(move || {
-                            if ui.expanded_categories.get().len()
-                                == ClaudeSettingCategory::ALL.len()
+                            if ui.expanded_categories.get().len() == CodexSettingCategory::ALL.len()
                             {
                                 "Collapse All"
                             } else {
@@ -378,7 +381,7 @@ fn global_filter_bar(ui: ClaudeSpawnUiState) -> impl IntoElement {
 }
 
 fn spawn_command_preview_section() -> impl IntoElement {
-    let preview = store::claude_spawn_preview_plan();
+    let preview = store::codex_spawn_preview_plan();
     let mut box_view = view()
         .px(px(16.0))
         .py(px(11.0))
@@ -403,16 +406,16 @@ fn spawn_command_preview_section() -> impl IntoElement {
                         .bg(palette::card_bg())
                         .child(
                             text(plan.preview_command_line())
-                                .test_id("prefs-claude-spawn-preview-cmd")
+                                .test_id("prefs-codex-spawn-preview-cmd")
                                 .app_class("font-mono")
                                 .text_size(px(11.5))
                                 .text_color(palette::text_primary()),
                         ),
                 );
-            if let Some(pretty_json) = plan.settings_json_pretty() {
+            if let Some(pretty_overrides) = plan.config_overrides_pretty() {
                 box_view = box_view
                     .child(
-                        text("Generated --settings JSON")
+                        text("Generated -c config.toml overrides")
                             .text_size(px(11.5))
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(palette::text_secondary()),
@@ -425,8 +428,8 @@ fn spawn_command_preview_section() -> impl IntoElement {
                             .border_color(palette::border_color())
                             .bg(palette::card_bg())
                             .child(
-                                text(pretty_json)
-                                    .test_id("prefs-claude-spawn-preview-json")
+                                text(pretty_overrides)
+                                    .test_id("prefs-codex-spawn-preview-config")
                                     .app_class("font-mono")
                                     .text_size(px(11.5))
                                     .text_color(palette::text_primary()),
@@ -447,30 +450,29 @@ fn spawn_command_preview_section() -> impl IntoElement {
 }
 
 struct EnvRawFilterMatches<'a> {
-    show_mandatory_autoupdater: bool,
+    show_mandatory_update_guard: bool,
     matching_env_vars: Vec<(&'a String, &'a String)>,
-    matching_presets: Vec<&'static ClaudeEnvPreset>,
+    matching_presets: Vec<&'static CodexEnvPreset>,
     show_extra_args: bool,
-    show_extra_json: bool,
+    show_extra_config: bool,
     show_add_env_controls: bool,
 }
 
 impl EnvRawFilterMatches<'_> {
     fn match_count(&self, filtering: bool, modified_only: bool) -> usize {
         if !filtering {
-            // Total logical controls: env vars section + extra CLI args + extra settings JSON.
             return self.matching_env_vars.len() + 2;
         }
         if modified_only {
             self.matching_env_vars.len()
                 + usize::from(self.show_extra_args)
-                + usize::from(self.show_extra_json)
+                + usize::from(self.show_extra_config)
         } else {
-            usize::from(self.show_mandatory_autoupdater)
+            usize::from(self.show_mandatory_update_guard)
                 + self.matching_env_vars.len()
                 + self.matching_presets.len()
                 + usize::from(self.show_extra_args)
-                + usize::from(self.show_extra_json)
+                + usize::from(self.show_extra_config)
         }
     }
 
@@ -483,7 +485,7 @@ impl EnvRawFilterMatches<'_> {
 }
 
 fn filter_env_raw<'a>(
-    settings: &'a ClaudeSpawnSettings,
+    settings: &'a CodexSpawnSettings,
     query: &str,
     modified_only: bool,
 ) -> EnvRawFilterMatches<'a> {
@@ -491,14 +493,15 @@ fn filter_env_raw<'a>(
     let needle = trimmed.to_ascii_lowercase();
     let searching = !needle.is_empty();
 
-    let show_mandatory_autoupdater = !modified_only
+    let show_mandatory_update_guard = !modified_only
         && (!searching
-            || CLAUDE_DISABLE_AUTOUPDATER_ENV
+            || CODEX_DISABLE_UPDATE_CHECK_KEY
                 .to_ascii_lowercase()
                 .contains(&needle)
-            || "always enforced by bruk so one run cannot auto-update claude".contains(&needle)
-            || "environment".contains(&needle)
-            || "env".contains(&needle));
+            || "always enforced by bruk so runs cannot check for or prompt codex updates"
+                .contains(&needle)
+            || "update".contains(&needle)
+            || "config".contains(&needle));
 
     let matching_env_vars: Vec<(&String, &String)> = settings
         .env_vars
@@ -512,10 +515,10 @@ fn filter_env_raw<'a>(
         })
         .collect();
 
-    let matching_presets: Vec<&'static ClaudeEnvPreset> = if modified_only {
+    let matching_presets: Vec<&'static CodexEnvPreset> = if modified_only {
         Vec::new()
     } else {
-        CLAUDE_ENV_PRESETS
+        CODEX_ENV_PRESETS
             .iter()
             .filter(|preset| preset.matches_query(trimmed))
             .collect()
@@ -530,34 +533,34 @@ fn filter_env_raw<'a>(
                 .to_ascii_lowercase()
                 .contains(&needle));
 
-    let show_extra_json = (!modified_only || !settings.extra_settings_json.trim().is_empty())
+    let show_extra_config = (!modified_only || !settings.extra_config_overrides.trim().is_empty())
         && (!searching
-            || "extra --settings json object".contains(&needle)
-            || "raw json object deep-merged into --settings".contains(&needle)
+            || "extra -c config.toml overrides".contains(&needle)
+            || "raw key = value toml overrides".contains(&needle)
             || settings
-                .extra_settings_json
+                .extra_config_overrides
                 .to_ascii_lowercase()
                 .contains(&needle));
 
     let show_add_env_controls = !modified_only
         && (!searching
-            || show_mandatory_autoupdater
+            || show_mandatory_update_guard
             || !matching_env_vars.is_empty()
             || !matching_presets.is_empty());
 
     EnvRawFilterMatches {
-        show_mandatory_autoupdater,
+        show_mandatory_update_guard,
         matching_env_vars,
         matching_presets,
         show_extra_args,
-        show_extra_json,
+        show_extra_config,
         show_add_env_controls,
     }
 }
 
 fn collapsible_groups_body(
-    ui: ClaudeSpawnUiState,
-    settings: &ClaudeSpawnSettings,
+    ui: CodexSpawnUiState,
+    settings: &CodexSpawnSettings,
     query: &str,
     modified_only: bool,
 ) -> impl IntoElement + use<> {
@@ -568,11 +571,11 @@ fn collapsible_groups_body(
     let mut total_visible_matches = 0usize;
     let mut visible_group_count = 0usize;
 
-    for category in ClaudeSettingCategory::ALL {
+    for category in CodexSettingCategory::ALL {
         let cat = *category;
         let override_count = settings.override_count_in_category(cat);
 
-        if cat == ClaudeSettingCategory::EnvironmentAndRaw {
+        if cat == CodexSettingCategory::EnvironmentAndRaw {
             let env_matches = filter_env_raw(settings, query, modified_only);
             if !env_matches.has_any_match(filtering, modified_only) {
                 continue;
@@ -587,7 +590,7 @@ fn collapsible_groups_body(
             } else if searching {
                 format!("{count} matching")
             } else {
-                format!("{} presets + raw", CLAUDE_ENV_PRESETS.len())
+                format!("{} presets + raw", CODEX_ENV_PRESETS.len())
             };
 
             let body = if expanded {
@@ -611,9 +614,9 @@ fn collapsible_groups_body(
             continue;
         }
 
-        let all_specs = claude_setting_specs_for_category(cat);
+        let all_specs = codex_setting_specs_for_category(cat);
         let total_in_group = all_specs.len();
-        let matching_specs: Vec<&'static ClaudeSettingSpec> = all_specs
+        let matching_specs: Vec<&'static CodexSettingSpec> = all_specs
             .into_iter()
             .filter(|spec| {
                 let text_ok = !searching || spec.matches_query(query);
@@ -668,10 +671,10 @@ fn collapsible_groups_body(
 
     if sections.is_empty() {
         let empty_msg = if modified_only && !searching {
-            "No custom Claude spawn overrides configured yet. Everything currently inherits your Claude CLI defaults."
+            "No custom Codex spawn overrides configured yet. Everything currently inherits your ~/.codex/config.toml defaults."
                 .to_owned()
         } else {
-            format!("No Claude settings match '{}'.", query.trim())
+            format!("No Codex settings match '{}'.", query.trim())
         };
         return view().px(px(16.0)).py(px(16.0)).child(
             text(empty_msg)
@@ -705,7 +708,7 @@ fn collapsible_groups_body(
                 )
                 .child(
                     button()
-                        .test_id("prefs-claude-spawn-clear-filter")
+                        .test_id("prefs-codex-spawn-clear-filter")
                         .on_press(move || {
                             ui.search.set(String::new());
                             ui.modified_only.set(false);
@@ -734,15 +737,15 @@ fn collapsible_groups_body(
 
 /// Renders one `<details>`/`<summary>`-style collapsible group panel.
 fn details_section(
-    ui: ClaudeSpawnUiState,
-    category: ClaudeSettingCategory,
+    ui: CodexSpawnUiState,
+    category: CodexSettingCategory,
     filtering: bool,
     expanded: bool,
     override_count: usize,
     count_label: String,
     body: Option<AnyElement>,
 ) -> impl IntoElement {
-    let section_test_id = format!("prefs-claude-spawn-section-{}", category.slug());
+    let section_test_id = format!("prefs-codex-spawn-section-{}", category.slug());
     let chevron: AnyElement = if expanded {
         icons::chevron_down(palette::text_secondary()).into_element()
     } else {
@@ -858,9 +861,9 @@ fn details_section(
 }
 
 fn setting_spec_row(
-    ui: ClaudeSpawnUiState,
-    spec: &'static ClaudeSettingSpec,
-    current: Option<ClaudeSettingValue>,
+    ui: CodexSpawnUiState,
+    spec: &'static CodexSettingSpec,
+    current: Option<CodexSettingValue>,
 ) -> impl IntoElement {
     let is_modified = current.is_some();
     let slug = slugify_id(spec.id);
@@ -917,32 +920,32 @@ fn setting_spec_row(
     };
 
     let right_control: AnyElement = match spec.kind {
-        ClaudeSettingKind::Bool { .. } => {
+        CodexSettingKind::Bool { .. } => {
             let current_bool = match current {
-                Some(ClaudeSettingValue::Bool(b)) => Some(b),
+                Some(CodexSettingValue::Bool(b)) => Some(b),
                 _ => None,
             };
             bool_tri_state_control(spec.id, &slug, current_bool).into_element()
         }
-        ClaudeSettingKind::Choice {
+        CodexSettingKind::Choice {
             options,
             allow_custom,
             ..
         } if !allow_custom && options.len() <= 3 => {
             let current_choice = match current {
-                Some(ClaudeSettingValue::String(ref s)) => Some(s.as_str()),
+                Some(CodexSettingValue::String(ref s)) => Some(s.as_str()),
                 _ => None,
             };
             compact_choice_control(spec.id, &slug, options, current_choice).into_element()
         }
-        ClaudeSettingKind::Choice { .. } => {
+        CodexSettingKind::Choice { .. } => {
             let current_display = current
                 .as_ref()
-                .map(ClaudeSettingValue::summary)
+                .map(CodexSettingValue::summary)
                 .unwrap_or_else(|| "Default".to_owned());
             let edit_seed = current
                 .as_ref()
-                .map(ClaudeSettingValue::to_edit_text)
+                .map(CodexSettingValue::to_edit_text)
                 .unwrap_or_default();
             editable_summary_controls(
                 ui,
@@ -956,18 +959,18 @@ fn setting_spec_row(
             )
             .into_element()
         }
-        ClaudeSettingKind::String { .. }
-        | ClaudeSettingKind::Integer { .. }
-        | ClaudeSettingKind::Number { .. }
-        | ClaudeSettingKind::StringList { .. }
-        | ClaudeSettingKind::Json { .. } => {
+        CodexSettingKind::String { .. }
+        | CodexSettingKind::Integer { .. }
+        | CodexSettingKind::Number { .. }
+        | CodexSettingKind::StringList { .. }
+        | CodexSettingKind::Json { .. } => {
             let current_display = current
                 .as_ref()
-                .map(ClaudeSettingValue::summary)
+                .map(CodexSettingValue::summary)
                 .unwrap_or_else(|| "Default".to_owned());
             let edit_seed = current
                 .as_ref()
-                .map(ClaudeSettingValue::to_edit_text)
+                .map(CodexSettingValue::to_edit_text)
                 .unwrap_or_default();
             editable_summary_controls(
                 ui,
@@ -1024,22 +1027,22 @@ fn bool_tri_state_control(
         .rounded(px(7.0))
         .bg(palette::segmented_track_bg())
         .child(tri_segment_btn(
-            &format!("prefs-claude-spawn-{slug}-default"),
+            &format!("prefs-codex-spawn-{slug}-default"),
             "Default",
             current.is_none(),
-            move || store::set_claude_spawn_bool(spec_id, None),
+            move || store::set_codex_spawn_bool(spec_id, None),
         ))
         .child(tri_segment_btn(
-            &format!("prefs-claude-spawn-{slug}-on"),
+            &format!("prefs-codex-spawn-{slug}-on"),
             "On",
             current == Some(true),
-            move || store::set_claude_spawn_bool(spec_id, Some(true)),
+            move || store::set_codex_spawn_bool(spec_id, Some(true)),
         ))
         .child(tri_segment_btn(
-            &format!("prefs-claude-spawn-{slug}-off"),
+            &format!("prefs-codex-spawn-{slug}-off"),
             "Off",
             current == Some(false),
-            move || store::set_claude_spawn_bool(spec_id, Some(false)),
+            move || store::set_codex_spawn_bool(spec_id, Some(false)),
         ))
 }
 
@@ -1057,20 +1060,20 @@ fn compact_choice_control(
         .rounded(px(7.0))
         .bg(palette::segmented_track_bg())
         .child(tri_segment_btn(
-            &format!("prefs-claude-spawn-{slug}-default"),
+            &format!("prefs-codex-spawn-{slug}-default"),
             "Default",
             current.is_none(),
-            move || store::set_claude_spawn_choice(spec_id, None),
+            move || store::set_codex_spawn_choice(spec_id, None),
         ));
 
     for opt in options {
         let opt_val = *opt;
         let opt_slug = slugify_id(opt_val);
         seg = seg.child(tri_segment_btn(
-            &format!("prefs-claude-spawn-{slug}-{opt_slug}"),
+            &format!("prefs-codex-spawn-{slug}-{opt_slug}"),
             opt_val,
             current == Some(opt_val),
-            move || store::set_claude_spawn_choice(spec_id, Some(opt_val)),
+            move || store::set_codex_spawn_choice(spec_id, Some(opt_val)),
         ));
     }
 
@@ -1109,7 +1112,7 @@ fn tri_segment_btn(
 
 #[allow(clippy::too_many_arguments)]
 fn editable_summary_controls(
-    ui: ClaudeSpawnUiState,
+    ui: CodexSpawnUiState,
     spec_id: &'static str,
     slug: &str,
     current_display: String,
@@ -1135,7 +1138,7 @@ fn editable_summary_controls(
         )
         .child(
             button()
-                .test_id(&format!("prefs-claude-spawn-{slug}-edit"))
+                .test_id(&format!("prefs-codex-spawn-{slug}-edit"))
                 .on_press(move || {
                     store::clear_preferences_messages();
                     if is_editing {
@@ -1164,12 +1167,12 @@ fn editable_summary_controls(
     if is_modified {
         controls = controls.child(
             button()
-                .test_id(&format!("prefs-claude-spawn-{slug}-reset"))
+                .test_id(&format!("prefs-codex-spawn-{slug}-reset"))
                 .on_press(move || {
                     if ui.editing_spec.get_untracked() == Some(spec_id) {
                         ui.editing_spec.set(None);
                     }
-                    store::clear_claude_spawn_setting(spec_id);
+                    store::clear_codex_spawn_setting(spec_id);
                 })
                 .px(px(7.5))
                 .py(px(4.0))
@@ -1192,19 +1195,19 @@ fn editable_summary_controls(
 }
 
 fn inline_setting_editor(
-    ui: ClaudeSpawnUiState,
-    spec: &'static ClaudeSettingSpec,
+    ui: CodexSpawnUiState,
+    spec: &'static CodexSettingSpec,
     slug: &str,
-    current: Option<ClaudeSettingValue>,
+    current: Option<CodexSettingValue>,
 ) -> impl IntoElement {
     match spec.kind {
-        ClaudeSettingKind::Choice {
+        CodexSettingKind::Choice {
             options,
             allow_custom,
             ..
         } => {
             let selected_str = match current {
-                Some(ClaudeSettingValue::String(ref s)) => Some(s.as_str()),
+                Some(CodexSettingValue::String(ref s)) => Some(s.as_str()),
                 _ => None,
             };
             let mut chips = view()
@@ -1212,11 +1215,11 @@ fn inline_setting_editor(
                 .flex_wrap()
                 .gap(px(6.0))
                 .child(choice_chip(
-                    &format!("prefs-claude-spawn-{slug}-opt-default"),
+                    &format!("prefs-codex-spawn-{slug}-opt-default"),
                     "Default",
                     selected_str.is_none(),
                     move || {
-                        store::set_claude_spawn_choice(spec.id, None);
+                        store::set_codex_spawn_choice(spec.id, None);
                         ui.editing_spec.set(None);
                     },
                 ));
@@ -1224,11 +1227,11 @@ fn inline_setting_editor(
                 let opt_val = *opt;
                 let opt_slug = slugify_id(opt_val);
                 chips = chips.child(choice_chip(
-                    &format!("prefs-claude-spawn-{slug}-opt-{opt_slug}"),
+                    &format!("prefs-codex-spawn-{slug}-opt-{opt_slug}"),
                     opt_val,
                     selected_str == Some(opt_val),
                     move || {
-                        store::set_claude_spawn_choice(spec.id, Some(opt_val));
+                        store::set_codex_spawn_choice(spec.id, Some(opt_val));
                         ui.editing_spec.set(None);
                     },
                 ));
@@ -1253,23 +1256,25 @@ fn inline_setting_editor(
             }
             container
         }
-        ClaudeSettingKind::String { placeholder, .. }
-        | ClaudeSettingKind::Integer { placeholder, .. }
-        | ClaudeSettingKind::Number { placeholder, .. }
-        | ClaudeSettingKind::StringList { placeholder, .. }
-        | ClaudeSettingKind::Json { placeholder, .. } => {
+        CodexSettingKind::String { placeholder, .. }
+        | CodexSettingKind::Integer { placeholder, .. }
+        | CodexSettingKind::Number { placeholder, .. }
+        | CodexSettingKind::StringList { placeholder, .. }
+        | CodexSettingKind::Json { placeholder, .. } => {
             let helper = match spec.kind {
-                ClaudeSettingKind::StringList { .. } => {
+                CodexSettingKind::StringList { .. } => {
                     Some("Enter comma-separated values (e.g. item1, item2).")
                 }
-                ClaudeSettingKind::Json {
+                CodexSettingKind::Json {
                     expect_array: true, ..
-                } => Some("Enter a valid JSON array ([ ... ])."),
-                ClaudeSettingKind::Json {
+                } => Some("Enter a valid JSON array ([ ... ]); serialized to TOML for -c."),
+                CodexSettingKind::Json {
                     expect_array: false,
                     ..
-                } => Some("Enter a valid JSON object ({ ... })."),
-                ClaudeSettingKind::String {
+                } => Some(
+                    "Enter a valid JSON object ({ ... }); serialized to a TOML inline table for -c.",
+                ),
+                CodexSettingKind::String {
                     allow_empty: true, ..
                 } => Some(
                     "Save blank text to explicitly pass an empty value, or Reset to inherit CLI default.",
@@ -1295,19 +1300,19 @@ fn inline_setting_editor(
 
             container.child(inline_text_save_row(ui, spec.id, slug, placeholder))
         }
-        ClaudeSettingKind::Bool { .. } => view(),
+        CodexSettingKind::Bool { .. } => view(),
     }
 }
 
 fn inline_text_save_row(
-    ui: ClaudeSpawnUiState,
+    ui: CodexSpawnUiState,
     spec_id: &'static str,
     slug: &str,
     placeholder: &'static str,
 ) -> impl IntoElement {
     let save = move || {
         let raw = ui.draft_value.get_untracked();
-        if store::set_claude_spawn_text(spec_id, &raw) {
+        if store::set_codex_spawn_text(spec_id, &raw) {
             ui.editing_spec.set(None);
         }
     };
@@ -1319,7 +1324,7 @@ fn inline_text_save_row(
         .gap(px(8.0))
         .child(
             input()
-                .test_id(&format!("prefs-claude-spawn-{slug}-input"))
+                .test_id(&format!("prefs-codex-spawn-{slug}-input"))
                 .value(move || ui.draft_value.get())
                 .on_change(move |v: &str| ui.draft_value.set(v.to_owned()))
                 .on_submit(move |_: &str| on_submit())
@@ -1336,7 +1341,7 @@ fn inline_text_save_row(
         )
         .child(
             button()
-                .test_id(&format!("prefs-claude-spawn-{slug}-save"))
+                .test_id(&format!("prefs-codex-spawn-{slug}-save"))
                 .on_press(save)
                 .px(px(11.0))
                 .py(px(5.5))
@@ -1352,7 +1357,7 @@ fn inline_text_save_row(
         )
         .child(
             button()
-                .test_id(&format!("prefs-claude-spawn-{slug}-cancel"))
+                .test_id(&format!("prefs-codex-spawn-{slug}-cancel"))
                 .on_press(move || {
                     store::clear_preferences_messages();
                     ui.editing_spec.set(None);
@@ -1419,14 +1424,14 @@ fn choice_chip(
 // --- Environment & Raw Overrides Section ------------------------------------------------
 
 fn environment_and_raw_filtered_body(
-    ui: ClaudeSpawnUiState,
-    settings: &ClaudeSpawnSettings,
+    ui: CodexSpawnUiState,
+    settings: &CodexSpawnSettings,
     matches: &EnvRawFilterMatches<'_>,
 ) -> impl IntoElement {
     let mut section = view();
     let mut has_child = false;
 
-    let show_env_block = matches.show_mandatory_autoupdater
+    let show_env_block = matches.show_mandatory_update_guard
         || !matches.matching_env_vars.is_empty()
         || matches.show_add_env_controls;
     if show_env_block {
@@ -1442,13 +1447,13 @@ fn environment_and_raw_filtered_body(
         has_child = true;
     }
 
-    if matches.show_extra_json {
+    if matches.show_extra_config {
         if has_child {
             section = section.child(divider());
         }
-        section = section.child(extra_settings_json_row(
+        section = section.child(extra_config_overrides_row(
             ui,
-            settings.extra_settings_json.clone(),
+            settings.extra_config_overrides.clone(),
         ));
         has_child = true;
     }
@@ -1463,7 +1468,7 @@ fn environment_and_raw_filtered_body(
     section
 }
 
-fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -> impl IntoElement {
+fn env_vars_section(ui: CodexSpawnUiState, matches: &EnvRawFilterMatches<'_>) -> impl IntoElement {
     let is_editor_open = ui.env_editor_open.get();
     let mut header = view()
         .flex_row()
@@ -1480,7 +1485,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
                         .text_color(palette::text_primary()),
                 )
                 .child(
-                    text("Applied to the spawned claude process environment before startup.")
+                    text("Applied to the spawned codex process environment before startup.")
                         .text_size(px(11.5))
                         .text_color(palette::text_muted()),
                 ),
@@ -1489,7 +1494,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
     if matches.show_add_env_controls {
         header = header.child(
             button()
-                .test_id("prefs-claude-spawn-env-add-btn")
+                .test_id("prefs-codex-spawn-env-add-btn")
                 .on_press(move || {
                     store::clear_preferences_messages();
                     if is_editor_open {
@@ -1523,15 +1528,15 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
 
     let mut container = view().px(px(14.0)).py(px(11.0)).gap(px(9.0)).child(header);
 
-    if matches.show_mandatory_autoupdater {
-        container = container.child(mandatory_env_var_row(
-            CLAUDE_DISABLE_AUTOUPDATER_ENV,
-            CLAUDE_DISABLE_AUTOUPDATER_VALUE,
-            "Always enforced by Bruk so one run cannot auto-update Claude for the next run.",
+    if matches.show_mandatory_update_guard {
+        container = container.child(mandatory_guard_row(
+            CODEX_DISABLE_UPDATE_CHECK_KEY,
+            CODEX_DISABLE_UPDATE_CHECK_VALUE,
+            "Always enforced by Bruk (-c check_for_update_on_startup=false) so runs cannot check for or prompt Codex updates.",
         ));
     }
 
-    let secret_env_keys: Vec<String> = store::claude_spawn_settings()
+    let secret_env_keys: Vec<String> = store::codex_spawn_settings()
         .secret_env_vars
         .keys()
         .cloned()
@@ -1562,9 +1567,9 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
             let key = ui.draft_env_key.get_untracked();
             let val = ui.draft_env_value.get_untracked();
             let ok = if ui.draft_env_secret.get_untracked() {
-                store::set_claude_spawn_secret_env_var(&key, &val)
+                store::set_codex_spawn_secret_env_var(&key, &val)
             } else {
-                store::set_claude_spawn_env_var(&key, &val)
+                store::set_codex_spawn_env_var(&key, &val)
             };
             if ok {
                 ui.draft_env_key.set(String::new());
@@ -1576,7 +1581,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
         let on_submit = save_env;
 
         let mut val_field = input()
-            .test_id("prefs-claude-spawn-env-value-input")
+            .test_id("prefs-codex-spawn-env-value-input")
             .value(move || ui.draft_env_value.get())
             .on_change(move |v: &str| ui.draft_env_value.set(v.to_owned()))
             .on_submit(move |_: &str| on_submit())
@@ -1613,7 +1618,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
                         .gap(px(8.0))
                         .child(
                             input()
-                                .test_id("prefs-claude-spawn-env-key-input")
+                                .test_id("prefs-codex-spawn-env-key-input")
                                 .value(move || ui.draft_env_key.get())
                                 .on_change(move |v: &str| ui.draft_env_key.set(v.to_owned()))
                                 .placeholder("ENV_VAR_NAME")
@@ -1637,7 +1642,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
                         .gap(px(8.0))
                         .child(
                             button()
-                                .test_id("prefs-claude-spawn-env-secret-toggle")
+                                .test_id("prefs-codex-spawn-env-secret-toggle")
                                 .on_press(move || ui.draft_env_secret.update(|s| *s = !*s))
                                 .px(px(8.0))
                                 .py(px(4.0))
@@ -1677,7 +1682,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
                                 .gap(px(8.0))
                                 .child(
                                     button()
-                                        .test_id("prefs-claude-spawn-env-cancel")
+                                        .test_id("prefs-codex-spawn-env-cancel")
                                         .on_press(move || {
                                             ui.draft_env_key.set(String::new());
                                             ui.draft_env_value.set(String::new());
@@ -1701,7 +1706,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
                                 )
                                 .child(
                                     button()
-                                        .test_id("prefs-claude-spawn-env-save")
+                                        .test_id("prefs-codex-spawn-env-save")
                                         .on_press(save_env)
                                         .px(px(11.0))
                                         .py(px(5.0))
@@ -1723,7 +1728,7 @@ fn env_vars_section(ui: ClaudeSpawnUiState, matches: &EnvRawFilterMatches<'_>) -
     container
 }
 
-fn mandatory_env_var_row(key: &str, value: &str, note: &str) -> impl IntoElement {
+fn mandatory_guard_row(key: &str, value: &str, note: &str) -> impl IntoElement {
     view()
         .px(px(10.0))
         .py(px(8.0))
@@ -1786,7 +1791,7 @@ fn mandatory_env_var_row(key: &str, value: &str, note: &str) -> impl IntoElement
         )
 }
 
-fn env_var_row(ui: ClaudeSpawnUiState, key: String, value: String) -> impl IntoElement {
+fn env_var_row(ui: CodexSpawnUiState, key: String, value: String) -> impl IntoElement {
     let key_slug = slugify_id(&key);
     let key_for_edit = key.clone();
     let val_for_edit = value.clone();
@@ -1838,7 +1843,7 @@ fn env_var_row(ui: ClaudeSpawnUiState, key: String, value: String) -> impl IntoE
                 .gap(px(6.0))
                 .child(
                     button()
-                        .test_id(&format!("prefs-claude-spawn-env-edit-{key_slug}"))
+                        .test_id(&format!("prefs-codex-spawn-env-edit-{key_slug}"))
                         .on_press(move || {
                             store::clear_preferences_messages();
                             ui.draft_env_key.set(key_for_edit.clone());
@@ -1861,8 +1866,8 @@ fn env_var_row(ui: ClaudeSpawnUiState, key: String, value: String) -> impl IntoE
                 )
                 .child(
                     button()
-                        .test_id(&format!("prefs-claude-spawn-env-remove-{key_slug}"))
-                        .on_press(move || store::remove_claude_spawn_env_var(&key_for_remove))
+                        .test_id(&format!("prefs-codex-spawn-env-remove-{key_slug}"))
+                        .on_press(move || store::remove_codex_spawn_env_var(&key_for_remove))
                         .px(px(8.0))
                         .py(px(3.5))
                         .rounded(px(6.0))
@@ -1881,9 +1886,9 @@ fn env_var_row(ui: ClaudeSpawnUiState, key: String, value: String) -> impl IntoE
 }
 
 fn env_presets_section(
-    ui: ClaudeSpawnUiState,
-    settings: &ClaudeSpawnSettings,
-    presets: &[&'static ClaudeEnvPreset],
+    ui: CodexSpawnUiState,
+    settings: &CodexSpawnSettings,
+    presets: &[&'static CodexEnvPreset],
 ) -> impl IntoElement {
     let mut chips = view().flex_row().flex_wrap().gap(px(6.0));
     for preset in presets {
@@ -1898,7 +1903,7 @@ fn env_presets_section(
 
         chips = chips.child(
             button()
-                .test_id(&format!("prefs-claude-spawn-env-preset-{slug}"))
+                .test_id(&format!("prefs-codex-spawn-env-preset-{slug}"))
                 .accessibility_label(format!("{}: {}", preset.name, preset.description))
                 .on_press(move || {
                     store::clear_preferences_messages();
@@ -1942,7 +1947,7 @@ fn env_presets_section(
             view()
                 .gap(px(2.0))
                 .child(
-                    text("Documented Claude Code Environment Presets")
+                    text("Documented Codex CLI Environment Presets")
                         .text_size(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(palette::text_primary()),
@@ -1956,7 +1961,7 @@ fn env_presets_section(
         .child(chips)
 }
 
-fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoElement {
+fn extra_cli_args_row(ui: CodexSpawnUiState, current: String) -> impl IntoElement {
     let is_modified = !current.trim().is_empty();
     let is_editing = ui.editing_extra_args.get();
     let seed = current.clone();
@@ -1968,7 +1973,7 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
 
     let save = move || {
         let raw = ui.draft_extra_args.get_untracked();
-        if store::set_claude_spawn_extra_cli_args(&raw) {
+        if store::set_codex_spawn_extra_cli_args(&raw) {
             ui.editing_extra_args.set(false);
         }
     };
@@ -1992,11 +1997,9 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
                             .text_color(palette::text_primary()),
                     )
                     .child(
-                        text(
-                            "Additional shell-quoted CLI arguments appended when spawning claude.",
-                        )
-                        .text_size(px(11.5))
-                        .text_color(palette::text_muted()),
+                        text("Additional shell-quoted CLI arguments appended when spawning codex.")
+                            .text_size(px(11.5))
+                            .text_color(palette::text_muted()),
                     ),
             )
             .child(
@@ -2016,7 +2019,7 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
                     )
                     .child(
                         button()
-                            .test_id("prefs-claude-spawn-extra-args-edit")
+                            .test_id("prefs-codex-spawn-extra-args-edit")
                             .on_press(move || {
                                 store::clear_preferences_messages();
                                 if is_editing {
@@ -2062,11 +2065,11 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
                 .gap(px(8.0))
                 .child(
                     input()
-                        .test_id("prefs-claude-spawn-extra-args-input")
+                        .test_id("prefs-codex-spawn-extra-args-input")
                         .value(move || ui.draft_extra_args.get())
                         .on_change(move |v: &str| ui.draft_extra_args.set(v.to_owned()))
                         .on_submit(move |_: &str| on_submit())
-                        .placeholder("e.g. --max-turns 20 --append-system-prompt 'Be concise'")
+                        .placeholder("e.g. --profile fast --ephemeral")
                         .app_class("font-mono")
                         .flex_1()
                         .px(px(9.0))
@@ -2079,7 +2082,7 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
                 )
                 .child(
                     button()
-                        .test_id("prefs-claude-spawn-extra-args-save")
+                        .test_id("prefs-codex-spawn-extra-args-save")
                         .on_press(save)
                         .px(px(11.0))
                         .py(px(5.5))
@@ -2099,20 +2102,20 @@ fn extra_cli_args_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoEleme
     row
 }
 
-fn extra_settings_json_row(ui: ClaudeSpawnUiState, current: String) -> impl IntoElement {
+fn extra_config_overrides_row(ui: CodexSpawnUiState, current: String) -> impl IntoElement {
     let is_modified = !current.trim().is_empty();
-    let is_editing = ui.editing_extra_json.get();
+    let is_editing = ui.editing_extra_config.get();
     let seed = current.clone();
     let summary = if is_modified {
-        "Configured JSON".to_owned()
+        "Configured overrides".to_owned()
     } else {
         "None".to_owned()
     };
 
     let save = move || {
-        let raw = ui.draft_extra_json.get_untracked();
-        if store::set_claude_spawn_extra_settings_json(&raw) {
-            ui.editing_extra_json.set(false);
+        let raw = ui.draft_extra_config.get_untracked();
+        if store::set_codex_spawn_extra_config_overrides(&raw) {
+            ui.editing_extra_config.set(false);
         }
     };
     let on_submit = save;
@@ -2133,14 +2136,14 @@ fn extra_settings_json_row(ui: ClaudeSpawnUiState, current: String) -> impl Into
                         .min_w(px(0.0))
                         .gap(px(2.0))
                         .child(
-                            text("Extra --settings JSON Object")
+                            text("Extra -c config.toml Overrides")
                                 .text_size(px(12.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .text_color(palette::text_primary()),
                         )
                         .child(
                             text(
-                                "Raw JSON object deep-merged into --settings for experimental or future Claude settings keys. Do not put API keys or credentials here — use secret environment variables above so values stay in Keychain and are redacted.",
+                                "Raw key = value TOML overrides (one per line) emitted via -c for experimental or future Codex config keys. Do not put API keys or credentials here — use secret environment variables above so values stay in Keychain and are redacted.",
                             )
                             .text_size(px(11.5))
                             .text_color(palette::text_muted()),
@@ -2163,14 +2166,14 @@ fn extra_settings_json_row(ui: ClaudeSpawnUiState, current: String) -> impl Into
                         )
                         .child(
                             button()
-                                .test_id("prefs-claude-spawn-extra-json-edit")
+                                .test_id("prefs-codex-spawn-extra-config-edit")
                                 .on_press(move || {
                                     store::clear_preferences_messages();
                                     if is_editing {
-                                        ui.editing_extra_json.set(false);
+                                        ui.editing_extra_config.set(false);
                                     } else {
-                                        ui.draft_extra_json.set(seed.clone());
-                                        ui.editing_extra_json.set(true);
+                                        ui.draft_extra_config.set(seed.clone());
+                                        ui.editing_extra_config.set(true);
                                     }
                                 })
                                 .px(px(9.0))
@@ -2209,11 +2212,11 @@ fn extra_settings_json_row(ui: ClaudeSpawnUiState, current: String) -> impl Into
                 .gap(px(8.0))
                 .child(
                     input()
-                        .test_id("prefs-claude-spawn-extra-json-input")
-                        .value(move || ui.draft_extra_json.get())
-                        .on_change(move |v: &str| ui.draft_extra_json.set(v.to_owned()))
+                        .test_id("prefs-codex-spawn-extra-config-input")
+                        .value(move || ui.draft_extra_config.get())
+                        .on_change(move |v: &str| ui.draft_extra_config.set(v.to_owned()))
                         .on_submit(move |_: &str| on_submit())
-                        .placeholder(r#"{"customKey":true}"#)
+                        .placeholder(r#"custom_option = true"#)
                         .app_class("font-mono")
                         .flex_1()
                         .px(px(9.0))
@@ -2226,7 +2229,7 @@ fn extra_settings_json_row(ui: ClaudeSpawnUiState, current: String) -> impl Into
                 )
                 .child(
                     button()
-                        .test_id("prefs-claude-spawn-extra-json-save")
+                        .test_id("prefs-codex-spawn-extra-config-save")
                         .on_press(save)
                         .px(px(11.0))
                         .py(px(5.5))

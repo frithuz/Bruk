@@ -1,22 +1,23 @@
 //! Secrets management UI: Preferences › Secrets tab (App Env secrets, Bruk credentials,
 //! 1Password & Command secret managers) and the shared `secret_problem_banner`.
 
-use factory_core::{
-    CommandManagerConfig, Exposure, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, SecretProblem,
-    SecretRecord, SecretSource, SecretState, Sharing, StoreStatus, display_with_tilde,
+use factory_config::display_with_tilde;
+use factory_secrets::{
+    CommandManagerConfig, OnePasswordAuthMode, SecretRecord, StoreStatus,
     has_surrounding_whitespace,
+};
+use factory_types::{
+    Exposure, ONE_PASSWORD_MANAGER_ID, SecretProblem, SecretSource, SecretState, Sharing,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 /// A banner for a secret problem (missing secret, locked Keychain, manager auth error, etc.).
 /// Red when it stopped a step or turn, amber otherwise.
-pub(crate) fn secret_problem_banner(problem: SecretProblem, project_name: Option<String>) -> View {
+pub fn secret_problem_banner(problem: SecretProblem, project_name: Option<String>) -> View {
     let blocking = problem.blocking;
     let (bg, border, fg) = if blocking {
         (
@@ -93,7 +94,7 @@ pub(crate) fn secret_problem_banner(problem: SecretProblem, project_name: Option
 }
 
 /// Complete Preferences › Secrets tab.
-pub(crate) fn preferences_secrets_tab() -> impl IntoElement {
+pub fn preferences_secrets_tab() -> impl IntoElement {
     let add_app_open = signal(false);
     let draft_name = signal(String::new());
     let draft_value = signal(String::new());
@@ -645,8 +646,8 @@ fn app_secret_row(
     let id_share = id.clone();
     let is_replacing = replacing_id.get().as_deref() == Some(id.as_str());
     let (sharing, exposure) = match &rec.kind {
-        factory_core::SecretKind::Env {
-            scope: factory_core::EnvScope::App { shared_with },
+        factory_types::SecretKind::Env {
+            scope: factory_types::EnvScope::App { shared_with },
             exposure,
         } => (shared_with.clone(), *exposure),
         _ => (Sharing::AllProjects, Exposure::McpOnly),
@@ -1100,14 +1101,14 @@ fn internal_credentials_card(
             .child(secondary_button(
                 "prefs-secrets-open-providers",
                 "Open Providers",
-                || store::set_preferences_tab(factory_core::PreferencesTab::Providers),
+                || store::set_preferences_tab(factory_config::PreferencesTab::Providers),
             )),
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn secret_managers_card(
-    settings: &factory_core::SecretsSettings,
+    settings: &factory_secrets::SecretsSettings,
     op_token_open: Signal<bool>,
     draft_op_token: Signal<String>,
     add_mgr_open: Signal<bool>,
@@ -1423,7 +1424,7 @@ fn secret_managers_card(
     }
 
     if add_mgr_open.get() {
-        let apply_preset = move |preset: factory_core::CommandManagerPreset| {
+        let apply_preset = move |preset: factory_secrets::CommandManagerPreset| {
             let cfg = preset.to_config(preset.id.to_owned());
             draft_mgr_id.set(cfg.id);
             draft_mgr_name.set(cfg.name);
@@ -1436,7 +1437,7 @@ fn secret_managers_card(
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
         );
-        for preset in factory_core::BUILT_IN_COMMAND_MANAGER_PRESETS {
+        for preset in factory_secrets::BUILT_IN_COMMAND_MANAGER_PRESETS {
             let p = *preset;
             let tid = format!("prefs-mgr-preset-{}", p.id);
             presets_row = presets_row.child(small_action_button(&tid, p.id, move || {

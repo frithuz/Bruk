@@ -3,23 +3,21 @@
 
 use std::collections::BTreeSet;
 
-use factory_core::{
-    CoverageFileRow, DiffFileChange, DiffLineKind, RunDetailTab, RunExecutionState, RunStepDetail,
-    RunStepStatus, StepTranscriptEntry, TerminalBadgeTone, TerminalLine, ToolStatusTone,
-    WorkflowRunViewData,
+use factory_types::{DiffFileChange, DiffLineKind};
+use factory_workflows::{
+    CoverageFileRow, RunDetailTab, RunExecutionState, RunStepDetail, RunStepStatus,
+    StepTranscriptEntry, TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunViewData,
 };
 use nsh_base::{button, input};
 use nsh_core::prelude::*;
 
-use crate::{
-    store,
-    ui::{icons, palette},
-};
+use factory_store as store;
+use factory_ui_kit::{icons, palette};
 
 const INSPECTOR_WIDTH: f32 = 286.0;
 
 /// Main Workflow Run split canvas (run detail + steering composer on left, step inspector on right).
-pub(crate) fn workflow_run_view() -> impl IntoElement {
+pub fn workflow_run_view() -> impl IntoElement {
     let steer_draft = signal(String::new());
     let attempt_details_open = signal(false);
     let toggled_tool_cards = signal(BTreeSet::<(usize, usize)>::new());
@@ -714,13 +712,13 @@ fn output_tab_view(
                 ));
             }
             StepTranscriptEntry::McpProblem { problem } => {
-                stream_col = stream_col.child(crate::ui::mcp::mcp_problem_banner(
+                stream_col = stream_col.child(factory_ui_common::mcp::mcp_problem_banner(
                     problem.clone(),
                     Some(run.project_name.clone()),
                 ));
             }
             StepTranscriptEntry::SecretProblem { problem } => {
-                stream_col = stream_col.child(crate::ui::secrets::secret_problem_banner(
+                stream_col = stream_col.child(factory_ui_common::secrets::secret_problem_banner(
                     problem.clone(),
                     Some(run.project_name.clone()),
                 ));

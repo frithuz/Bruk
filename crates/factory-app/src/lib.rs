@@ -19,8 +19,8 @@ use nsh_core::{element::Root, prelude::*};
 fn native(registry: &mut Registry) {
     boot_log::init_with_metadata(
         "nsh_native_module",
-        factory_core::BRUK_APP_VERSION,
-        factory_core::BRUK_DATA_SCHEMA,
+        factory_types::BRUK_APP_VERSION,
+        factory_types::BRUK_DATA_SCHEMA,
     );
     let _span = boot_log::span("boot.native_module.register");
     registry.register::<App>().assets(assets!());
@@ -34,8 +34,8 @@ fn native(registry: &mut Registry) {
 pub fn App() -> impl IntoElement {
     boot_log::init_with_metadata(
         "app_component",
-        factory_core::BRUK_APP_VERSION,
-        factory_core::BRUK_DATA_SCHEMA,
+        factory_types::BRUK_APP_VERSION,
+        factory_types::BRUK_DATA_SCHEMA,
     );
     let mount_span = boot_log::span("boot.app.mount");
     if let Some(age_ms) = boot_log::process_age_ms() {
@@ -93,7 +93,7 @@ pub fn root_with_db_path_and_menubar_popover(db_path: PathBuf) -> Root {
 /// [`factory_core::HomeEnvironment`] instead of this machine's, so first-launch setup can be
 /// exercised in isolated tests. `path_env` is the `PATH` used for provider CLI discovery.
 pub fn root_with_home_environment(
-    environment: factory_core::HomeEnvironment,
+    environment: factory_config::HomeEnvironment,
     path_env: OsString,
 ) -> Root {
     let props = AppWithHomeProps {
@@ -126,7 +126,7 @@ struct AppWithHomeProps {
 #[component]
 fn AppWithHome(props: AppWithHomeProps) -> impl IntoElement {
     store::init_with_home_environment(
-        factory_core::HomeEnvironment {
+        factory_config::HomeEnvironment {
             env_override: props.env_override.as_ref().map(PathBuf::from),
             default_root: PathBuf::from(&props.default_root),
             locator_path: PathBuf::from(&props.locator_path),

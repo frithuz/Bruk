@@ -9,11 +9,13 @@
 
 use std::collections::BTreeSet;
 
-use factory_core::{
+use factory_chat::{
     ChatAttachment, ChatContextKind, ChatContextUsage, ChatEntry, ChatGitStatus, ChatNoticeTone,
-    ChatSessionSummary, ChatToolStatus, ChatWorkspace, DiffFileChange, DiffLineKind,
-    ProjectSandboxMode, ProviderKind, current_unix_seconds, format_bytes, format_currency,
-    format_tokens,
+    ChatSessionSummary, ChatToolStatus, ChatWorkspace, format_bytes,
+};
+use factory_storage::{format_currency, format_tokens};
+use factory_types::{
+    DiffFileChange, DiffLineKind, ProjectSandboxMode, ProviderKind, current_unix_seconds,
 };
 use nsh_base::{
     SelectItem, SelectValue, TextViewPart, TextViewParts, button, input, select, text_view,
@@ -21,13 +23,11 @@ use nsh_base::{
 };
 use nsh_core::prelude::*;
 
-use crate::{
-    store::{
-        self, ActiveChatChanges, ActiveChatContext, ActiveChatMeta, ChatEntryRow,
-        PendingChatAttachment,
-    },
-    ui::{icons, palette},
+use factory_store::{
+    self as store, self, ActiveChatChanges, ActiveChatContext, ActiveChatMeta, ChatEntryRow,
+    PendingChatAttachment,
 };
+use factory_ui_kit::{icons, palette};
 
 const LIST_WIDTH: f32 = 252.0;
 const TRANSCRIPT_MAX_WIDTH: f32 = 780.0;
@@ -42,7 +42,7 @@ const CHANGES_PANEL_WIDTH: f32 = 380.0;
 const CONTEXT_GROUP_SHOWN: usize = 8;
 
 /// The Chats canvas for the selected project.
-pub(crate) fn chat_view() -> impl IntoElement {
+pub fn chat_view() -> impl IntoElement {
     let draft = signal(String::new());
     let active_id = computed(store::active_chat_id);
     // A file drag is over the conversation.
@@ -1284,7 +1284,7 @@ fn context_total_label(used: u64, window: u64) -> String {
 }
 
 /// Which icon a slice of the window gets.
-fn context_slice_of(category: &factory_core::ChatContextCategory) -> icons::ContextSlice {
+fn context_slice_of(category: &factory_chat::ChatContextCategory) -> icons::ContextSlice {
     use icons::ContextSlice;
     match category.kind {
         ChatContextKind::Free => return ContextSlice::Free,
@@ -1617,7 +1617,7 @@ fn token_use_section(context: &ActiveChatContext) -> AnyElement {
         .into_element()
 }
 
-fn context_group(group: &factory_core::ChatContextGroup) -> impl IntoElement {
+fn context_group(group: &factory_chat::ChatContextGroup) -> impl IntoElement {
     let mut list = view().gap(px(4.0));
     for item in group.items.iter().take(CONTEXT_GROUP_SHOWN) {
         list = list.child(
@@ -1705,11 +1705,13 @@ fn chat_entry_view(row: ReadSignal<ChatEntryRow>) -> AnyElement {
         ChatEntry::Notice { .. } => notice_row(row).into_element(),
         ChatEntry::McpProblem { problem } => view()
             .ml(px(34.0))
-            .child(crate::ui::mcp::mcp_problem_banner(problem, None))
+            .child(factory_ui_common::mcp::mcp_problem_banner(problem, None))
             .into_element(),
         ChatEntry::SecretProblem { problem } => view()
             .ml(px(34.0))
-            .child(crate::ui::secrets::secret_problem_banner(problem, None))
+            .child(factory_ui_common::secrets::secret_problem_banner(
+                problem, None,
+            ))
             .into_element(),
     }
 }
