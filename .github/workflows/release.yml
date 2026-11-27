@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-slim
     timeout-minutes: 5
     permissions:
-      checks: read
+      checks: read # query existing Lint and Test check runs for the target commit
     outputs:
       run_lint: ${{ steps.checks.outputs.run_lint }}
       run_test: ${{ steps.checks.outputs.run_test }}
