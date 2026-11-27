@@ -20,7 +20,7 @@ pub mod github_intake;
 pub mod inbox;
 pub mod machines;
 pub mod mcp;
-pub mod model;
+pub use factory_types::model;
 pub mod preferences;
 pub mod project_settings;
 pub mod runner;

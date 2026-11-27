@@ -4,43 +4,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+pub use factory_types::ProjectColor;
+
 use crate::model::{Project, RunStatus, WorkflowRun};
-
-/// Accent color assigned to a project across the sidebar, charts, and tables.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectColor {
-    Blue,
-    Orange,
-    Green,
-    Purple,
-    Teal,
-    Rose,
-}
-
-impl ProjectColor {
-    /// Deterministic palette color for a project name.
-    pub fn for_project_name(name: &str) -> Self {
-        match name {
-            "api-gateway" => Self::Blue,
-            "marketing-site" => Self::Orange,
-            "mobile-app" => Self::Green,
-            other => {
-                let hash = other.bytes().fold(0usize, |acc, b| {
-                    acc.wrapping_mul(31).wrapping_add(b as usize)
-                });
-                match hash % 6 {
-                    0 => Self::Blue,
-                    1 => Self::Orange,
-                    2 => Self::Green,
-                    3 => Self::Purple,
-                    4 => Self::Teal,
-                    _ => Self::Rose,
-                }
-            }
-        }
-    }
-}
 
 /// Time bucket granularity for the dashboard overview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]

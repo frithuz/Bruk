@@ -64,27 +64,10 @@ impl PreferencesTab {
     }
 }
 
-/// Color scheme preference applied to the desktop application.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum AppearanceMode {
-    #[default]
-    System,
-    Light,
-    Dark,
-}
-
-impl AppearanceMode {
-    pub const ALL: &'static [AppearanceMode] = &[Self::System, Self::Light, Self::Dark];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::System => "System",
-            Self::Light => "Light",
-            Self::Dark => "Dark",
-        }
-    }
-}
+pub use factory_types::{
+    AppearanceMode, AppearanceSettings, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY,
+    FontPreference, ProviderKind, SSH_AUTH_SOCK_ENV, format_dollars_cents, format_whole_or_cents,
+};
 
 /// Which main view opens by default when the application launches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -111,62 +94,6 @@ impl DefaultLandingView {
             Self::Inbox => "Inbox",
             Self::Machines => "Machines",
             Self::Workspace => "Workspace",
-        }
-    }
-}
-
-/// Supported AI provider families.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderKind {
-    Claude,
-    Codex,
-    Antigravity,
-    OpenRouter,
-}
-
-impl ProviderKind {
-    /// The agent CLIs Bruk can run, in the order Settings and pickers list them.
-    pub const CLI_PROVIDERS: &'static [ProviderKind] =
-        &[Self::Claude, Self::Codex, Self::Antigravity];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Claude => "Claude",
-            Self::Codex => "Codex",
-            Self::Antigravity => "Antigravity",
-            Self::OpenRouter => "OpenRouter",
-        }
-    }
-
-    pub fn badge(self) -> &'static str {
-        match self {
-            Self::Claude => "Cl",
-            Self::Codex => "Cx",
-            Self::Antigravity => "Ag",
-            Self::OpenRouter => "OR",
-        }
-    }
-
-    /// Lowercase id used for account ids and UI test ids (`"claude"`, `"antigravity"`).
-    pub fn slug(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::Antigravity => "antigravity",
-            Self::OpenRouter => "openrouter",
-        }
-    }
-
-    /// Whether this provider is an agent CLI (as opposed to an API key).
-    pub fn is_cli(self) -> bool {
-        !matches!(self, Self::OpenRouter)
-    }
-
-    pub fn group_hint(self) -> &'static str {
-        match self {
-            Self::Claude | Self::Codex | Self::Antigravity => "one account",
-            Self::OpenRouter => "one or more keys",
         }
     }
 }
@@ -403,84 +330,6 @@ impl GeneralSettings {
 /// Built-in default for `default_projects_dir` before projects moved into the Bruk folder.
 const LEGACY_DEFAULT_PROJECTS_DIR: &str = "~/src";
 
-/// Default embedded UI font family name.
-pub const DEFAULT_UI_FONT_FAMILY: &str = "Atkinson Hyperlegible Next";
-
-/// Default embedded monospace font family name.
-pub const DEFAULT_MONO_FONT_FAMILY: &str = "Atkinson Hyperlegible Mono";
-
-/// User preference for either the UI or monospace font family.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "family", rename_all = "snake_case")]
-pub enum FontPreference {
-    /// Use the app's embedded Atkinson Hyperlegible font family.
-    #[default]
-    Default,
-    /// Use the operating system's default UI or monospace font.
-    System,
-    /// Use a custom installed font family name (or comma-separated fallback list).
-    Custom(String),
-}
-
-impl FontPreference {
-    /// Resolves this preference to the `font-sans` token value (`None` uses the macOS system font).
-    pub fn resolve_ui(&self) -> Option<&str> {
-        self.resolve_with_default(DEFAULT_UI_FONT_FAMILY)
-    }
-
-    /// Resolves this preference to the `font-mono` token value (`None` uses the macOS system monospace font).
-    pub fn resolve_mono(&self) -> Option<&str> {
-        self.resolve_with_default(DEFAULT_MONO_FONT_FAMILY)
-    }
-
-    /// Returns the trimmed custom family name when [`Self::Custom`] is active.
-    pub fn custom_family(&self) -> Option<&str> {
-        match self {
-            Self::Custom(name) => Some(name.trim()),
-            Self::Default | Self::System => None,
-        }
-    }
-
-    fn resolve_with_default<'a>(&'a self, default_family: &'a str) -> Option<&'a str> {
-        match self {
-            Self::Default => Some(default_family),
-            Self::System => None,
-            Self::Custom(name) => {
-                let trimmed = name.trim();
-                if trimmed.is_empty() {
-                    Some(default_family)
-                } else {
-                    Some(trimmed)
-                }
-            }
-        }
-    }
-}
-
-/// Visual appearance preferences.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AppearanceSettings {
-    pub mode: AppearanceMode,
-    pub compact_sidebar: bool,
-    pub monospace_font_size: u8,
-    #[serde(default)]
-    pub ui_font: FontPreference,
-    #[serde(default)]
-    pub mono_font: FontPreference,
-}
-
-impl Default for AppearanceSettings {
-    fn default() -> Self {
-        Self {
-            mode: AppearanceMode::System,
-            compact_sidebar: false,
-            monospace_font_size: 12,
-            ui_font: FontPreference::Default,
-            mono_font: FontPreference::Default,
-        }
-    }
-}
-
 /// Compute machine execution preferences.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MachinesSettings {
@@ -604,9 +453,6 @@ impl Default for AdvancedSettings {
         }
     }
 }
-
-/// Environment variable SSH clients read to find the agent holding the user's keys.
-pub const SSH_AUTH_SOCK_ENV: &str = "SSH_AUTH_SOCK";
 
 /// A well-known SSH agent and where it puts its socket on macOS.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1867,20 +1713,6 @@ pub fn parse_dollar_amount(input: &str) -> Result<Option<u64>, PreferencesError>
         .and_then(|d| d.checked_add(cents))
         .map(Some)
         .ok_or(PreferencesError::InvalidSpendingCap)
-}
-
-/// Formats cents as `$200.00`.
-pub fn format_dollars_cents(cents: u64) -> String {
-    format!("${}.{:02}", cents / 100, cents % 100)
-}
-
-/// Formats cents as `$200` when whole dollars, or `$25.50` otherwise.
-pub fn format_whole_or_cents(cents: u64) -> String {
-    if cents.is_multiple_of(100) {
-        format!("${}", cents / 100)
-    } else {
-        format_dollars_cents(cents)
-    }
 }
 
 #[cfg(test)]

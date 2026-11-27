@@ -17,7 +17,7 @@ use std::{
 };
 
 use chrono::{DateTime, Duration, FixedOffset, Local, Timelike};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use thiserror::Error;
 
 use crate::claude_settings::new_claude_command;
@@ -79,208 +79,11 @@ pub enum ClaudeCliProbe {
     },
 }
 
-/// One model option reported by the Claude CLI's `initialize` control response.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeModelOption {
-    /// Model alias or identifier accepted by `claude --model <value>`.
-    pub value: String,
-    /// Concrete model ID resolved by the CLI (e.g. `"claude-opus-5-5"`).
-    pub resolved_model: String,
-    /// Human-readable display name (e.g. `"Opus 5.5"`).
-    pub display_name: String,
-    /// Short description of the model's intended use.
-    pub description: String,
-}
-
-impl ClaudeModelOption {
-    /// Derives the normalized model family name (e.g. `"Opus"`, `"Fable"`, `"Sonnet"`, `"Haiku"`).
-    pub fn family(&self) -> String {
-        if let Some(family) = model_family_from_display_name(&self.display_name) {
-            return family;
-        }
-        if let Some(family) = model_family_from_id(&self.resolved_model) {
-            return family;
-        }
-        if let Some(family) = model_family_from_id(&self.value) {
-            return family;
-        }
-        "Other".to_owned()
-    }
-}
-
-/// Extracts a normalized model family name from a model identifier or alias
-/// (e.g. `"claude-fable-5-2"` -> `"Fable"`, `"opus"` -> `"Opus"`,
-/// `"gpt-6.2-sol"` -> `"Sol"`, `"gpt-5.3-codex"` -> `"Codex"`, `"o4-mini"` -> `"o-series"`,
-/// `"gemini-4-neon-high"` -> `"Neon"`).
-pub fn model_family_from_id(id: &str) -> Option<String> {
-    let trimmed = id.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(family) = codex_model_family_from_text(trimmed) {
-        return Some(family);
-    }
-    let without_prefix = trimmed
-        .strip_prefix("claude-")
-        .or_else(|| trimmed.strip_prefix("Claude-"))
-        .unwrap_or(trimmed);
-    for segment in without_prefix.split(['-', '_', ' ', '/']) {
-        if !segment.is_empty()
-            && segment.chars().all(|c| c.is_ascii_alphabetic())
-            && !segment.eq_ignore_ascii_case("claude")
-            && !segment.eq_ignore_ascii_case("gemini")
-            && !segment.eq_ignore_ascii_case("default")
-        {
-            return Some(title_case_word(segment));
-        }
-    }
-    None
-}
-
-fn model_family_from_display_name(display_name: &str) -> Option<String> {
-    let trimmed = display_name.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(family) = codex_model_family_from_text(trimmed) {
-        return Some(family);
-    }
-    for word in trimmed.split_whitespace() {
-        let cleaned = word.trim_matches(|c: char| !c.is_ascii_alphabetic());
-        if cleaned.is_empty()
-            || cleaned.eq_ignore_ascii_case("claude")
-            || cleaned.eq_ignore_ascii_case("gemini")
-            || cleaned.eq_ignore_ascii_case("default")
-        {
-            continue;
-        }
-        return Some(title_case_word(cleaned));
-    }
-    None
-}
-
-/// Extracts a normalized family name from OpenAI/Codex model identifiers or display names
-/// (e.g. `"GPT-6.2-Sol"` -> `"Sol"`, `"GPT-6.1 Terra"` -> `"Terra"`,
-/// `"gpt-5.3-codex"` -> `"Codex"`, `"GPT-5.5"` -> `"GPT"`, `"o4-mini"` -> `"o-series"`).
-fn codex_model_family_from_text(text: &str) -> Option<String> {
-    let tokens: Vec<&str> = text
-        .split(['-', '_', ' ', '/'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .collect();
-    let first = *tokens.first()?;
-
-    let after_provider: &[&str] = if first.eq_ignore_ascii_case("openai") {
-        &tokens[1..]
-    } else {
-        &tokens[..]
-    };
-    let head = *after_provider.first()?;
-
-    if head.eq_ignore_ascii_case("gpt") {
-        for token in &after_provider[1..] {
-            if token.chars().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if token.chars().all(|c| c.is_ascii_alphabetic()) {
-                return Some(title_case_word(token));
-            }
-        }
-        return Some("GPT".to_owned());
-    }
-
-    if head.eq_ignore_ascii_case("codex") {
-        return Some("Codex".to_owned());
-    }
-
-    let mut head_chars = head.chars();
-    if matches!(head_chars.next(), Some('o' | 'O')) {
-        let rest = head_chars.as_str();
-        if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
-            return Some("o-series".to_owned());
-        }
-    }
-
-    None
-}
-
-fn title_case_word(word: &str) -> String {
-    let mut chars = word.chars();
-    match chars.next() {
-        Some(first) => format!(
-            "{}{}",
-            first.to_uppercase(),
-            chars.as_str().to_ascii_lowercase()
-        ),
-        None => String::new(),
-    }
-}
-
-/// One plan usage/rate-limit window returned by the Claude CLI's `get_usage` control request.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeUsageWindow {
-    /// Human-readable label (e.g. `"Current session (5h)"`, `"Weekly (all models)"`).
-    pub label: String,
-    /// Percentage of the quota window already consumed (`0..=100`).
-    pub used_percent: u8,
-    /// Percentage of the quota window remaining (`0..=100`).
-    pub remaining_percent: u8,
-    /// Optional ISO-8601 reset timestamp reported by the CLI.
-    pub resets_at: Option<String>,
-    /// Severity string reported by the CLI (`"normal"`, `"warning"`, `"critical"`).
-    pub severity: String,
-}
-
-/// One scheduled quota reset entry reported by the Claude CLI usage API.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeQuotaReset {
-    /// Window label (e.g. `"Current session (5h)"`, `"Weekly (all models)"`).
-    pub label: String,
-    /// Raw RFC-3339 reset timestamp from the CLI.
-    pub resets_at: String,
-}
-
-/// Plan usage and remaining rate-limit summary fetched from the Claude CLI.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClaudeUsageSummary {
-    /// Whether subscription rate-limit windows are available for this account.
-    pub rate_limits_available: bool,
-    /// Active quota windows (5-hour session, weekly all models, model-scoped weekly, etc.).
-    pub windows: Vec<ClaudeUsageWindow>,
-    /// Optional note describing extra usage credits or billing status.
-    pub extra_usage_note: Option<String>,
-}
-
-impl ClaudeUsageSummary {
-    /// Returns all available scheduled quota resets reported by the usage API, sorted soonest-first.
-    pub fn upcoming_resets(&self) -> Vec<ClaudeQuotaReset> {
-        let mut entries: Vec<(Option<i64>, usize, ClaudeQuotaReset)> = self
-            .windows
-            .iter()
-            .enumerate()
-            .filter_map(|(idx, window)| {
-                let raw = window.resets_at.as_deref()?.trim();
-                if raw.is_empty() {
-                    return None;
-                }
-                let sort_key = DateTime::parse_from_rfc3339(raw)
-                    .ok()
-                    .map(|dt| dt.timestamp());
-                Some((
-                    sort_key,
-                    idx,
-                    ClaudeQuotaReset {
-                        label: window.label.clone(),
-                        resets_at: raw.to_owned(),
-                    },
-                ))
-            })
-            .collect();
-
-        entries.sort_by_key(|(ts, idx, _)| (ts.unwrap_or(i64::MAX), *idx));
-        entries.into_iter().map(|(_, _, item)| item).collect()
-    }
-}
+pub use factory_types::{
+    ClaudeModelOption, ClaudeQuotaReset, ClaudeUsageSummary, ClaudeUsageWindow, clamp_percent,
+    default_severity_for_used, expand_tilde, is_executable_file, metadata_is_executable,
+    model_family_from_id,
+};
 
 /// Live model catalog and usage details queried from the Claude CLI over `stream-json`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -312,22 +115,6 @@ struct ClaudeAuthStatusJson {
     plan_tier: Option<String>,
     #[serde(default)]
     api_key_source: Option<String>,
-}
-
-/// Expands a leading `~` or `~/` using the current user's home directory.
-pub fn expand_tilde(raw: &str) -> PathBuf {
-    let trimmed = raw.trim();
-    if trimmed == "~"
-        && let Some(home) = dirs::home_dir()
-    {
-        return home;
-    }
-    if let Some(rest) = trimmed.strip_prefix("~/")
-        && let Some(home) = dirs::home_dir()
-    {
-        return home.join(rest);
-    }
-    PathBuf::from(trimmed)
 }
 
 /// Resolves the `claude` CLI binary using an optional custom path override or the given `PATH`.
@@ -850,13 +637,6 @@ fn normalize_model_options(raw_models: Vec<RawClaudeModel>) -> Vec<ClaudeModelOp
     out
 }
 
-pub(crate) fn clamp_percent(raw: f64) -> u8 {
-    if !raw.is_finite() {
-        return 0;
-    }
-    raw.round().clamp(0.0, 100.0) as u8
-}
-
 fn build_usage_summary(resp: UsageControlResponse) -> ClaudeUsageSummary {
     let Some(limits) = resp.rate_limits else {
         return ClaudeUsageSummary {
@@ -975,16 +755,6 @@ fn format_limit_entry_label(entry: &RawLimitEntry) -> String {
             _ if !other.is_empty() => humanize_plan_name(other),
             _ => "Usage limit".to_owned(),
         },
-    }
-}
-
-pub(crate) fn default_severity_for_used(used: u8) -> &'static str {
-    if used >= 90 {
-        "critical"
-    } else if used >= 75 {
-        "warning"
-    } else {
-        "normal"
     }
 }
 
@@ -1221,24 +991,6 @@ fn validate_executable_file(path: PathBuf) -> Result<PathBuf, ClaudeBinaryError>
         return Err(ClaudeBinaryError::NotExecutable(path));
     }
     Ok(path)
-}
-
-pub(crate) fn is_executable_file(path: &Path) -> bool {
-    let Ok(metadata) = fs::metadata(path) else {
-        return false;
-    };
-    metadata.is_file() && metadata_is_executable(&metadata)
-}
-
-#[cfg(unix)]
-pub(crate) fn metadata_is_executable(metadata: &fs::Metadata) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-pub(crate) fn metadata_is_executable(_metadata: &fs::Metadata) -> bool {
-    true
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/factory-types",
     "crates/factory-logging",
     "crates/factory-updater",
     "crates/factory-core",
@@ -18,6 +19,7 @@ publish = false
 factory-app = { path = "crates/factory-app" }
 factory-core = { path = "crates/factory-core" }
 factory-logging = { path = "crates/factory-logging" }
+factory-types = { path = "crates/factory-types" }
 factory-updater = { path = "crates/factory-updater" }
 aho-corasick = "1.1"
 base64 = "0.22"

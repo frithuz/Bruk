@@ -35,10 +35,10 @@ use crate::{
     secrets::{Exposure, ResolvedSecrets, SecretProblem, ValueOrigin},
 };
 
-/// The project's MCP file, relative to the repository root. Antigravity reads it on its own.
-pub const AGENTS_MCP_CONFIG_PATH: &str = ".agents/mcp_config.json";
-/// The fallback project MCP file, used when [`AGENTS_MCP_CONFIG_PATH`] doesn't exist.
-pub const ROOT_MCP_JSON_PATH: &str = ".mcp.json";
+pub use factory_types::{
+    AGENTS_MCP_CONFIG_PATH, McpFix, McpOrigin, McpProblem, ProjectMcpFile, ROOT_MCP_JSON_PATH,
+    env_references,
+};
 /// `RUST_LOG` that makes Codex report MCP servers that fail to start on stderr (its JSON event
 /// stream doesn't), while keeping the rest of its logging off.
 pub const CODEX_MCP_RUST_LOG: &str = "error,codex_mcp=warn";
@@ -50,28 +50,6 @@ pub const CLAUDE_MCP_CONFIG_FILE: &str = "step-mcp.json";
 /// File (inside a step's or chat's runtime directory) Antigravity writes its log to, which is
 /// where it reports MCP servers that fail to start.
 pub const ANTIGRAVITY_LOG_FILE: &str = "antigravity.log";
-
-/// Which tracked file a project's servers came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectMcpFile {
-    /// `.agents/mcp_config.json`
-    AgentsMcpConfig,
-    /// `.mcp.json`, used only when `.agents/mcp_config.json` doesn't exist.
-    RootMcpJson,
-}
-
-impl ProjectMcpFile {
-    /// Lookup order: the first file that exists is the project's.
-    pub const LOOKUP_ORDER: &'static [Self] = &[Self::AgentsMcpConfig, Self::RootMcpJson];
-
-    pub fn relative_path(self) -> &'static str {
-        match self {
-            Self::AgentsMcpConfig => AGENTS_MCP_CONFIG_PATH,
-            Self::RootMcpJson => ROOT_MCP_JSON_PATH,
-        }
-    }
-}
 
 /// How an MCP server is reached.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -234,23 +212,6 @@ pub fn validate_server_name(name: &str) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// The `${VAR}` (or `${VAR:-default}`) names referenced in `text`.
-pub fn env_references(text: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(start) = rest.find("${") {
-        let after = &rest[start + 2..];
-        let Some(end) = after.find('}') else { break };
-        let inner = &after[..end];
-        let name = inner.split(":-").next().unwrap_or("").trim();
-        if !name.is_empty() && !out.iter().any(|n| n == name) {
-            out.push(name.to_owned());
-        }
-        rest = &after[end + 1..];
-    }
-    out
 }
 
 /// Whether `${VAR}` in `text` has a `:-default`, so a missing variable isn't a problem.
@@ -535,29 +496,6 @@ impl McpSourcesPolicy {
     }
 }
 
-/// Where a resolved server came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(tag = "kind", content = "file", rename_all = "snake_case")]
-pub enum McpOrigin {
-    Project(ProjectMcpFile),
-    ProjectExtra,
-    UserExtra,
-}
-
-impl McpOrigin {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Project(file) => file.relative_path(),
-            Self::ProjectExtra => "your servers for this project",
-            Self::UserExtra => "your servers for all projects",
-        }
-    }
-
-    pub fn is_project(self) -> bool {
-        matches!(self, Self::Project(_))
-    }
-}
-
 /// Everything a run or chat turn has to choose servers from, gathered when it starts.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct McpSources {
@@ -607,81 +545,6 @@ impl McpSources {
                 .config()
                 .is_some_and(|c| c.servers.iter().any(|s| !s.disabled))
             && !self.project_trusted()
-    }
-}
-
-/// What the notification's button does to fix a problem.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(tag = "action", content = "target", rename_all = "snake_case")]
-pub enum McpFix {
-    /// Open Project Settings › Environment to add this variable.
-    SetEnvVar(String),
-    /// Open Project Settings › MCP Servers to review and approve the project file.
-    ApproveProjectServers,
-    /// Open Preferences › Extensions to turn project servers back on.
-    AllowProjectServers,
-    /// Open the editor for one of the user's own servers.
-    EditExtra {
-        origin: McpOrigin,
-        name: String,
-    },
-    /// The project file needs fixing (in the repository).
-    EditProjectFile(ProjectMcpFile),
-    /// Install the command or put it on the agents' `PATH` (Project Settings › Environment).
-    InstallCommand(String),
-    /// Use another provider for this step or chat.
-    ChangeProvider,
-    None,
-}
-
-impl McpFix {
-    pub fn button_label(&self) -> Option<&'static str> {
-        match self {
-            Self::SetEnvVar(_) => Some("Set Variable…"),
-            Self::ApproveProjectServers => Some("Review Servers…"),
-            Self::AllowProjectServers => Some("Open Extensions…"),
-            Self::EditExtra { .. } => Some("Edit Server…"),
-            Self::EditProjectFile(_) | Self::InstallCommand(_) => Some("Open MCP Servers…"),
-            Self::ChangeProvider | Self::None => None,
-        }
-    }
-}
-
-/// Something that keeps an MCP server from reaching the agent.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct McpProblem {
-    /// The server, when the problem is about one.
-    pub server: Option<String>,
-    pub origin: Option<McpOrigin>,
-    /// What went wrong, as a sentence fragment that reads after the server name
-    /// (`needs LINEAR_TOKEN, which isn't set`).
-    pub reason: String,
-    pub fix: McpFix,
-    /// Whether the step or chat turn can't run (or has to stop) because of it: a project
-    /// server in a project-only workflow, or a server an agent or step names.
-    pub blocking: bool,
-}
-
-impl McpProblem {
-    /// One line for notifications: `MCP server 'linear' (.agents/mcp_config.json) needs …`.
-    pub fn title(&self) -> String {
-        match (&self.server, self.origin) {
-            (Some(server), Some(origin)) => {
-                format!("MCP server '{server}' ({}) {}", origin.label(), self.reason)
-            }
-            (Some(server), None) => format!("MCP server '{server}' {}", self.reason),
-            (None, _) => self.reason.clone(),
-        }
-    }
-
-    /// Identifies repeats of the same problem so they collapse into one notification.
-    pub fn dedupe_key(&self) -> String {
-        format!(
-            "{}|{}|{}",
-            self.server.as_deref().unwrap_or("*"),
-            self.origin.map(|o| o.label()).unwrap_or("*"),
-            self.reason
-        )
     }
 }
 

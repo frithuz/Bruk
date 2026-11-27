@@ -53,50 +53,7 @@ impl ProjectSettingsTab {
     }
 }
 
-/// Issue source integration selectable for a project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IssueSourceKind {
-    #[default]
-    GitHubIssues,
-    ItsAPlan,
-    Extension,
-}
-
-impl IssueSourceKind {
-    pub fn badge(self) -> &'static str {
-        match self {
-            Self::GitHubIssues => "GH",
-            Self::ItsAPlan => "IP",
-            Self::Extension => "+",
-        }
-    }
-
-    pub fn title(self) -> &'static str {
-        match self {
-            Self::GitHubIssues => "GitHub Issues",
-            Self::ItsAPlan => "itsaplan",
-            Self::Extension => "From an extension",
-        }
-    }
-
-    pub fn description(self) -> &'static str {
-        match self {
-            Self::GitHubIssues => "Issues and labels from one repository",
-            Self::ItsAPlan => "Work items delegated to an agent member",
-            Self::Extension => "No issue source extensions installed",
-        }
-    }
-}
-
-/// Sign-in method used by the GitHub Issues source.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum IssueSourceAuthMode {
-    #[default]
-    GitHubCli,
-    PersonalToken,
-}
+pub use factory_types::{IssueSourceAuthMode, IssueSourceKind, ProjectSandboxMode};
 
 /// One ordered rule row in the Intake rules table.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,28 +131,6 @@ pub struct ProjectWorkflowSetting {
     pub trigger_label: String,
     pub summary: String,
     pub enabled: bool,
-}
-
-/// Sandbox policy applied to agent steps running inside the project.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProjectSandboxMode {
-    ReadOnly,
-    #[default]
-    WorkspaceWrite,
-    FullAccess,
-}
-
-impl ProjectSandboxMode {
-    pub const ALL: &'static [Self] = &[Self::ReadOnly, Self::WorkspaceWrite, Self::FullAccess];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ReadOnly => "Read-only",
-            Self::WorkspaceWrite => "Workspace write",
-            Self::FullAccess => "Full access",
-        }
-    }
 }
 
 /// Validation errors returned when editing Project Settings.

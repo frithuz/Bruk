@@ -138,24 +138,7 @@ impl ClaudeSettingCategory {
     }
 }
 
-/// How a CLI launch flag setting is serialized into `argv`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CliFlagEncoding {
-    /// Emits `flag` when `Bool(true)`; omitted when `Bool(false)` or unset.
-    BoolFlag(&'static str),
-    /// Emits `on` when `Bool(true)`, `off` when `Bool(false)`.
-    BoolTogglePair { on: &'static str, off: &'static str },
-    /// Emits `flag` followed by `"true"` or `"false"`.
-    BoolValueFlag(&'static str),
-    /// Emits `flag` followed by the scalar string/number value.
-    ValueFlag(&'static str),
-    /// Emits just `flag` when string is empty, or `flag <value>` when non-empty.
-    OptionalValueFlag(&'static str),
-    /// Emits `flag` followed by all list items as separate arguments.
-    MultiValueFlag(&'static str),
-    /// Emits `flag <item>` once per list item.
-    RepeatableFlag(&'static str),
-}
+pub use factory_types::CliFlagEncoding;
 
 /// Where a setting is applied when spawning Claude.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1147,80 +1130,7 @@ fn deep_merge_objects(
 
 /// Splits a shell-style argument string respecting single quotes, double quotes, and escapes.
 pub fn split_shell_words(input: &str) -> Result<Vec<String>, ClaudeSettingsError> {
-    let mut words = Vec::new();
-    let mut current = String::new();
-    let mut in_word = false;
-    let mut quote: Option<char> = None;
-    let mut chars = input.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        match quote {
-            Some('\'') => {
-                if ch == '\'' {
-                    quote = None;
-                } else {
-                    current.push(ch);
-                }
-            }
-            Some('"') => {
-                if ch == '"' {
-                    quote = None;
-                } else if ch == '\\' {
-                    if let Some(&next) = chars.peek() {
-                        if matches!(next, '"' | '\\' | '$' | '`') {
-                            current.push(chars.next().unwrap());
-                        } else {
-                            current.push('\\');
-                        }
-                    } else {
-                        return Err(ClaudeSettingsError::InvalidExtraCliArgs(
-                            "trailing backslash inside double quotes".to_owned(),
-                        ));
-                    }
-                } else {
-                    current.push(ch);
-                }
-            }
-            None => match ch {
-                c if c.is_whitespace() => {
-                    if in_word {
-                        words.push(std::mem::take(&mut current));
-                        in_word = false;
-                    }
-                }
-                '\'' | '"' => {
-                    quote = Some(ch);
-                    in_word = true;
-                }
-                '\\' => {
-                    if let Some(escaped) = chars.next() {
-                        current.push(escaped);
-                        in_word = true;
-                    } else {
-                        return Err(ClaudeSettingsError::InvalidExtraCliArgs(
-                            "trailing backslash at end of arguments".to_owned(),
-                        ));
-                    }
-                }
-                other => {
-                    current.push(other);
-                    in_word = true;
-                }
-            },
-            Some(_) => unreachable!(),
-        }
-    }
-
-    if let Some(open) = quote {
-        return Err(ClaudeSettingsError::InvalidExtraCliArgs(format!(
-            "unclosed quote ({open})"
-        )));
-    }
-    if in_word {
-        words.push(current);
-    }
-
-    Ok(words)
+    factory_types::split_shell_words_raw(input).map_err(ClaudeSettingsError::InvalidExtraCliArgs)
 }
 
 fn shell_quote(raw: &str) -> String {

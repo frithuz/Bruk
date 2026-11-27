@@ -1397,10 +1397,7 @@ fn usd_to_micros(usd: f64) -> u64 {
     (usd * 1_000_000.0).round().max(0.0) as u64
 }
 
-/// Millionths of a dollar to cents, rounded.
-pub fn micros_to_cents(micros: u64) -> u64 {
-    micros.saturating_add(5_000) / 10_000
-}
+pub use factory_types::micros_to_cents;
 
 /// Reads one line of `codex exec --json`.
 pub fn parse_codex_chat_line(line: &str) -> Vec<ChatStreamItem> {

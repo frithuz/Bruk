@@ -196,31 +196,7 @@ pub struct RunStepDetail {
     pub next_callout: Option<(String, String)>,
 }
 
-/// Line polarity inside a unified diff hunk.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiffLineKind {
-    Context,
-    Added,
-    Removed,
-}
-
-/// One line inside a file diff preview.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiffLine {
-    pub kind: DiffLineKind,
-    pub text: String,
-}
-
-/// One modified file shown in the run's Diff tab.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DiffFileChange {
-    pub path: String,
-    pub additions: usize,
-    pub deletions: usize,
-    pub hunk_header: String,
-    pub lines: Vec<DiffLine>,
-}
+pub use factory_types::{DiffFileChange, DiffLine, DiffLineKind};
 
 /// One file row shown in the Coverage extension tab.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

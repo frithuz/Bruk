@@ -3,11 +3,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-/// Current Bruk desktop application version displayed in the Machines header.
-pub const BRUK_APP_VERSION: &str = "0.9.0";
-
-/// Current Bruk data schema version compared against each remote core on connection.
-pub const BRUK_DATA_SCHEMA: u32 = 7;
+pub use factory_types::{BRUK_APP_VERSION, BRUK_DATA_SCHEMA};
 
 /// Operating system family badge rendered on each machine list card.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

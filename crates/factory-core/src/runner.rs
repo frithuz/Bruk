@@ -53,8 +53,8 @@ use crate::{
     },
     workflow_editor::{ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode},
     workflow_run::{
-        AttemptBanner, BudgetGuardState, DiffFileChange, DiffLine, DiffLineKind, RunExecutionState,
-        RunStepDetail, RunStepStatus, StepAgentInfo, StepGitInfo, StepOutputChip, StepProgressInfo,
+        AttemptBanner, BudgetGuardState, DiffFileChange, RunExecutionState, RunStepDetail,
+        RunStepStatus, StepAgentInfo, StepGitInfo, StepOutputChip, StepProgressInfo,
         StepTranscriptEntry, TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunViewData,
     },
 };
@@ -2256,79 +2256,7 @@ pub fn collect_git_diffs(working_dir: &Path) -> Vec<DiffFileChange> {
     parse_unified_diff(&raw)
 }
 
-/// Parses a unified git diff string into structured [`DiffFileChange`] entries.
-pub fn parse_unified_diff(raw: &str) -> Vec<DiffFileChange> {
-    let mut files = Vec::new();
-    let mut current: Option<DiffFileChange> = None;
-
-    for line in raw.lines() {
-        if let Some(rest) = line.strip_prefix("diff --git ") {
-            if let Some(prev) = current.take() {
-                files.push(prev);
-            }
-            let path = rest
-                .split_whitespace()
-                .nth(1)
-                .map(|p| p.strip_prefix("b/").unwrap_or(p))
-                .unwrap_or(rest)
-                .to_owned();
-            current = Some(DiffFileChange {
-                path,
-                additions: 0,
-                deletions: 0,
-                hunk_header: String::new(),
-                lines: Vec::new(),
-            });
-            continue;
-        }
-        let Some(file) = current.as_mut() else {
-            continue;
-        };
-        if line.starts_with("@@ ") {
-            if file.hunk_header.is_empty() {
-                file.hunk_header = line.to_owned();
-            }
-            continue;
-        }
-        if line.starts_with("+++ ")
-            || line.starts_with("--- ")
-            || line.starts_with("index ")
-            || line.starts_with("new file ")
-            || line.starts_with("deleted file ")
-        {
-            continue;
-        }
-        if let Some(added) = line.strip_prefix('+') {
-            file.additions += 1;
-            if file.lines.len() < 120 {
-                file.lines.push(DiffLine {
-                    kind: DiffLineKind::Added,
-                    text: added.to_owned(),
-                });
-            }
-        } else if let Some(removed) = line.strip_prefix('-') {
-            file.deletions += 1;
-            if file.lines.len() < 120 {
-                file.lines.push(DiffLine {
-                    kind: DiffLineKind::Removed,
-                    text: removed.to_owned(),
-                });
-            }
-        } else if let Some(ctx_line) = line.strip_prefix(' ')
-            && file.lines.len() < 120
-        {
-            file.lines.push(DiffLine {
-                kind: DiffLineKind::Context,
-                text: ctx_line.to_owned(),
-            });
-        }
-    }
-
-    if let Some(last) = current {
-        files.push(last);
-    }
-    files
-}
+pub use factory_types::parse_unified_diff;
 
 fn collect_planned_steps(
     nodes: &[WorkflowNodeDef],

@@ -12,7 +12,6 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use serde::{Deserialize, Serialize};
@@ -1315,12 +1314,7 @@ pub fn format_synced_relative(synced_at_unix: i64, now_unix: i64) -> String {
     }
 }
 
-pub fn current_unix_seconds() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+pub use factory_types::current_unix_seconds;
 
 #[cfg(test)]
 mod tests {

@@ -799,6 +799,7 @@ dependencies = [
  "core-foundation",
  "dbus-secret-service-keyring-store",
  "dirs",
+ "factory-types",
  "keyring-core",
  "log",
  "rusqlite",
@@ -832,6 +833,15 @@ dependencies = [
  "env_logger",
  "log",
  "nsh-core",
+]
+
+[[package]]
+name = "factory-types"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "dirs",
+ "serde",
 ]
 
 [[package]]
