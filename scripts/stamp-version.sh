@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ephemerally stamps a release version (from a git tag) into Cargo.toml,
-# nsh.json, and Cargo.lock for CI packaging. Intended for CI build runners
-# only; changes should never be committed back to main.
+# Ephemerally stamps a release version (from a git tag) into nsh.json,
+# crates/factory-desktop/Cargo.toml, and Cargo.lock for CI packaging.
+# Keeping [workspace.package].version fixed at 0.0.0 preserves sccache keys
+# for unchanged internal library crates across releases. Intended for CI build
+# runners only; changes should never be committed back to main.
 #
 # Usage:
 #   scripts/stamp-version.sh <version-or-v-tag>
@@ -20,10 +22,12 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+
   exit 1
 fi
 
-# 1. Stamp [workspace.package].version in Cargo.toml
+# 1. Stamp [package].version in crates/factory-desktop/Cargo.toml only (avoid
+# invalidating sccache for all 22 internal workspace library crates).
+desktop_manifest="crates/factory-desktop/Cargo.toml"
 awk -v ver="$version" '
   BEGIN { in_pkg = 0; replaced = 0 }
-  /^\[workspace\.package\][[:space:]]*$/ { in_pkg = 1; print; next }
+  /^\[package\][[:space:]]*$/ { in_pkg = 1; print; next }
   /^\[/ { in_pkg = 0; print; next }
   in_pkg && /^version = "/ && !replaced {
     print "version = \"" ver "\""
@@ -33,20 +37,20 @@ awk -v ver="$version" '
   { print }
   END {
     if (!replaced) {
-      print "error: failed to locate [workspace.package] version in Cargo.toml" > "/dev/stderr"
+      print "error: failed to locate [package] version in crates/factory-desktop/Cargo.toml" > "/dev/stderr"
       exit 1
     }
   }
-' Cargo.toml > Cargo.toml.tmp
-mv Cargo.toml.tmp Cargo.toml
+' "$desktop_manifest" > "${desktop_manifest}.tmp"
+mv "${desktop_manifest}.tmp" "$desktop_manifest"
 
-# 2. Stamp .version in nsh.json
+# 2. Stamp .version in nsh.json (used by `nsh package` for Info.plist and nsh-updater.json)
 jq --arg v "$version" '.version = $v' nsh.json > nsh.json.tmp
 mv nsh.json.tmp nsh.json
 
-# 3. Refresh workspace member versions in Cargo.lock without touching external deps
+# 3. Refresh factory-desktop's version in Cargo.lock without touching external deps
 if [ -f Cargo.lock ] && command -v cargo >/dev/null 2>&1; then
   cargo metadata --format-version 1 >/dev/null
 fi
 
-echo "Stamped release version ${version} into Cargo.toml, nsh.json, and Cargo.lock"
+echo "Stamped release version ${version} into ${desktop_manifest}, nsh.json, and Cargo.lock"

@@ -76,7 +76,7 @@ security-framework = "3"
 security-framework-sys = "2"
 core-foundation = "0.10"
 keyring-core = "1.1"
-dbus-secret-service-keyring-store = "1.0"
+dbus-secret-service-keyring-store = { version = "1.0", features = ["crypto-rust"] }
 windows-native-keyring-store = "1.1"
 nsh-core = "0.6.1"
 nsh-base = "0.6.1"
@@ -109,3 +109,8 @@ nsh-platform-macos = { version = "0.6.1", default-features = false, features = [
     "updater",
     "svg",
 ] }
+
+# Omit DWARF debuginfo for third-party dependencies in dev/test builds to shrink
+# sccache WebDAV payloads and speed up linking across workspace test binaries.
+[profile.dev.package."*"]
+debug = 0

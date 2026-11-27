@@ -99,26 +99,28 @@ pub fn finish_sync_boot(detail: &str) {
     );
 }
 
-/// Schedules a one-shot callback on the main AppKit thread to record when the main run loop
-/// becomes responsive after initial mount.
-pub fn schedule_main_thread_ready() {
+/// Schedules a one-shot callback via `schedule` (typically the UI framework's main-thread
+/// dispatcher) to record when the main run loop becomes responsive after initial mount.
+pub fn schedule_main_thread_ready(schedule: impl FnOnce(fn())) {
     if !is_initialized() || MAIN_THREAD_READY_SCHEDULED.swap(true, Ordering::AcqRel) {
         return;
     }
-    drop(nsh_core::prelude::run_on_main_thread(|| {
-        if let Some(session) = SESSION.get() {
-            let detail = match process_age_ms() {
-                Some(age_ms) => format!("proc_age_ms={age_ms:.1}"),
-                None => String::new(),
-            };
-            emit_event(
-                session,
-                OsLogLevel::Default,
-                "boot.main_thread_ready",
-                &detail,
-            );
-        }
-    }));
+    schedule(record_main_thread_ready);
+}
+
+fn record_main_thread_ready() {
+    if let Some(session) = SESSION.get() {
+        let detail = match process_age_ms() {
+            Some(age_ms) => format!("proc_age_ms={age_ms:.1}"),
+            None => String::new(),
+        };
+        emit_event(
+            session,
+            OsLogLevel::Default,
+            "boot.main_thread_ready",
+            &detail,
+        );
+    }
 }
 
 /// Starts a timed boot span if the synchronous boot phase is active.
