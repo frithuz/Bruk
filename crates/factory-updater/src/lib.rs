@@ -536,7 +536,7 @@ fn check_allowed_url(url: &str) -> Result<(), String> {
 
 fn http_get_response(url: &str) -> Result<ureq::http::Response<ureq::Body>, String> {
     let agent = http_agent();
-    let user_agent = format!("Bruk/{}", env!("CARGO_PKG_VERSION"));
+    let user_agent = format!("Bruk/{}", current_version());
     let mut current = url.to_owned();
 
     for _ in 0..=MAX_REDIRECTS {
