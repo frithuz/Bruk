@@ -103,7 +103,6 @@ runs:
         {
           echo "RUSTC_WRAPPER=sccache"
           echo "CARGO_INCREMENTAL=0"
-          echo "SCCACHE_MULTILEVEL_CHAIN=disk,webdav"
           echo "SCCACHE_WEBDAV_ENDPOINT=${COMPILER_CACHE_URL}"
           echo "SCCACHE_WEBDAV_TOKEN=${token}"
           echo "SCCACHE_WEBDAV_RW_MODE=${SCCACHE_RW_MODE}"
