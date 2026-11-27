@@ -103,7 +103,7 @@ tasks:
   test:ui:
     desc: Run factory-app headless Native Shell UI flow tests
     cmds:
-      - cargo test -p factory-app --test app_flows {{.CLI_ARGS}}
+      - cargo test -p factory-app --tests {{.CLI_ARGS}}
 
   check:
     desc: Type-check all workspace targets without linking
