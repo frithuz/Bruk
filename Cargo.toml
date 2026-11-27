@@ -4,6 +4,8 @@ members = [
     "crates/factory-types",
     "crates/factory-logging",
     "crates/factory-updater",
+    "crates/factory-fonts",
+    "crates/factory-ui-kit",
     "crates/factory-core",
     "crates/factory-app",
     "crates/factory-desktop",
@@ -18,8 +20,10 @@ publish = false
 [workspace.dependencies]
 factory-app = { path = "crates/factory-app" }
 factory-core = { path = "crates/factory-core" }
+factory-fonts = { path = "crates/factory-fonts" }
 factory-logging = { path = "crates/factory-logging" }
 factory-types = { path = "crates/factory-types" }
+factory-ui-kit = { path = "crates/factory-ui-kit" }
 factory-updater = { path = "crates/factory-updater" }
 aho-corasick = "1.1"
 base64 = "0.22"

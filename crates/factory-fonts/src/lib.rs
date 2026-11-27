@@ -9,7 +9,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use factory_core::{
+use factory_types::{
     AppearanceSettings, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FontPreference,
 };
 use nsh_core::{
@@ -19,7 +19,7 @@ use nsh_core::{
 
 /// Which font role the native macOS Fonts panel is currently picking for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FontPickerTarget {
+pub enum FontPickerTarget {
     Ui,
     Mono,
 }
@@ -137,7 +137,7 @@ pub fn default_tokens() -> Tokens {
 /// Attaches all embedded Atkinson Hyperlegible font files and default font tokens to `root`
 /// so they are registered synchronously before the first frame renders.
 pub fn with_embedded_fonts(mut root: Root) -> Root {
-    let span = crate::boot_log::span("boot.embed_fonts");
+    let span = factory_logging::boot_log::span("boot.embed_fonts");
     let mut total_bytes = 0usize;
     for font in EMBEDDED_FONTS {
         total_bytes += font.len();
@@ -152,12 +152,12 @@ pub fn with_embedded_fonts(mut root: Root) -> Root {
 }
 
 /// Applies the active font tokens for `appearance` to the running Native Shell surface.
-pub(crate) fn apply_font_tokens(appearance: &AppearanceSettings) {
+pub fn apply_font_tokens(appearance: &AppearanceSettings) {
     set_tokens(tokens_for_appearance(appearance));
 }
 
 /// Normalizes a family name picked in the macOS Fonts panel into a [`FontPreference`].
-pub(crate) fn normalize_picked_font(target: FontPickerTarget, family: &str) -> FontPreference {
+pub fn normalize_picked_font(target: FontPickerTarget, family: &str) -> FontPreference {
     let trimmed = family.trim();
     if trimmed.is_empty() {
         return FontPreference::Default;
@@ -185,7 +185,7 @@ struct FontPickQueueState {
 
 /// Async queue delivering live font family picks from AppKit's main thread back to the `nsh` engine.
 #[derive(Clone, Default)]
-pub(crate) struct FontPickChannel {
+pub struct FontPickChannel {
     inner: Arc<Mutex<FontPickQueueState>>,
 }
 
@@ -202,14 +202,14 @@ impl FontPickChannel {
         }
     }
 
-    pub(crate) fn next(&self) -> NextFontPick {
+    pub fn next(&self) -> NextFontPick {
         NextFontPick {
             inner: self.inner.clone(),
         }
     }
 }
 
-pub(crate) struct NextFontPick {
+pub struct NextFontPick {
     inner: Arc<Mutex<FontPickQueueState>>,
 }
 
@@ -232,7 +232,7 @@ impl Future for NextFontPick {
 ///
 /// Live font picks are delivered to `channel`. Safely no-ops in headless tests where AppKit is
 /// not running on the main thread.
-pub(crate) fn open_font_panel(
+pub fn open_font_panel(
     target: FontPickerTarget,
     current_family: Option<String>,
     channel: FontPickChannel,
@@ -250,7 +250,7 @@ pub(crate) fn open_font_panel(
 }
 
 /// Closes macOS's shared Fonts panel if it is currently open.
-pub(crate) fn close_font_panel() {
+pub fn close_font_panel() {
     #[cfg(target_os = "macos")]
     {
         drop(run_on_main_thread(macos_panel::close_if_open));
@@ -430,7 +430,7 @@ mod macos_panel {
 
 #[cfg(test)]
 mod tests {
-    use factory_core::{DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FontPreference};
+    use factory_types::{DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FontPreference};
 
     use super::*;
 

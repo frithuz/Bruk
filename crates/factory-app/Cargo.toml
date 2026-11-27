@@ -7,18 +7,15 @@ publish.workspace = true
 [dependencies]
 dirs.workspace = true
 factory-core.workspace = true
+factory-fonts.workspace = true
 factory-logging.workspace = true
+factory-ui-kit.workspace = true
 factory-updater.workspace = true
 log.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
 secrecy.workspace = true
 zeroize.workspace = true
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2.workspace = true
-objc2-app-kit.workspace = true
-objc2-foundation.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

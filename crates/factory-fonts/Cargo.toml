@@ -1,0 +1,16 @@
+[package]
+name = "factory-fonts"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+factory-logging.workspace = true
+factory-types.workspace = true
+nsh-base.workspace = true
+nsh-core.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-app-kit.workspace = true
+objc2-foundation.workspace = true

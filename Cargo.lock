@@ -773,16 +773,15 @@ version = "0.0.0"
 dependencies = [
  "dirs",
  "factory-core",
+ "factory-fonts",
  "factory-logging",
+ "factory-ui-kit",
  "factory-updater",
  "log",
  "nsh-base",
  "nsh-core",
  "nsh-engine",
  "nsh-testing",
- "objc2",
- "objc2-app-kit",
- "objc2-foundation",
  "secrecy",
  "serde_json",
  "tempfile",
@@ -826,6 +825,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "factory-fonts"
+version = "0.0.0"
+dependencies = [
+ "factory-logging",
+ "factory-types",
+ "nsh-base",
+ "nsh-core",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "factory-logging"
 version = "0.0.0"
 dependencies = [
@@ -842,6 +854,14 @@ dependencies = [
  "chrono",
  "dirs",
  "serde",
+]
+
+[[package]]
+name = "factory-ui-kit"
+version = "0.0.0"
+dependencies = [
+ "factory-types",
+ "nsh-core",
 ]
 
 [[package]]

@@ -1,9 +1,9 @@
 //! Software Factory macOS desktop UI built with Native Shell (`nsh`).
 
+pub use factory_fonts as fonts;
 pub use factory_logging::{boot_log, system_log};
 pub(crate) use factory_updater as updater;
 
-mod fonts;
 mod menu;
 mod store;
 mod ui;
