@@ -113,11 +113,35 @@ tasks:
     cmds:
       - cargo clippy --workspace --all-targets -- -D warnings
 
+  lint:commits:
+    desc: Validate Version-Bump and Changelog trailers on commits (default HEAD; pass a rev-range via `--`)
+    cmds:
+      - bash scripts/lint-commit-trailers.sh {{.CLI_ARGS}}
+
+  release:preview:
+    desc: Preview the next release version and git-cliff changelog from unreleased Version-Bump trailers
+    preconditions:
+      - sh: command -v git-cliff >/dev/null 2>&1
+        msg: "git-cliff not found. Install it with `brew install git-cliff` or `cargo install git-cliff`."
+    cmds:
+      - |
+        bump="$(bash scripts/compute-release-bump.sh HEAD)"
+        echo "Next bump: ${bump}"
+        if [ "$bump" = "none" ]; then
+          echo "No commits with Version-Bump trailers since the last tag."
+          exit 0
+        fi
+        next_tag="$(git-cliff --bump "$bump" --bumped-version)"
+        echo "Next tag:  ${next_tag}"
+        echo ""
+        git-cliff --unreleased --tag "$next_tag"
+
   ci:
     desc: Run full verification pipeline (fmt:check, lint, test, build)
     cmds:
       - task: fmt:check
       - task: lint
+      - task: lint:commits
       - task: test
       - task: build
 

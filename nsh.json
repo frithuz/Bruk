@@ -1,7 +1,7 @@
 {
   "name": "Bruk",
   "id": "dev.frithuz.bruk",
-  "version": "0.1.0",
+  "version": "0.0.0",
   "build": 1,
   "icon": "assets/icon.png",
   "appearance": "system",

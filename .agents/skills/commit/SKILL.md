@@ -44,8 +44,11 @@ them with a Go-style commit message.
      - Write complete sentences explaining **why** the change is made and any
        important design decisions or caveats.
      - Wrap prose around 72 characters.
-     - Place issue trailers at the end when applicable (e.g., `Fixes #123`,
-       `Updates #123`).
+   - **Trailers** *(placed as the final paragraph at the end of the commit message)*:
+     - **Release trailers** *(optional; include only for user-facing changes that should bump the release version and appear in GitHub Release notes)*:
+       - `Version-Bump: Major|Minor|Patch` — at most one per commit; exact casing and one of `Major`, `Minor`, or `Patch`.
+       - `Changelog: <sentence>` — **required** whenever `Version-Bump` is provided (and forbidden without `Version-Bump`). Write a concise, user-facing sentence. May be repeated if one commit covers multiple user-facing changes.
+     - **Issue trailers** *(when applicable)*: use `Fixes: #123` / `Updates: #123` (with a colon so git's trailer block stays valid alongside `Version-Bump` and `Changelog`).
 
    **Examples:**
 
@@ -55,10 +58,16 @@ them with a Go-style commit message.
    Cancelling an active run previously left unstarted steps in the pending
    state, making run summaries ambiguous. Mark both running and pending
    steps as skipped so terminal runs have no lingering active steps.
+
+   Version-Bump: Patch
+   Changelog: Fixed cancelled workflow runs leaving unstarted steps stuck in pending state.
    ```
 
    ```text
    factory-app/ui: add inline project registration form
+
+   Version-Bump: Minor
+   Changelog: Added an inline form for registering projects directly from the sidebar.
    ```
 
    ```text

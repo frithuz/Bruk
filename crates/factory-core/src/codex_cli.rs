@@ -341,7 +341,8 @@ fn run_app_server_session(
     });
 
     let init_req = format!(
-        "{{\"jsonrpc\":\"2.0\",\"id\":{RPC_INIT_ID},\"method\":\"initialize\",\"params\":{{\"clientInfo\":{{\"name\":\"bruk\",\"version\":\"0.1.0\"}}}}}}\n"
+        "{{\"jsonrpc\":\"2.0\",\"id\":{RPC_INIT_ID},\"method\":\"initialize\",\"params\":{{\"clientInfo\":{{\"name\":\"bruk\",\"version\":\"{}\"}}}}}}\n",
+        env!("CARGO_PKG_VERSION")
     );
     let _ = stdin.write_all(init_req.as_bytes());
     let _ = stdin.flush();

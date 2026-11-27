@@ -1,0 +1,43 @@
+# git-cliff configuration for Bruk release notes.
+#
+# Release notes are assembled exclusively from human-curated commit trailers:
+#   Version-Bump: Major | Minor | Patch
+#   Changelog: <user-facing sentence>
+#
+# Version bump level is computed by `scripts/compute-release-bump.sh` from the
+# `Version-Bump` trailers since the previous `v*` tag and passed to git-cliff
+# via `--bump <major|minor|patch>`.
+
+[changelog]
+body = """
+{%- for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits -%}
+{% for line in commit.raw_message | split(pat="\n") -%}
+{% if line is starting_with("Changelog:") -%}
+- {{ line | trim_start_matches(pat="Changelog:") | trim }} ([{{ commit.id | truncate(length=7, end="") }}](https://github.com/frithuz/Bruk/commit/{{ commit.id }}))
+{% endif -%}
+{% endfor -%}
+{% endfor %}
+{% endfor -%}
+"""
+trim = true
+
+[git]
+# Repository uses Go-style commit subjects (`<scope>: <lowercase summary>`).
+conventional_commits = false
+filter_unconventional = false
+commit_parsers = [
+  { message = "(?m)^Version-Bump:[ \t]*Major[ \t]*$", group = "<!-- 0 -->Breaking Changes" },
+  { message = "(?m)^Version-Bump:[ \t]*Minor[ \t]*$", group = "<!-- 1 -->Features" },
+  { message = "(?m)^Version-Bump:[ \t]*Patch[ \t]*$", group = "<!-- 2 -->Fixes & Improvements" },
+  { message = ".*", skip = true },
+]
+filter_commits = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+
+[bump]
+initial_tag = "v0.1.0"
+features_always_bump_minor = true
+breaking_always_bump_major = true

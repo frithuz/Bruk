@@ -27,6 +27,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Rust toolchain
@@ -46,6 +47,25 @@ jobs:
         id: clippy
         background: true
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Lint commit trailers
+        id: commit-trailers
+        background: true
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            rev_range="${PR_BASE_SHA}..${PR_HEAD_SHA}"
+          elif [ -n "$PUSH_BEFORE" ] && [ "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${PUSH_BEFORE}^{commit}" 2>/dev/null; then
+            rev_range="${PUSH_BEFORE}..${PUSH_SHA}"
+          else
+            rev_range="${PUSH_SHA}"
+          fi
+          bash scripts/lint-commit-trailers.sh "$rev_range"
 
       - name: Audit workflows with zizmor
         id: zizmor
