@@ -469,7 +469,7 @@ mod keyring_store {
         #[cfg(target_os = "linux")]
         pub fn new_linux() -> Self {
             let store = dbus_secret_service_keyring_store::Store::new()
-                .map(|s| Arc::new(s) as Arc<dyn CredentialStoreApi + Send + Sync>)
+                .map(|s| s as Arc<dyn CredentialStoreApi + Send + Sync>)
                 .map_err(|e| e.to_string());
             Self { store }
         }
@@ -477,7 +477,7 @@ mod keyring_store {
         #[cfg(target_os = "windows")]
         pub fn new_windows() -> Self {
             let store = windows_native_keyring_store::Store::new()
-                .map(|s| Arc::new(s) as Arc<dyn CredentialStoreApi + Send + Sync>)
+                .map(|s| s as Arc<dyn CredentialStoreApi + Send + Sync>)
                 .map_err(|e| e.to_string());
             Self { store }
         }
