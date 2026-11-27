@@ -6819,7 +6819,10 @@ pub fn install_and_restart_update() {
     Owner::detached().run(|| {
         spawn(async move {
             let result = spawn_blocking_task(move || {
-                factory_updater::install_downloaded_update(&archive_path)
+                factory_updater::install_downloaded_update(
+                    &archive_path,
+                    nsh_core::restart::remember_program,
+                )
             })
             .await;
             match result {
