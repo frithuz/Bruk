@@ -2851,17 +2851,145 @@ fn general_tab() -> impl IntoElement {
                                 "Prompt before terminating in-progress agent steps.",
                                 prefs.confirm_before_cancel,
                                 || store::toggle_general_flag(GeneralFlag::ConfirmBeforeCancel),
-                            ))
-                            .child(card_divider())
-                            .child(toggle_row(
-                                "Automatically check for updates",
-                                "Periodically check for new Bruk releases.",
-                                prefs.auto_check_updates,
-                                || store::toggle_general_flag(GeneralFlag::AutoCheckUpdates),
                             )),
                     )
+                    .child(software_updates_card(prefs.auto_check_updates))
             })),
     )
+}
+
+fn software_updates_card(auto_check_updates: bool) -> impl IntoElement {
+    use crate::updater::{UpdaterState, format_bytes};
+
+    let current_version = store::current_app_version();
+    let update_state = store::updater_state();
+
+    let subtitle = match &update_state {
+        UpdaterState::Idle => "Check GitHub Releases for newer versions of Bruk.".to_owned(),
+        UpdaterState::Checking => "Checking GitHub Releases for updates…".to_owned(),
+        UpdaterState::UpToDate { current_version } => {
+            format!("Bruk v{current_version} is the latest version.")
+        }
+        UpdaterState::Available(update) => match &update.install_blocked_reason {
+            Some(reason) => format!("Bruk v{} is available. {reason}", update.version),
+            None => format!("Bruk v{} is available.", update.version),
+        },
+        UpdaterState::Downloading {
+            update,
+            received,
+            total,
+        } => match (total, update_state.download_percent()) {
+            (Some(total), Some(pct)) => format!(
+                "Downloading v{} — {} / {} ({pct}%)",
+                update.version,
+                format_bytes(*received),
+                format_bytes(*total)
+            ),
+            _ => format!(
+                "Downloading v{} — {}",
+                update.version,
+                format_bytes(*received)
+            ),
+        },
+        UpdaterState::ReadyToRestart { version, .. } => {
+            format!("Bruk v{version} is downloaded and ready to install.")
+        }
+        UpdaterState::Installing { version } => format!("Installing Bruk v{version}…"),
+        UpdaterState::StagedOnQuit { version } => {
+            format!("Bruk v{version} will be installed automatically when you quit.")
+        }
+        UpdaterState::Unavailable(reason) => reason.clone(),
+        UpdaterState::Error(err) => err.clone(),
+    };
+
+    let notes_preview = match &update_state {
+        UpdaterState::Available(update) => update.notes.clone(),
+        UpdaterState::ReadyToRestart { notes, .. } => notes.clone(),
+        _ => None,
+    };
+
+    let controls: AnyElement = match &update_state {
+        UpdaterState::Checking
+        | UpdaterState::Downloading { .. }
+        | UpdaterState::Installing { .. } => secondary_button("Working…", || {})
+            .disabled(true)
+            .into_element(),
+        UpdaterState::Available(update) if update.can_install => view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(primary_button(
+                "Download Update",
+                store::download_available_update,
+            ))
+            .into_element(),
+        UpdaterState::Available(_) => view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(primary_button(
+                "Download Manually",
+                store::open_update_download_url,
+            ))
+            .into_element(),
+        UpdaterState::ReadyToRestart { .. } => view()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .child(secondary_button(
+                "Install on Quit",
+                store::stage_update_for_quit,
+            ))
+            .child(primary_button(
+                "Restart to Update",
+                store::install_and_restart_update,
+            ))
+            .into_element(),
+        UpdaterState::StagedOnQuit { .. } => {
+            secondary_button("Restart Now", store::restart_for_staged_update).into_element()
+        }
+        UpdaterState::Idle
+        | UpdaterState::UpToDate { .. }
+        | UpdaterState::Unavailable(_)
+        | UpdaterState::Error(_) => secondary_button("Check for Updates", store::check_for_updates)
+            .test_id("prefs-check-for-updates")
+            .into_element(),
+    };
+
+    let mut card = grouped_card("Updates")
+        .child(card_divider())
+        .child(setting_row(
+            format!("Bruk v{current_version}"),
+            subtitle,
+            controls,
+        ));
+
+    if let Some(notes) = notes_preview.filter(|n| !n.trim().is_empty()) {
+        card = card.child(card_divider()).child(
+            view()
+                .px(px(14.0))
+                .py(px(10.0))
+                .gap(px(4.0))
+                .child(
+                    text("Release Notes")
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_secondary()),
+                )
+                .child(
+                    text(notes.trim().to_owned())
+                        .text_size(px(12.0))
+                        .text_color(palette::text_muted()),
+                ),
+        );
+    }
+
+    card.child(card_divider()).child(toggle_row(
+        "Automatically check for updates",
+        "Periodically check GitHub Releases for new Bruk versions.",
+        auto_check_updates,
+        || store::toggle_general_flag(GeneralFlag::AutoCheckUpdates),
+    ))
 }
 
 // --- Appearance Tab ---------------------------------------------------------------------

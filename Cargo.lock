@@ -772,6 +772,7 @@ name = "factory-app"
 version = "0.1.0"
 dependencies = [
  "cc",
+ "dirs",
  "env_logger",
  "factory-core",
  "log",
@@ -780,12 +781,14 @@ dependencies = [
  "nsh-engine",
  "nsh-platform-macos",
  "nsh-testing",
+ "nsh-updater",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "secrecy",
  "serde_json",
  "tempfile",
+ "ureq",
  "zeroize",
 ]
 

@@ -43,6 +43,7 @@ struct MenuSnapshot {
     can_stop_run: bool,
     can_approve_step: bool,
     has_projects: bool,
+    updater_state: crate::updater::UpdaterState,
 }
 
 fn current_menu_snapshot() -> MenuSnapshot {
@@ -108,6 +109,7 @@ fn current_menu_snapshot() -> MenuSnapshot {
         can_stop_run,
         can_approve_step,
         has_projects,
+        updater_state: store::updater_state(),
     }
 }
 
@@ -141,7 +143,7 @@ fn app_menu(snapshot: &MenuSnapshot) -> MenuItem {
         "Bruk",
         [
             MenuItem::role(MenuRole::About),
-            MenuItem::new("Check for Updates…").disabled(true),
+            update_menu_item(&snapshot.updater_state),
             MenuItem::separator(),
             MenuItem::new("Settings…")
                 .shortcut("mod+,")
@@ -462,6 +464,45 @@ fn from_extensions_header() -> MenuItem {
         .disabled(true)
 }
 
+fn update_menu_item(state: &crate::updater::UpdaterState) -> MenuItem {
+    use crate::updater::UpdaterState;
+    match state {
+        UpdaterState::Checking => MenuItem::new("Checking for Updates…").disabled(true),
+        UpdaterState::Downloading { .. } => {
+            let label = match state.download_percent() {
+                Some(pct) => format!("Downloading Update ({pct}%)…"),
+                None => "Downloading Update…".to_owned(),
+            };
+            MenuItem::new(label).disabled(true)
+        }
+        UpdaterState::Installing { .. } => MenuItem::new("Installing Update…").disabled(true),
+        UpdaterState::ReadyToRestart { version, .. } => {
+            MenuItem::new(format!("Restart to Update (v{version})…"))
+                .on_select(store::install_and_restart_update)
+        }
+        UpdaterState::Available(update) if update.can_install => {
+            MenuItem::new(format!("Download Update (v{})…", update.version)).on_select(|| {
+                store::download_available_update();
+                main_window().focus();
+            })
+        }
+        UpdaterState::Available(update) => {
+            MenuItem::new(format!("Download Update (v{})…", update.version))
+                .on_select(store::open_update_download_url)
+        }
+        UpdaterState::StagedOnQuit { version } => {
+            MenuItem::new(format!("Update Ready on Quit (v{version})")).disabled(true)
+        }
+        UpdaterState::Idle
+        | UpdaterState::UpToDate { .. }
+        | UpdaterState::Unavailable(_)
+        | UpdaterState::Error(_) => MenuItem::new("Check for Updates…").on_select(|| {
+            store::open_preferences_tab(PreferencesTab::General);
+            store::check_for_updates();
+        }),
+    }
+}
+
 // --- Menu Action Handlers ---------------------------------------------------------------
 
 fn open_new_project() {
@@ -630,6 +671,7 @@ mod tests {
             can_stop_run: false,
             can_approve_step: false,
             has_projects: true,
+            updater_state: crate::updater::UpdaterState::Idle,
         }
     }
 
@@ -697,5 +739,29 @@ mod tests {
         assert!(file.contains("Open Recent"));
         assert!(file.contains("api-gateway"));
         assert!(file.contains("mobile-app"));
+    }
+
+    #[test]
+    fn app_menu_update_item_reflects_updater_state() {
+        let mut snap = sample_snapshot();
+        assert!(format!("{:?}", app_menu(&snap)).contains("Check for Updates…"));
+
+        snap.updater_state = crate::updater::UpdaterState::Available(crate::updater::AvailableUpdate {
+            version: "0.2.0".to_owned(),
+            notes: None,
+            url: "https://github.com/frithuz/Bruk/releases/latest/download/Bruk-0.2.0-macos-aarch64.tar.gz".to_owned(),
+            sha256: Some("a".repeat(64)),
+            size: Some(1024),
+            can_install: true,
+            install_blocked_reason: None,
+        });
+        assert!(format!("{:?}", app_menu(&snap)).contains("Download Update (v0.2.0)…"));
+
+        snap.updater_state = crate::updater::UpdaterState::ReadyToRestart {
+            version: "0.2.0".to_owned(),
+            notes: None,
+            archive_path: std::path::PathBuf::from("/tmp/Bruk-0.2.0.tar.gz"),
+        };
+        assert!(format!("{:?}", app_menu(&snap)).contains("Restart to Update (v0.2.0)…"));
     }
 }

@@ -312,6 +312,8 @@ struct AppState {
     sidebar_visible: bool,
     status_message: Option<String>,
     registration_error: Option<String>,
+    updater_state: crate::updater::UpdaterState,
+    updater_banner_dismissed: bool,
 }
 
 impl Default for AppState {
@@ -1129,6 +1131,8 @@ impl AppState {
             sidebar_visible: true,
             status_message,
             registration_error,
+            updater_state: crate::updater::UpdaterState::Idle,
+            updater_banner_dismissed: false,
         };
         for (project_name, problem) in startup_secret_problems {
             let _ = app.file_secret_problem(
@@ -1670,6 +1674,7 @@ pub(crate) fn init_default() {
     }
     sweep_secret_tombstones_async();
     probe_providers_async();
+    maybe_check_for_updates_on_launch();
     init_span.finish("");
 }
 
@@ -6506,6 +6511,382 @@ pub(crate) fn set_status_message(message: impl Into<String>) {
     state().update(|s| {
         s.status_message = Some(message);
     });
+}
+
+// --- Application Auto-Updater -----------------------------------------------------------
+
+struct ThreadChannelState<T> {
+    items: std::collections::VecDeque<T>,
+    closed: bool,
+    waker: Option<Waker>,
+}
+
+struct ThreadChannelTx<T>(Arc<Mutex<ThreadChannelState<T>>>);
+
+impl<T> Clone for ThreadChannelTx<T> {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl<T> ThreadChannelTx<T> {
+    fn send(&self, item: T) {
+        let waker = {
+            let mut guard = self.0.lock().expect("channel lock poisoned");
+            if guard.closed {
+                return;
+            }
+            guard.items.push_back(item);
+            guard.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+
+    fn close(&self) {
+        let waker = {
+            let mut guard = self.0.lock().expect("channel lock poisoned");
+            guard.closed = true;
+            guard.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
+}
+
+struct ThreadChannelRx<T>(Arc<Mutex<ThreadChannelState<T>>>);
+
+impl<T> ThreadChannelRx<T> {
+    fn next(&self) -> ThreadChannelNext<'_, T> {
+        ThreadChannelNext(self)
+    }
+}
+
+struct ThreadChannelNext<'a, T>(&'a ThreadChannelRx<T>);
+
+impl<T> Future for ThreadChannelNext<'_, T> {
+    type Output = Option<T>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut guard = self.0.0.lock().expect("channel lock poisoned");
+        if let Some(item) = guard.items.pop_front() {
+            Poll::Ready(Some(item))
+        } else if guard.closed {
+            Poll::Ready(None)
+        } else {
+            guard.waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+fn thread_channel<T>() -> (ThreadChannelTx<T>, ThreadChannelRx<T>) {
+    let shared = Arc::new(Mutex::new(ThreadChannelState {
+        items: std::collections::VecDeque::new(),
+        closed: false,
+        waker: None,
+    }));
+    (ThreadChannelTx(shared.clone()), ThreadChannelRx(shared))
+}
+
+pub(crate) fn current_app_version() -> String {
+    crate::updater::current_version()
+}
+
+pub(crate) fn updater_state() -> crate::updater::UpdaterState {
+    state().with(|s| s.updater_state.clone())
+}
+
+pub(crate) fn updater_banner_visible() -> bool {
+    state().with(|s| {
+        !s.updater_banner_dismissed
+            && matches!(
+                s.updater_state,
+                crate::updater::UpdaterState::Available(_)
+                    | crate::updater::UpdaterState::Downloading { .. }
+                    | crate::updater::UpdaterState::ReadyToRestart { .. }
+                    | crate::updater::UpdaterState::Installing { .. }
+                    | crate::updater::UpdaterState::StagedOnQuit { .. }
+            )
+    })
+}
+
+pub(crate) fn dismiss_updater_banner() {
+    state().update(|s| {
+        s.updater_banner_dismissed = true;
+    });
+}
+
+/// Checks GitHub Releases in the background on startup when auto-checks are enabled and Bruk
+/// is running from a packaged `.app` bundle. Never runs in dev builds, Demo Mode, or tests.
+fn maybe_check_for_updates_on_launch() {
+    let should_check = state().with_untracked(|s| {
+        !s.demo_mode && s.preferences.general.auto_check_updates && !s.updater_state.is_busy()
+    });
+    if !should_check || !crate::updater::has_packaged_updater_config() {
+        return;
+    }
+    run_update_check(true);
+}
+
+/// Triggers an explicit user-initiated check for updates.
+pub(crate) fn check_for_updates() {
+    run_update_check(false);
+}
+
+fn run_update_check(silent: bool) {
+    let started = {
+        let mut ok = false;
+        state().update(|s| {
+            if s.updater_state.is_busy() {
+                return;
+            }
+            ok = true;
+            if !silent {
+                s.updater_state = crate::updater::UpdaterState::Checking;
+                s.updater_banner_dismissed = false;
+            }
+        });
+        ok
+    };
+    if !started {
+        return;
+    }
+
+    Owner::detached().run(|| {
+        spawn(async move {
+            let outcome = spawn_blocking_task(crate::updater::check_for_update).await;
+            state().update(|s| match outcome {
+                Ok(crate::updater::CheckOutcome::Available(update)) => {
+                    s.updater_state = crate::updater::UpdaterState::Available(update);
+                    s.updater_banner_dismissed = false;
+                }
+                Ok(crate::updater::CheckOutcome::UpToDate { current_version }) => {
+                    if !silent {
+                        s.updater_state =
+                            crate::updater::UpdaterState::UpToDate { current_version };
+                    }
+                }
+                Ok(crate::updater::CheckOutcome::Unavailable(reason)) => {
+                    if !silent {
+                        s.updater_state = crate::updater::UpdaterState::Unavailable(reason);
+                    }
+                }
+                Err(err) => {
+                    log::warn!("updater: check failed: {err}");
+                    if !silent {
+                        s.updater_state = crate::updater::UpdaterState::Error(err);
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// Downloads and verifies the currently available release archive on a background thread.
+pub(crate) fn download_available_update() {
+    let update = {
+        let mut target = None;
+        state().update(|s| {
+            if let crate::updater::UpdaterState::Available(avail) = &s.updater_state
+                && avail.can_install
+            {
+                let cloned = avail.clone();
+                s.updater_state = crate::updater::UpdaterState::Downloading {
+                    update: cloned.clone(),
+                    received: 0,
+                    total: cloned.size,
+                };
+                s.updater_banner_dismissed = false;
+                target = Some(cloned);
+            }
+        });
+        target
+    };
+    let Some(update) = update else {
+        return;
+    };
+
+    enum DownloadEvent {
+        Progress { received: u64, total: Option<u64> },
+        Finished(Result<std::path::PathBuf, String>),
+    }
+
+    let (tx, rx) = thread_channel::<DownloadEvent>();
+    let worker_update = update.clone();
+    std::thread::spawn(move || {
+        let progress_tx = tx.clone();
+        let result = crate::updater::download_update(&worker_update, move |received, total| {
+            progress_tx.send(DownloadEvent::Progress { received, total });
+        });
+        tx.send(DownloadEvent::Finished(result));
+        tx.close();
+    });
+
+    Owner::detached().run(|| {
+        spawn(async move {
+            while let Some(event) = rx.next().await {
+                match event {
+                    DownloadEvent::Progress { received, total } => {
+                        state().update(|s| {
+                            if let crate::updater::UpdaterState::Downloading {
+                                received: cur_received,
+                                total: cur_total,
+                                ..
+                            } = &mut s.updater_state
+                            {
+                                *cur_received = received;
+                                if total.is_some() {
+                                    *cur_total = total;
+                                }
+                            }
+                        });
+                    }
+                    DownloadEvent::Finished(Ok(archive_path)) => {
+                        state().update(|s| {
+                            s.updater_state = crate::updater::UpdaterState::ReadyToRestart {
+                                version: update.version.clone(),
+                                notes: update.notes.clone(),
+                                archive_path,
+                            };
+                            s.updater_banner_dismissed = false;
+                        });
+                    }
+                    DownloadEvent::Finished(Err(err)) => {
+                        log::error!("updater: download failed: {err}");
+                        state().update(|s| {
+                            s.updater_state = crate::updater::UpdaterState::Error(err);
+                        });
+                    }
+                }
+            }
+        });
+    });
+}
+
+/// Installs a downloaded update archive over the running `Bruk.app` and restarts the app.
+pub(crate) fn install_and_restart_update() {
+    let pending = {
+        let mut target = None;
+        state().update(|s| {
+            if let crate::updater::UpdaterState::ReadyToRestart {
+                version,
+                archive_path,
+                ..
+            } = &s.updater_state
+            {
+                let version = version.clone();
+                let archive_path = archive_path.clone();
+                s.updater_state = crate::updater::UpdaterState::Installing {
+                    version: version.clone(),
+                };
+                target = Some((version, archive_path));
+            }
+        });
+        target
+    };
+    let Some((version, archive_path)) = pending else {
+        return;
+    };
+
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result = spawn_blocking_task(move || {
+                crate::updater::install_downloaded_update(&archive_path)
+            })
+            .await;
+            match result {
+                Ok(()) => {
+                    log::info!("updater: installed Bruk {version}; restarting");
+                    nsh_core::element::desktop::restart();
+                }
+                Err(err) => {
+                    log::error!("updater: install failed: {err}");
+                    state().update(|s| {
+                        s.updater_state = crate::updater::UpdaterState::Error(err);
+                    });
+                }
+            }
+        });
+    });
+}
+
+/// Unpacks and verifies the downloaded update now so it swaps in automatically when Bruk quits.
+pub(crate) fn stage_update_for_quit() {
+    let pending = {
+        let mut target = None;
+        state().update(|s| {
+            if let crate::updater::UpdaterState::ReadyToRestart {
+                version,
+                archive_path,
+                ..
+            } = &s.updater_state
+            {
+                let version = version.clone();
+                let archive_path = archive_path.clone();
+                s.updater_state = crate::updater::UpdaterState::Installing {
+                    version: version.clone(),
+                };
+                target = Some((version, archive_path));
+            }
+        });
+        target
+    };
+    let Some((version, archive_path)) = pending else {
+        return;
+    };
+
+    Owner::detached().run(|| {
+        spawn(async move {
+            let v = version.clone();
+            let result = spawn_blocking_task(move || {
+                crate::updater::stage_downloaded_update_for_quit(v, archive_path)
+            })
+            .await;
+            state().update(|s| match result {
+                Ok(()) => {
+                    s.updater_state = crate::updater::UpdaterState::StagedOnQuit { version };
+                }
+                Err(err) => {
+                    log::error!("updater: stage for quit failed: {err}");
+                    s.updater_state = crate::updater::UpdaterState::Error(err);
+                }
+            });
+        });
+    });
+}
+
+/// Restarts the app immediately when an update has already been staged for quit; the `on_app_quit`
+/// hook swaps the bundle in place before the restarted process launches.
+pub(crate) fn restart_for_staged_update() {
+    let is_staged = state().with_untracked(|s| {
+        matches!(
+            s.updater_state,
+            crate::updater::UpdaterState::StagedOnQuit { .. }
+        )
+    });
+    if is_staged {
+        nsh_core::element::desktop::restart();
+    }
+}
+
+/// Opens the release download URL in the user's default browser when in-place replacement is
+/// unavailable (e.g. App Translocation or read-only install directory).
+pub(crate) fn open_update_download_url() {
+    let url = state().with_untracked(|s| match &s.updater_state {
+        crate::updater::UpdaterState::Available(update) => Some(update.url.clone()),
+        _ => None,
+    });
+    if let Some(url) = url {
+        let answer = nsh_core::element::open_url(url);
+        Owner::detached().run(|| {
+            spawn(async move {
+                let _ = answer.await;
+            });
+        });
+    }
 }
 
 // --- Preferences Window & Settings ------------------------------------------------------

@@ -29,6 +29,53 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify release version matches tag
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          nsh_version="$(jq -r '.version // empty' nsh.json)"
+          cargo_version="$(awk -F'"' '$0 == "[workspace.package]" { in_pkg=1; next } in_pkg && /^\[/ { exit } in_pkg && /^version = "/ { print $2; exit }' Cargo.toml)"
+          echo "tag=${GITHUB_REF_NAME} nsh.json=${nsh_version} Cargo.toml=${cargo_version}"
+          if [ "$nsh_version" != "$tag_version" ]; then
+            echo "error: nsh.json version (${nsh_version}) must match git tag (${tag_version})" >&2
+            exit 1
+          fi
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "error: Cargo.toml workspace version (${cargo_version}) must match git tag (${tag_version})" >&2
+            exit 1
+          fi
+
+      - name: Configure updater public key
+        env:
+          UPDATER_PUBLIC_KEY: ${{ vars.UPDATER_PUBLIC_KEY }}
+          UPDATER_SIGNING_KEY: ${{ secrets.UPDATER_SIGNING_KEY }}
+        run: |
+          public_key="$(printf '%s' "$UPDATER_PUBLIC_KEY" | tr -d '[:space:]')"
+          has_secret=0
+          if [ -n "$(printf '%s' "$UPDATER_SIGNING_KEY" | tr -d '[:space:]')" ]; then
+            has_secret=1
+          fi
+
+          if [ -n "$public_key" ]; then
+            if [ "$has_secret" -ne 1 ]; then
+              echo "error: UPDATER_PUBLIC_KEY variable is set, so UPDATER_SIGNING_KEY secret is required" >&2
+              exit 1
+            fi
+            jq --arg pk "$public_key" '.updater.publicKey = $pk' nsh.json > nsh.json.tmp
+            mv nsh.json.tmp nsh.json
+            echo "Injected updater.publicKey from UPDATER_PUBLIC_KEY environment variable"
+          else
+            existing_key="$(jq -r '.updater.publicKey // empty' nsh.json)"
+            if [ -n "$existing_key" ] && [ "$has_secret" -ne 1 ]; then
+              echo "error: nsh.json sets updater.publicKey, so UPDATER_SIGNING_KEY secret is required" >&2
+              exit 1
+            fi
+            if [ -z "$existing_key" ] && [ "$has_secret" -eq 1 ]; then
+              echo "error: UPDATER_SIGNING_KEY secret is set, so UPDATER_PUBLIC_KEY variable is required" >&2
+              exit 1
+            fi
+            echo "No updater public key configured; release manifest will be published unsigned"
+          fi
+
       - name: Set up Rust toolchain
         run: |
           rustup toolchain install stable --profile minimal --no-self-update
@@ -51,6 +98,9 @@ jobs:
       - name: Package macOS app bundle
         run: |
           nsh package --target macos
+          # Drop the pre-signing ad-hoc archive created by `nsh package`; we re-archive
+          # Bruk.app below after applying Assets.car, Developer ID signing, and stapling.
+          rm -f .nsh/out/*.tar.gz
           bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
           lipo -archs ".nsh/out/Bruk.app/Contents/MacOS/Bruk"
 
@@ -203,6 +253,40 @@ jobs:
           hdiutil verify -nocache "$dmg"
 
           (cd dist && shasum -a 256 "$(basename "$dmg")" > "$(basename "$dmg").sha256")
+
+          # Notarizing the DMG also notarizes the Bruk.app bundle inside it. Staple and
+          # verify Bruk.app, then archive it for Native Shell's auto-updater (`latest.json`).
+          xcrun stapler staple -v ".nsh/out/Bruk.app"
+          xcrun stapler validate -v ".nsh/out/Bruk.app"
+          codesign --verify --deep --strict --verbose=2 ".nsh/out/Bruk.app"
+          spctl --assess --type execute --verbose=4 ".nsh/out/Bruk.app"
+
+          version="${GITHUB_REF_NAME#v}"
+          archive="dist/Bruk-${version}-macos-aarch64.tar.gz"
+          COPYFILE_DISABLE=1 tar -czf "$archive" -C .nsh/out Bruk.app
+          (cd dist && shasum -a 256 "$(basename "$archive")" > "$(basename "$archive").sha256")
+          ls -lh dist
+
+      - name: Generate Native Shell update manifest
+        env:
+          UPDATER_SIGNING_KEY: ${{ secrets.UPDATER_SIGNING_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          archive="dist/Bruk-${version}-macos-aarch64.tar.gz"
+          manifest_args=("$archive" -o dist)
+          public_key="$(jq -r '.updater.publicKey // empty' nsh.json)"
+          if [ -n "$public_key" ]; then
+            if [ -z "$UPDATER_SIGNING_KEY" ]; then
+              echo "error: nsh.json sets updater.publicKey, so UPDATER_SIGNING_KEY secret is required" >&2
+              exit 1
+            fi
+            key_path="${RUNNER_TEMP}/updater.secret"
+            printf '%s\n' "$(printf '%s' "$UPDATER_SIGNING_KEY" | tr -d '[:space:]')" > "$key_path"
+            chmod 600 "$key_path"
+            manifest_args+=(--key "$key_path")
+          fi
+          nsh update-manifest "${manifest_args[@]}"
+          cat dist/latest.json
           ls -lh dist
 
       - name: Clean up signing materials
@@ -217,20 +301,32 @@ jobs:
             "${RUNNER_TEMP}/Bruk-rw.dmg" \
             "${RUNNER_TEMP}/cert.p12" \
             "${RUNNER_TEMP}/AuthKey.p8" \
+            "${RUNNER_TEMP}/updater.secret" \
             "${RUNNER_TEMP}/notary-result.json"
 
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          version="${GITHUB_REF_NAME#v}"
           dmg="dist/Bruk-${GITHUB_REF_NAME}-macos-arm64.dmg"
-          checksum="${dmg}.sha256"
+          archive="dist/Bruk-${version}-macos-aarch64.tar.gz"
+          assets=(
+            "$dmg"
+            "${dmg}.sha256"
+            "$archive"
+            "${archive}.sha256"
+            "dist/latest.json"
+          )
+          if [ -f "dist/latest.json.sig" ]; then
+            assets+=("dist/latest.json.sig")
+          fi
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "$dmg" "$checksum" --clobber
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
           else
             args=(--title "$GITHUB_REF_NAME" --generate-notes)
             if [[ "$GITHUB_REF_NAME" == *-* ]]; then
               args+=(--prerelease)
             fi
-            gh release create "$GITHUB_REF_NAME" "$dmg" "$checksum" "${args[@]}"
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" "${args[@]}"
           fi

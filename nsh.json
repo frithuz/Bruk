@@ -5,6 +5,9 @@
   "build": 1,
   "icon": "assets/icon.png",
   "appearance": "system",
+  "updater": {
+    "github": "frithuz/Bruk"
+  },
   "rust": "crates/factory-app",
   "root": "App",
   "window": {

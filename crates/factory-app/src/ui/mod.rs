@@ -47,6 +47,7 @@ pub(crate) fn shell() -> impl IntoElement {
             || store::active_view() != ActiveView::WorkflowEditor,
             top_header_bar,
         ))
+        .child(when(store::updater_banner_visible, update_banner))
         .child(
             view()
                 .flex_1()
@@ -1767,5 +1768,151 @@ fn status_banner() -> impl IntoElement {
             text(move || store::status_message().unwrap_or_default())
                 .text_size(px(11.5))
                 .text_color(palette::text_muted()),
+        )
+}
+
+fn update_banner() -> impl IntoElement {
+    use crate::updater::{UpdaterState, format_bytes};
+
+    view()
+        .flex_shrink_0()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .px(px(16.0))
+        .py(px(8.0))
+        .bg(palette::subtle_surface_bg())
+        .border_b_1()
+        .border_color(palette::border_color())
+        .child(dynamic(|| {
+            let state = store::updater_state();
+            let message = match &state {
+                UpdaterState::Available(update) => match &update.install_blocked_reason {
+                    Some(reason) => format!("Bruk v{} is available. {reason}", update.version),
+                    None => format!("Bruk v{} is available.", update.version),
+                },
+                UpdaterState::Downloading {
+                    update,
+                    received,
+                    total,
+                } => match (total, state.download_percent()) {
+                    (Some(total), Some(pct)) => format!(
+                        "Downloading Bruk v{} — {} / {} ({pct}%)",
+                        update.version,
+                        format_bytes(*received),
+                        format_bytes(*total)
+                    ),
+                    _ => format!(
+                        "Downloading Bruk v{} — {}",
+                        update.version,
+                        format_bytes(*received)
+                    ),
+                },
+                UpdaterState::ReadyToRestart { version, .. } => {
+                    format!("Bruk v{version} is ready to install.")
+                }
+                UpdaterState::Installing { version } => format!("Installing Bruk v{version}…"),
+                UpdaterState::StagedOnQuit { version } => {
+                    format!("Bruk v{version} will install when you quit.")
+                }
+                _ => String::new(),
+            };
+
+            let mut actions = view().flex_row().items_center().gap(px(8.0));
+            match &state {
+                UpdaterState::Available(update) if update.can_install => {
+                    actions = actions.child(update_banner_primary_button(
+                        "Download Update",
+                        store::download_available_update,
+                    ));
+                }
+                UpdaterState::Available(_) => {
+                    actions = actions.child(update_banner_primary_button(
+                        "Download",
+                        store::open_update_download_url,
+                    ));
+                }
+                UpdaterState::ReadyToRestart { .. } => {
+                    actions = actions
+                        .child(update_banner_secondary_button(
+                            "Install on Quit",
+                            store::stage_update_for_quit,
+                        ))
+                        .child(update_banner_primary_button(
+                            "Restart to Update",
+                            store::install_and_restart_update,
+                        ));
+                }
+                UpdaterState::StagedOnQuit { .. } => {
+                    actions = actions.child(update_banner_secondary_button(
+                        "Restart Now",
+                        store::restart_for_staged_update,
+                    ));
+                }
+                _ => {}
+            }
+
+            if !state.is_busy() {
+                actions = actions.child(update_banner_secondary_button(
+                    "Later",
+                    store::dismiss_updater_banner,
+                ));
+            }
+
+            view()
+                .flex_1()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(12.0))
+                .child(
+                    text(message)
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_primary()),
+                )
+                .child(actions)
+        }))
+}
+
+fn update_banner_primary_button(
+    label: &'static str,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .on_press(on_press)
+        .px(px(10.0))
+        .py(px(4.0))
+        .rounded(px(6.0))
+        .bg(palette::nav_active_bg())
+        .active(|s| s.opacity(0.8))
+        .child(
+            text(label)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::nav_active_fg()),
+        )
+}
+
+fn update_banner_secondary_button(
+    label: &'static str,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .on_press(on_press)
+        .px(px(10.0))
+        .py(px(4.0))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .hover(|s| s.bg(palette::card_bg()))
+        .active(|s| s.opacity(0.8))
+        .child(
+            text(label)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
         )
 }

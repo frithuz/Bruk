@@ -5,12 +5,15 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+dirs.workspace = true
 env_logger.workspace = true
 factory-core.workspace = true
 log.workspace = true
 nsh-base.workspace = true
 nsh-core.workspace = true
+nsh-updater.workspace = true
 secrecy.workspace = true
+ureq.workspace = true
 zeroize.workspace = true
 
 [build-dependencies]

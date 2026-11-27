@@ -40,6 +40,8 @@ nsh-core = "0.6.1"
 nsh-base = "0.6.1"
 nsh-engine = { version = "0.6.1", default-features = false }
 nsh-testing = { version = "0.6.1", default-features = false }
+nsh-updater = "0.6.1"
+ureq = { version = "3.1", features = ["platform-verifier"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["NSObject", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = [

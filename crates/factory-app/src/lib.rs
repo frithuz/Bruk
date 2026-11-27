@@ -6,6 +6,7 @@ mod menu;
 mod store;
 pub mod system_log;
 mod ui;
+mod updater;
 
 use std::{ffi::OsString, path::PathBuf};
 
@@ -173,6 +174,9 @@ fn app_surface() -> impl IntoElement {
         let _span = boot_log::span("boot.ui.install_menubar");
         ui::menubar::install_menubar_and_attention_surfaces();
     }
+    nsh_core::element::desktop::on_app_quit(|| async {
+        updater::finish_staged_update_on_quit();
+    });
 
     let _span = boot_log::span("boot.ui.build_root_view");
     view()
