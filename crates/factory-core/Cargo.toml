@@ -5,21 +5,13 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-base64.workspace = true
+factory-chat.workspace = true
 factory-config.workspace = true
 factory-github.workspace = true
 factory-machines.workspace = true
 factory-providers.workspace = true
+factory-runner.workspace = true
 factory-secrets.workspace = true
+factory-storage.workspace = true
 factory-types.workspace = true
 factory-workflows.workspace = true
-log.workspace = true
-rusqlite.workspace = true
-secrecy.workspace = true
-serde.workspace = true
-serde_json.workspace = true
-thiserror.workspace = true
-zeroize.workspace = true
-
-[dev-dependencies]
-tempfile.workspace = true

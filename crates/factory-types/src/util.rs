@@ -166,3 +166,17 @@ pub fn split_shell_words_raw(input: &str) -> Result<Vec<String>, String> {
 
     Ok(words)
 }
+
+/// Sends `SIGTERM` to a child process on Unix platforms.
+pub fn terminate_pid(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("/bin/kill")
+            .args(["-TERM", &pid.to_string()])
+            .status();
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}

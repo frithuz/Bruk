@@ -4,35 +4,28 @@
 //! workflow orchestration, persistence, and agent integrations can be tested
 //! and reused across the macOS app, CLI tools, or background daemons.
 
+pub use factory_chat::{chat, chat_attachment, chat_git};
 pub use factory_config::{bruk_home, inbox, mcp, preferences, project_settings};
 pub use factory_github::{github_intake, work_queue};
 pub use factory_machines as machines;
 pub use factory_providers::{
     antigravity_cli, claude_cli, claude_settings, codex_cli, codex_settings,
 };
+pub use factory_runner as runner;
+pub use factory_storage::{dashboard, secrets_migration, storage};
 pub use factory_types::model;
 pub use factory_workflows::{
     definitions, engine, step_context, workflow_editor, workflow_run, workflows_overview,
 };
-pub mod chat;
-pub mod chat_attachment;
-pub mod chat_git;
-pub mod dashboard;
-pub mod runner;
-pub mod secrets_migration;
 pub mod secrets {
+    pub use factory_runner::{WorkflowSecretRequirements, collect_workflow_secret_requirements};
     pub use factory_secrets::*;
-
-    pub use crate::{
-        runner::{WorkflowSecretRequirements, collect_workflow_secret_requirements},
-        secrets_migration as migration,
-        secrets_migration::{
-            LEGACY_DATABASE_SIDE_EXTENSIONS, MigrationReport, PathChangeResolution,
-            delete_legacy_database_files, find_legacy_database_files, migrate_plaintext_secrets,
-        },
+    pub use factory_storage::secrets_migration as migration;
+    pub use factory_storage::secrets_migration::{
+        LEGACY_DATABASE_SIDE_EXTENSIONS, MigrationReport, PathChangeResolution,
+        delete_legacy_database_files, find_legacy_database_files, migrate_plaintext_secrets,
     };
 }
-pub mod storage;
 
 pub use antigravity_cli::{
     ANTIGRAVITY_BINARY_NAME, ANTIGRAVITY_DEFAULT_CONFIG_DIR, ANTIGRAVITY_DEFAULT_MODEL,

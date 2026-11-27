@@ -33,6 +33,7 @@ pub use util::{
     BRUK_APP_VERSION, BRUK_DATA_SCHEMA, clamp_percent, current_unix_seconds,
     default_severity_for_used, expand_tilde, format_dollars_cents, format_whole_or_cents,
     is_executable_file, metadata_is_executable, micros_to_cents, split_shell_words_raw,
+    terminate_pid,
 };
 pub use workflow::{
     DiffFileChange, DiffLine, DiffLineKind, ExitField, ExitOperator, IssueSourceAuthMode,

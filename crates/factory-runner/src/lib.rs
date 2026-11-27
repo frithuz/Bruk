@@ -19,30 +19,32 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    claude_settings::ClaudeSpawnSettings,
-    codex_settings::CodexSpawnSettings,
-    definitions::{
-        AgentTaskStepDef, BrukCatalog, CommentOnIssueStepDef, CompositeStepDef, LoopNodeDef,
-        OpenPullRequestStepDef, SetIssueStatusStepDef, ShellCommandStepDef, WorkflowDef,
-        WorkflowNodeDef,
-    },
-    github_intake::{
-        GitHubAuth, add_github_issue_label, comment_on_github_issue, remove_github_issue_label,
-        resolve_gh_binary,
-    },
+use factory_config::{
     inbox::ReviewFileStat,
     mcp::{
         ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
         McpSourcesPolicy, antigravity_log_failures, claude_init_failures, codex_stderr_failure,
         resolve_mcp_servers,
     },
-    model::ProjectId,
-    preferences::ProviderKind,
-    project_settings::{IssueSourceAuthMode, ProjectSandboxMode},
-    secrets::{
-        CancellationToken, ResolvedSecrets, RunSecretsCache, SecretId, SecretProblem,
-        SecretRedactor, SecretResolver, SecretsCache,
+};
+use factory_github::github_intake::{
+    GitHubAuth, add_github_issue_label, comment_on_github_issue, remove_github_issue_label,
+    resolve_gh_binary,
+};
+use factory_providers::{claude_settings::ClaudeSpawnSettings, codex_settings::CodexSpawnSettings};
+use factory_secrets::{
+    CancellationToken, ResolvedSecrets, RunSecretsCache, SecretId, SecretProblem, SecretRedactor,
+    SecretResolver, SecretsCache,
+};
+use factory_types::{
+    DiffFileChange, ExitField, ExitOperator, IssueSourceAuthMode, LoopExhaustedAction,
+    LoopRepeatMode, ProjectId, ProjectSandboxMode, ProviderKind, terminate_pid,
+};
+use factory_workflows::{
+    definitions::{
+        AgentTaskStepDef, BrukCatalog, CommentOnIssueStepDef, CompositeStepDef, LoopNodeDef,
+        OpenPullRequestStepDef, SetIssueStatusStepDef, ShellCommandStepDef, WorkflowDef,
+        WorkflowNodeDef,
     },
     step_context::{
         EphemeralCodexAuthGuard, StepMcpScope, StepSecretsDelivery, TemplateContext,
@@ -51,11 +53,10 @@ use crate::{
         build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
         default_step_runtime_dir, materialize_step_context,
     },
-    workflow_editor::{ExitField, ExitOperator, LoopExhaustedAction, LoopRepeatMode},
     workflow_run::{
-        AttemptBanner, BudgetGuardState, DiffFileChange, RunExecutionState, RunStepDetail,
-        RunStepStatus, StepAgentInfo, StepGitInfo, StepOutputChip, StepProgressInfo,
-        StepTranscriptEntry, TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunViewData,
+        AttemptBanner, BudgetGuardState, RunExecutionState, RunStepDetail, RunStepStatus,
+        StepAgentInfo, StepGitInfo, StepOutputChip, StepProgressInfo, StepTranscriptEntry,
+        TerminalBadgeTone, TerminalLine, ToolStatusTone, WorkflowRunViewData,
     },
 };
 
@@ -67,7 +68,7 @@ pub enum RunnerError {
     #[error("provider CLI for {0:?} is not configured or could not be found")]
     ProviderBinaryMissing(ProviderKind),
     #[error("step context error: {0}")]
-    StepContext(#[from] crate::step_context::StepContextError),
+    StepContext(#[from] factory_workflows::step_context::StepContextError),
     #[error("process execution failed: {0}")]
     Process(String),
     #[error("composite '{0}' was not found in catalog")]
@@ -2111,7 +2112,7 @@ fn execute_open_pr(
 }
 
 fn evaluate_exit_condition(
-    cond: &crate::definitions::LoopExitConditionDef,
+    cond: &factory_workflows::definitions::LoopExitConditionDef,
     iter_outputs: &BTreeMap<String, String>,
 ) -> bool {
     let field_key = match cond.field {
@@ -2272,7 +2273,7 @@ pub struct WorkflowSecretRequirements {
 pub fn collect_workflow_secret_requirements(
     workflow: &WorkflowDef,
     catalog: &BrukCatalog,
-    mcp_sources: &crate::mcp::McpSources,
+    mcp_sources: &factory_config::mcp::McpSources,
     github_auth_mode: IssueSourceAuthMode,
 ) -> WorkflowSecretRequirements {
     let mut req = WorkflowSecretRequirements::default();
@@ -2291,9 +2292,9 @@ pub fn collect_workflow_secret_requirements(
 
 fn walk_workflow_secret_nodes(
     nodes: &[WorkflowNodeDef],
-    policy: crate::mcp::McpSourcesPolicy,
+    policy: factory_config::mcp::McpSourcesPolicy,
     catalog: &BrukCatalog,
-    mcp_sources: &crate::mcp::McpSources,
+    mcp_sources: &factory_config::mcp::McpSources,
     github_auth_mode: IssueSourceAuthMode,
     visited_composites: &mut std::collections::BTreeSet<String>,
     req: &mut WorkflowSecretRequirements,
@@ -2321,7 +2322,8 @@ fn walk_workflow_secret_nodes(
                         allowlist.push(name.to_owned());
                     }
                 }
-                let set = crate::mcp::resolve_mcp_servers(mcp_sources, step_policy, &allowlist);
+                let set =
+                    factory_config::mcp::resolve_mcp_servers(mcp_sources, step_policy, &allowlist);
                 for server in &set.servers {
                     for var in server.def.env_references() {
                         req.mcp_referenced_vars.insert(var);
@@ -2615,8 +2617,10 @@ pub fn parse_antigravity_json_line(line: &str) -> Option<ParsedStreamEvent> {
                 .and_then(|n| n.as_str())
                 .or_else(|| info.and_then(|i| i.get("name")).and_then(|n| n.as_str()))
                 .unwrap_or("tool");
-            let (verb, target) =
-                crate::chat::antigravity_tool_label(name, info.and_then(|i| i.get("parameters")));
+            let (verb, target) = factory_providers::antigravity_cli::antigravity_tool_label(
+                name,
+                info.and_then(|i| i.get("parameters")),
+            );
             let failed = state != "DONE"
                 || info
                     .and_then(|i| i.get("error"))
@@ -2640,7 +2644,9 @@ pub fn parse_antigravity_json_line(line: &str) -> Option<ParsedStreamEvent> {
                 .is_some_and(|s| s.eq_ignore_ascii_case("success"));
             let text_key = if ok { "response" } else { "error" };
             Some(ParsedStreamEvent::Usage {
-                tokens: crate::chat::antigravity_usage_tokens(result.get("usage")),
+                tokens: factory_providers::antigravity_cli::antigravity_usage_tokens(
+                    result.get("usage"),
+                ),
                 cost_cents: 0,
                 result_text: result
                     .get(text_key)
@@ -2869,19 +2875,6 @@ fn wait_child_with_cancel(
     }
 }
 
-pub(crate) fn terminate_pid(pid: u32) {
-    #[cfg(unix)]
-    {
-        let _ = Command::new("/bin/kill")
-            .args(["-TERM", &pid.to_string()])
-            .status();
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = pid;
-    }
-}
-
 fn truncate_for_prompt(raw: &str, max_chars: usize) -> String {
     let trimmed = raw.trim();
     if trimmed.chars().count() <= max_chars {
@@ -2906,7 +2899,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::definitions::{ApprovalGateStepDef, LoopExitConditionDef, WorkflowTriggersDef};
+    use factory_workflows::definitions::{
+        ApprovalGateStepDef, LoopExitConditionDef, WorkflowTriggersDef,
+    };
 
     #[test]
     fn parses_antigravity_stream_json_events() {
@@ -3065,7 +3060,7 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
                     name: "Fix until check passes".to_owned(),
                     repeat: LoopRepeatMode::UntilCheckPasses,
                     max_attempts: 3,
-                    wait_between: crate::workflow_editor::LoopWaitBetween::None,
+                    wait_between: factory_types::LoopWaitBetween::None,
                     pass_previous_outputs: true,
                     discard_file_changes: false,
                     exit_conditions: vec![LoopExitConditionDef {
@@ -3104,7 +3099,7 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
                     prompt: "Approve the verified diff".to_owned(),
                 }),
             ],
-            origin: crate::definitions::DefinitionOrigin::BuiltIn,
+            origin: factory_workflows::definitions::DefinitionOrigin::BuiltIn,
         };
 
         let runtime_root = temp.path().join("runtime-run-1");
@@ -3228,7 +3223,7 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
         .unwrap();
         fs::set_permissions(&fake_claude, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let project = crate::mcp::load_project_mcp(&repo);
+        let project = factory_config::mcp::load_project_mcp(&repo);
         let fingerprint = project.config().map(|c| c.fingerprint.clone());
         let workflow = WorkflowDef {
             id: "mcp".to_owned(),
@@ -3250,7 +3245,7 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
                 outputs: Vec::new(),
                 mcp: Vec::new(),
             })],
-            origin: crate::definitions::DefinitionOrigin::BuiltIn,
+            origin: factory_workflows::definitions::DefinitionOrigin::BuiltIn,
         };
         let req = WorkflowRunRequest {
             run_id: "run-mcp".to_owned(),
@@ -3353,7 +3348,10 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
         );
         assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
         let problems = mcp_problems(&events);
-        assert_eq!(problems[0].fix, crate::mcp::McpFix::ApproveProjectServers);
+        assert_eq!(
+            problems[0].fix,
+            factory_config::mcp::McpFix::ApproveProjectServers
+        );
         assert!(problems[0].blocking);
     }
 

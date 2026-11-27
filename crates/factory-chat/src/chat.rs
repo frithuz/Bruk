@@ -32,27 +32,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::{
-    chat_attachment::{
-        ChatAttachment, ChatAttachmentUpload, claude_inline_images, claude_user_message_line,
-        prompt_with_attachments, stage_chat_attachments,
-    },
-    claude_settings::ClaudeSpawnSettings,
-    codex_settings::CodexSpawnSettings,
+use factory_config::mcp::{
+    ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources, McpSourcesPolicy,
+    ResolvedMcpSet, antigravity_log_failures, claude_init_failures, codex_stderr_failure,
+    resolve_mcp_servers,
+};
+use factory_providers::{claude_settings::ClaudeSpawnSettings, codex_settings::CodexSpawnSettings};
+use factory_secrets::{
+    CancellationToken, ChatSecretsCache, SecretProblem, SecretRedactor, SecretResolver,
+    StreamingRedactor,
+};
+use factory_types::{ProjectId, ProjectSandboxMode, ProviderKind, terminate_pid};
+use factory_workflows::{
     definitions::{AgentTaskStepDef, BrukCatalog},
-    mcp::{
-        ANTIGRAVITY_LOG_FILE, McpFailureTracker, McpOrigin, McpProblem, McpSources,
-        McpSourcesPolicy, ResolvedMcpSet, antigravity_log_failures, claude_init_failures,
-        codex_stderr_failure, resolve_mcp_servers,
-    },
-    model::ProjectId,
-    preferences::ProviderKind,
-    project_settings::ProjectSandboxMode,
-    runner::terminate_pid,
-    secrets::{
-        CancellationToken, ChatSecretsCache, SecretProblem, SecretRedactor, SecretResolver,
-        StreamingRedactor,
-    },
     step_context::{
         ISOLATED_CODEX_HOME_DIR, StepContextError, StepMcpScope, StepSecretsDelivery,
         TemplateContext, apply_antigravity_secrets_delivery, apply_claude_secrets_delivery,
@@ -60,6 +52,11 @@ use crate::{
         build_isolated_claude_spawn_plan, build_isolated_codex_spawn_plan, compile_step_context,
         materialize_step_context,
     },
+};
+
+use crate::chat_attachment::{
+    ChatAttachment, ChatAttachmentUpload, claude_inline_images, claude_user_message_line,
+    prompt_with_attachments, stage_chat_attachments,
 };
 
 /// Title shown for a chat before its first message names it.
@@ -2773,7 +2770,8 @@ impl CodexLiveContext {
             self.rollout = find_codex_rollout(&sessions, thread_id);
         }
         let contents = std::fs::read_to_string(self.rollout.as_ref()?).ok()?;
-        let mut usage = parse_codex_rollout_context(&contents, crate::current_unix_seconds())?;
+        let mut usage =
+            parse_codex_rollout_context(&contents, factory_types::current_unix_seconds())?;
         usage.live = true;
         Some((usage, parse_codex_rollout_token_totals(&contents)))
     }
@@ -3068,7 +3066,7 @@ fn read_antigravity_chat_context(
         .as_ref()
         .ok_or_else(|| ChatTurnError::ProviderMissing(ProviderKind::Antigravity.label()))
         .map_err(|err| err.to_string())?;
-    let reading = crate::antigravity_cli::read_antigravity_context(
+    let reading = factory_providers::antigravity_cli::read_antigravity_context(
         binary,
         &request.working_dir,
         conversation_id,

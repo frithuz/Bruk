@@ -11,24 +11,23 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
+use factory_chat::{ChatSession, ChatUsageDelta};
+use factory_config::{
     bruk_home::{BrukHome, HomeError},
-    chat::{ChatSession, ChatUsageDelta},
-    github_intake::current_unix_seconds,
-    model::{Project, ProjectId},
-    preferences::{AppPreferences, ProviderKind},
+    preferences::AppPreferences,
     project_settings::ProjectSettings,
-    secrets::{
-        EnvScope, SecretId, SecretKind, SecretRecord, SecretSource, SecretState,
-        SecretsMetadataSnapshot, Sharing, compute_preview, keychain_account_key,
-        keychain_item_label, new_db_instance_id,
-        redactor::SecretRedactor,
-        store::{SecretStore, write_and_verify},
-        validate_secret_value,
-    },
-    work_queue::ProjectWorkQueue,
-    workflow_run::{RunExecutionState, WorkflowRunViewData},
 };
+use factory_github::work_queue::ProjectWorkQueue;
+use factory_secrets::{
+    EnvScope, SecretId, SecretKind, SecretRecord, SecretSource, SecretState,
+    SecretsMetadataSnapshot, Sharing, compute_preview, keychain_account_key, keychain_item_label,
+    new_db_instance_id,
+    redactor::SecretRedactor,
+    store::{SecretStore, write_and_verify},
+    validate_secret_value,
+};
+use factory_types::{Project, ProjectId, ProviderKind, current_unix_seconds};
+use factory_workflows::workflow_run::{RunExecutionState, WorkflowRunViewData};
 
 /// Persisted record of a real workflow run stored in SQLite.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1675,10 +1674,8 @@ mod tests {
 
     #[test]
     fn persists_chat_sessions_and_drops_them_with_their_project() {
-        use crate::{
-            chat::{ChatEvent, ChatSessionStatus},
-            project_settings::ProjectSandboxMode,
-        };
+        use factory_chat::{ChatEvent, ChatSessionStatus};
+        use factory_types::ProjectSandboxMode;
 
         let temp = TempDir::new().unwrap();
         let db_path = temp.path().join("bruk.db");
@@ -1888,7 +1885,7 @@ mod tests {
             assert_eq!(db.load_preferences().unwrap(), None);
 
             let mut prefs = AppPreferences::sample();
-            prefs.appearance.mode = crate::AppearanceMode::Dark;
+            prefs.appearance.mode = factory_types::AppearanceMode::Dark;
             prefs
                 .make_default_openrouter_key("openrouter-acme")
                 .unwrap();
@@ -1900,7 +1897,7 @@ mod tests {
 
         let reopened = ProjectDatabase::open(&db_path).unwrap();
         let loaded = reopened.load_preferences().unwrap().unwrap();
-        assert_eq!(loaded.appearance.mode, crate::AppearanceMode::Dark);
+        assert_eq!(loaded.appearance.mode, factory_types::AppearanceMode::Dark);
         assert!(loaded.openrouter_key("openrouter-acme").unwrap().is_default);
         assert_eq!(loaded.openrouter_keys.len(), 3);
     }
@@ -1910,21 +1907,24 @@ mod tests {
         let db = ProjectDatabase::open_in_memory().unwrap();
         let mut legacy = AppPreferences::sample();
         legacy.schema_version = 0;
-        legacy.appearance.mode = crate::AppearanceMode::Dark;
+        legacy.appearance.mode = factory_types::AppearanceMode::Dark;
         legacy.general.default_projects_dir = "~/code".to_owned();
         db.save_preferences(&legacy).unwrap();
 
         let migrated = db.load_preferences().unwrap().unwrap();
         assert_eq!(
             migrated.schema_version,
-            crate::preferences::PREFERENCES_SCHEMA_VERSION
+            factory_config::preferences::PREFERENCES_SCHEMA_VERSION
         );
         assert!(!migrated.demo_mode);
         assert!(!migrated.claude.connected);
         assert!(migrated.codex.is_none());
         assert!(migrated.openrouter_keys.is_empty());
         assert!(migrated.extensions.entries.is_empty());
-        assert_eq!(migrated.appearance.mode, crate::AppearanceMode::Dark);
+        assert_eq!(
+            migrated.appearance.mode,
+            factory_types::AppearanceMode::Dark
+        );
         assert_eq!(migrated.general.default_projects_dir, "~/code");
     }
 
@@ -1940,7 +1940,7 @@ mod tests {
         let migrated = db.load_preferences().unwrap().unwrap();
         assert_eq!(
             migrated.schema_version,
-            crate::preferences::PREFERENCES_SCHEMA_VERSION
+            factory_config::preferences::PREFERENCES_SCHEMA_VERSION
         );
         assert!(migrated.general.projects_dir_follows_home());
         assert_eq!(
@@ -1978,7 +1978,7 @@ mod tests {
         let migrated = db.load_preferences().unwrap().unwrap();
         assert_eq!(
             migrated.schema_version,
-            crate::preferences::PREFERENCES_SCHEMA_VERSION
+            factory_config::preferences::PREFERENCES_SCHEMA_VERSION
         );
         assert!(migrated.codex.is_none());
         assert_eq!(
@@ -2007,7 +2007,7 @@ mod tests {
                 .claude_spawn_settings
                 .set_value(
                     "alwaysThinkingEnabled",
-                    crate::ClaudeSettingValue::Bool(true),
+                    factory_providers::ClaudeSettingValue::Bool(true),
                 )
                 .unwrap();
             prefs
@@ -2034,11 +2034,13 @@ mod tests {
         assert_eq!(loaded.claude_spawn_settings.override_count(), 6);
         assert_eq!(
             loaded.claude_spawn_settings.get("cli.permission-mode"),
-            Some(&crate::ClaudeSettingValue::String("acceptEdits".to_owned()))
+            Some(&factory_providers::ClaudeSettingValue::String(
+                "acceptEdits".to_owned()
+            ))
         );
         assert_eq!(
             loaded.claude_spawn_settings.get("alwaysThinkingEnabled"),
-            Some(&crate::ClaudeSettingValue::Bool(true))
+            Some(&factory_providers::ClaudeSettingValue::Bool(true))
         );
         assert_eq!(
             loaded
@@ -2070,7 +2072,7 @@ mod tests {
                 .codex_spawn_settings
                 .set_value(
                     "sandbox_workspace_write.network_access",
-                    crate::CodexSettingValue::Bool(true),
+                    factory_providers::CodexSettingValue::Bool(true),
                 )
                 .unwrap();
             prefs
@@ -2100,7 +2102,7 @@ mod tests {
         assert_eq!(loaded.codex_spawn_settings.override_count(), 6);
         assert_eq!(
             loaded.codex_spawn_settings.get("cli.sandbox"),
-            Some(&crate::CodexSettingValue::String(
+            Some(&factory_providers::CodexSettingValue::String(
                 "workspace-write".to_owned()
             ))
         );
@@ -2108,7 +2110,7 @@ mod tests {
             loaded
                 .codex_spawn_settings
                 .get("sandbox_workspace_write.network_access"),
-            Some(&crate::CodexSettingValue::Bool(true))
+            Some(&factory_providers::CodexSettingValue::Bool(true))
         );
         assert_eq!(
             loaded
@@ -2140,8 +2142,8 @@ mod tests {
                 ProjectSettings::empty("billing-api", "/Users/dev/billing-api", "main");
             settings.github_repo = "acme/billing-api".to_owned();
             settings
-                .add_intake_filter(crate::GitHubFilterClause::new(
-                    crate::GitHubFilterQualifier::Label,
+                .add_intake_filter(factory_github::GitHubFilterClause::new(
+                    factory_github::GitHubFilterQualifier::Label,
                     "agent-ready",
                 ))
                 .unwrap();

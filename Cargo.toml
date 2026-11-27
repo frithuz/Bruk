@@ -8,6 +8,9 @@ members = [
     "crates/factory-providers",
     "crates/factory-config",
     "crates/factory-workflows",
+    "crates/factory-chat",
+    "crates/factory-runner",
+    "crates/factory-storage",
     "crates/factory-logging",
     "crates/factory-updater",
     "crates/factory-fonts",
@@ -25,6 +28,7 @@ publish = false
 
 [workspace.dependencies]
 factory-app = { path = "crates/factory-app" }
+factory-chat = { path = "crates/factory-chat" }
 factory-config = { path = "crates/factory-config" }
 factory-core = { path = "crates/factory-core" }
 factory-fonts = { path = "crates/factory-fonts" }
@@ -32,7 +36,9 @@ factory-github = { path = "crates/factory-github" }
 factory-logging = { path = "crates/factory-logging" }
 factory-machines = { path = "crates/factory-machines" }
 factory-providers = { path = "crates/factory-providers" }
+factory-runner = { path = "crates/factory-runner" }
 factory-secrets = { path = "crates/factory-secrets" }
+factory-storage = { path = "crates/factory-storage" }
 factory-types = { path = "crates/factory-types" }
 factory-ui-kit = { path = "crates/factory-ui-kit" }
 factory-updater = { path = "crates/factory-updater" }

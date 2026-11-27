@@ -18,12 +18,10 @@ use std::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{
-    github_intake::{GitHubAuth, resolve_gh_binary},
-    preferences::SSH_AUTH_SOCK_ENV,
-    runner::parse_unified_diff,
-    secrets::SecretRedactor,
-    workflow_run::{DiffFileChange, DiffLine, DiffLineKind},
+use factory_github::github_intake::{GitHubAuth, resolve_gh_binary};
+use factory_secrets::SecretRedactor;
+use factory_types::{
+    DiffFileChange, DiffLine, DiffLineKind, SSH_AUTH_SOCK_ENV, parse_unified_diff,
 };
 
 /// Maximum number of untracked files expanded into diff cards.

@@ -20,13 +20,13 @@ use std::{
 use secrecy::SecretString;
 use zeroize::Zeroize;
 
-use crate::{
-    github_intake::current_unix_seconds,
+use factory_config::{
     mcp::{McpServerDef, McpTransport},
-    model::ProjectId,
     project_settings::ProjectSettings,
-    storage::{ProjectDatabase, StorageError},
 };
+use factory_types::{ProjectId, current_unix_seconds};
+
+use crate::storage::{ProjectDatabase, StorageError};
 
 use factory_secrets::{
     EnvScope, Exposure, InternalPurpose, SecretKind, SecretRecord, SecretSource, SecretState,
@@ -259,7 +259,7 @@ pub fn migrate_plaintext_secrets(
                 }
                 continue;
             }
-            let var_name = if super::validate_env_name(&ev.key).is_ok() {
+            let var_name = if factory_secrets::validate_env_name(&ev.key).is_ok() {
                 ev.key.clone()
             } else {
                 sanitize_env_segment(&ev.key)
@@ -798,15 +798,18 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::{
-        AppPreferences, ChatEntry, ChatSession, ChatWorkspace, OpenRouterKey, ProjectDatabase,
-        ProjectSandboxMode, ProjectSettings, ProviderKind,
+    use factory_chat::{ChatEntry, ChatSession, ChatWorkspace};
+    use factory_config::{
+        AppPreferences, OpenRouterKey, ProjectSettings,
         mcp::{McpServerDef, McpTransport},
-        secrets::{
-            EnvScope, Exposure, MemoryStore, SecretError, SecretKind, SecretRecord, SecretState,
-            Sharing,
-        },
     };
+    use factory_secrets::{
+        EnvScope, Exposure, MemoryStore, SecretError, SecretKind, SecretRecord, SecretState,
+        Sharing,
+    };
+    use factory_types::{ProjectSandboxMode, ProviderKind};
+
+    use crate::storage::ProjectDatabase;
 
     #[test]
     fn full_plaintext_migration_is_idempotent_scrubs_transcripts_and_preserves_bearer_refs() {
@@ -889,7 +892,7 @@ mod tests {
             cap_note: "No cap".to_owned(),
             default_model: "openrouter/auto".to_owned(),
             used_by_projects: Vec::new(),
-            test_state: crate::ConnectionTestState::Untested,
+            test_state: factory_config::ConnectionTestState::Untested,
         });
         db.save_preferences(&prefs).unwrap();
 
@@ -1040,7 +1043,7 @@ mod tests {
         let after = db.get_secret(&saved.id).unwrap().unwrap();
         assert_eq!(after.state, SecretState::Ready);
         let db_id = db.ensure_db_instance_id().unwrap();
-        let account_key = crate::secrets::keychain_account_key(&db_id, &saved.id);
+        let account_key = factory_secrets::keychain_account_key(&db_id, &saved.id);
         let stored = store.get(&account_key).unwrap().unwrap();
         assert_eq!(stored.expose_secret(), "sk_original_working_value_12345");
     }

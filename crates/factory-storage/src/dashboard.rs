@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub use factory_types::ProjectColor;
 
-use crate::model::{Project, RunStatus, WorkflowRun};
+use factory_types::model::{Project, RunStatus, WorkflowRun};
 
 /// Time bucket granularity for the dashboard overview.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -374,9 +374,11 @@ impl DashboardDataset {
 
             let proj = by_project.entry(run.project_name.clone()).or_default();
             match run.status {
-                crate::workflow_run::RunExecutionState::Succeeded => proj.succeeded += 1,
-                crate::workflow_run::RunExecutionState::Failed
-                | crate::workflow_run::RunExecutionState::Stopped => proj.failed += 1,
+                factory_workflows::workflow_run::RunExecutionState::Succeeded => {
+                    proj.succeeded += 1
+                }
+                factory_workflows::workflow_run::RunExecutionState::Failed
+                | factory_workflows::workflow_run::RunExecutionState::Stopped => proj.failed += 1,
                 _ => {}
             }
             proj.runs += 1;
@@ -384,7 +386,7 @@ impl DashboardDataset {
             proj.cost_cents = proj.cost_cents.saturating_add(run.total_cost_cents);
         }
         for chat in chats {
-            let cost_cents = crate::chat::micros_to_cents(chat.cost_micros);
+            let cost_cents = factory_types::micros_to_cents(chat.cost_micros);
             total_cost_cents = total_cost_cents.saturating_add(cost_cents);
             *by_provider
                 .entry(chat.provider.label().to_owned())
@@ -443,7 +445,7 @@ impl DashboardDataset {
                     project_name: chat.project_name.clone(),
                     subtitle: format!("Chat · {}", chat.provider.label()),
                     tokens: chat.tokens,
-                    est_cost_cents: crate::chat::micros_to_cents(chat.cost_micros),
+                    est_cost_cents: factory_types::micros_to_cents(chat.cost_micros),
                     duration_minutes: 0,
                     outcome_note: if chat.deleted {
                         format!("{replies} · deleted")
@@ -2032,11 +2034,10 @@ mod tests {
 
     #[test]
     fn chat_usage_counts_toward_every_dashboard_total() {
-        use crate::{
-            preferences::ProviderKind,
-            storage::{PersistedChatUsage, PersistedWorkflowRun},
-            workflow_run::{RunExecutionState, WorkflowRunViewData},
-        };
+        use factory_types::ProviderKind;
+        use factory_workflows::workflow_run::{RunExecutionState, WorkflowRunViewData};
+
+        use crate::storage::{PersistedChatUsage, PersistedWorkflowRun};
         let run = PersistedWorkflowRun {
             id: "run-1".to_owned(),
             project_id: 1,
