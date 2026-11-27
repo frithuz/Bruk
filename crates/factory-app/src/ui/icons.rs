@@ -357,6 +357,42 @@ pub(crate) fn git_branch(color: impl IntoReactive<AdaptiveColor>) -> impl IntoEl
     .text_color(color)
 }
 
+/// Plus/minus diff icon for the chat Changes button.
+pub(crate) fn git_diff(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3.2v5.2M5.4 5.8h5.2M5.4 12.2h5.2"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
+/// Commit node icon for committing changes from a chat.
+pub(crate) fn git_commit(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.4"/><path d="M2.2 8h3.4M10.4 8h3.4"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// Pull request icon for opening a PR from a chat branch.
+pub(crate) fn git_pr(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="4.5" cy="3.8" r="1.5"/><circle cx="4.5" cy="12.2" r="1.5"/><circle cx="11.5" cy="12.2" r="1.5"/><path d="M4.5 5.3v5.4"/><path d="M9 3.8h1.3a1.2 1.2 0 0 1 1.2 1.2v5.7"/><path d="M10.2 2.4 8.6 3.8l1.6 1.4"/></svg>"#,
+        13.0,
+    )
+    .text_color(color)
+}
+
+/// External link arrow icon for opening a PR URL in the browser.
+pub(crate) fn external_link(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.45" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3.5H4a1.2 1.2 0 0 0-1.2 1.2V12A1.2 1.2 0 0 0 4 13.2h7.3a1.2 1.2 0 0 0 1.2-1.2V9.5"/><path d="M9.2 2.8h4v4"/><path d="M13 3 7.5 8.5"/></svg>"#,
+        12.5,
+    )
+    .text_color(color)
+}
+
 /// Clock / progress circle icon for Inspector Progress header and Run history sidebar row.
 pub(crate) fn clock_progress(
     size_px: f32,

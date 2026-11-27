@@ -17,40 +17,43 @@ use factory_core::{
     AGENT_WORKING_LABEL, AgentBadge, AgentDef, AgentTaskStepDef, AlwaysAllowScope,
     AnsweredInboxItem, AntigravityCliProbe, AppPreferences, AppearanceMode, AppearanceSettings,
     AttentionRequest, AttentionRequestBody, AttentionRequestKind, BrukCatalog, BrukHome,
-    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatSecretsCache,
-    ChatSession, ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown, ChatTurnControl,
-    ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree, ChatWorktreeSetup,
-    ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions, ClaudeSpawnPlan, ClaudeSpawnSettings,
-    CliAccount, CodexCliProbe, CodexSettingValue, CodexSpawnOptions, CodexSpawnPlan,
-    CodexSpawnSettings, CommandManagerConfig, CompositeDef, CoreUpdatePolicy, DashboardDataset,
-    DashboardGranularity, DashboardQuery, DashboardSnapshot, DefaultLandingView, DefinitionOrigin,
-    DeployWatchEntry, DryRunExecutor, EditorSelection, EnvScope, ExitField, ExitOperator, Exposure,
-    FactoryState, FontPreference, GateDecision, GitHubAuth, GitHubFilterClause, HomeEnvironment,
-    HomeError, HomeResolution, InboxFilter, InboxState, InitRepositoryOptions, IntakeRule,
-    InternalPurpose, IssueSourceAuthMode, IssueSourceKind, LoopExhaustedAction, LoopRepeatMode,
-    LoopWaitBetween, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet, ManagerId,
-    MemoryStore, NewMachineDraft, ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager,
-    PersistedWorkflowRun, PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode,
-    ProjectSettings, ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind,
-    RecentRunStatus, ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId,
-    RunOutcomeDot, RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager,
-    SecretProblem, SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState,
-    SecretStore, SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError,
-    StoreStatus, ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
+    CHAT_ATTACHMENT_MAX_BYTES, CatalogLoadOptions, ChatContextUsage, ChatEvent, ChatGitStatus,
+    ChatPullRequestRequest, ChatSecretsCache, ChatSession, ChatSessionStatus, ChatSessionSummary,
+    ChatTokenBreakdown, ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace,
+    ChatWorktree, ChatWorktreeSetup, ClaudeCliProbe, ClaudeSettingValue, ClaudeSpawnOptions,
+    ClaudeSpawnPlan, ClaudeSpawnSettings, CliAccount, CodexCliProbe, CodexSettingValue,
+    CodexSpawnOptions, CodexSpawnPlan, CodexSpawnSettings, CommandManagerConfig, CompositeDef,
+    CoreUpdatePolicy, DashboardDataset, DashboardGranularity, DashboardQuery, DashboardSnapshot,
+    DefaultLandingView, DefinitionOrigin, DeployWatchEntry, DryRunExecutor, EditorSelection,
+    EnvScope, ExitField, ExitOperator, Exposure, FactoryState, FontPreference, GateDecision,
+    GitHubAuth, GitHubFilterClause, HomeEnvironment, HomeError, HomeResolution, InboxFilter,
+    InboxState, InitRepositoryOptions, IntakeRule, InternalPurpose, IssueSourceAuthMode,
+    IssueSourceKind, LoopExhaustedAction, LoopRepeatMode, LoopWaitBetween, MachineAgentKind,
+    MachinePlatform, MachineRecord, MachinesFleet, ManagerId, MemoryStore, NewMachineDraft,
+    ONE_PASSWORD_MANAGER_ID, OnePasswordAuthMode, OnePasswordManager, PersistedWorkflowRun,
+    PreferencesTab, Project, ProjectDatabase, ProjectId, ProjectSandboxMode, ProjectSettings,
+    ProjectSettingsTab, ProjectWorkQueue, ProjectWorkflowsOverview, ProviderKind, RecentRunStatus,
+    ReviewDetail, RunControlHandle, RunDetailTab, RunExecutionState, RunId, RunOutcomeDot,
+    RunStatus, RunnerEvent, SecretFix, SecretId, SecretKind, SecretManager, SecretProblem,
+    SecretProblemDetail, SecretRecord, SecretRedactor, SecretResolver, SecretState, SecretStore,
+    SecretsMetadataSnapshot, Sharing, SkillDef, StepTypeKind, StorageError, StoreStatus,
+    ValidationReport, WorkQueueStage, WorkQueueViewMode, Workflow, WorkflowDef,
     WorkflowEditorDocument, WorkflowId, WorkflowNodeDef, WorkflowRecentRun, WorkflowRun,
     WorkflowRunRequest, WorkflowRunViewData, WorkflowTemplateKind, WorkflowTriggersDef,
-    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_runner_event_to_view_data,
-    chat_worktree_branch, clone_repository, contains_env_reference, current_unix_seconds,
-    default_secret_store, delete_legacy_database_files, detect_git_remote_info, display_with_tilde,
-    expand_tilde, fetch_antigravity_details, fetch_antigravity_usage, fetch_claude_details,
-    fetch_codex_details, fetch_github_open_issues_with_filter, find_claude_setting_spec,
-    find_codex_setting_spec, find_legacy_database_files, init_local_repository,
-    migrate_plaintext_secrets, parse_clone_source, probe_antigravity_cli, probe_claude_cli,
-    probe_codex_cli, project_dir_name, provider_effort_levels, query_chat_context,
-    remove_chat_worktree, remove_github_issue_label, resolve_antigravity_binary,
-    resolve_claude_binary, resolve_codex_binary, resolve_new_repository_destination,
-    run_antigravity_login, run_claude_auth_login, run_codex_login, sanitize_env_segment,
-    spawn_chat_turn, spawn_workflow_run, validate_branch_name,
+    WorkflowsFilter, WorkflowsSort, add_github_issue_label, apply_chat_worktree_to_checkout,
+    apply_runner_event_to_view_data, chat_worktree_branch, clone_repository,
+    contains_env_reference, current_unix_seconds, default_secret_store,
+    delete_legacy_database_files, detect_git_remote_info, display_with_tilde, expand_tilde,
+    fetch_antigravity_details, fetch_antigravity_usage, fetch_claude_details, fetch_codex_details,
+    fetch_github_open_issues_with_filter, find_claude_setting_spec, find_codex_setting_spec,
+    find_legacy_database_files, init_local_repository, inspect_chat_git_status,
+    migrate_plaintext_secrets, open_chat_pull_request, open_dir_in_terminal, open_url_in_browser,
+    parse_clone_source, probe_antigravity_cli, probe_claude_cli, probe_codex_cli, project_dir_name,
+    provider_effort_levels, query_chat_context, remove_chat_worktree, remove_github_issue_label,
+    resolve_antigravity_binary, resolve_claude_binary, resolve_codex_binary,
+    resolve_new_repository_destination, run_antigravity_login, run_claude_auth_login,
+    run_codex_login, sanitize_env_segment, spawn_chat_turn, spawn_workflow_run,
+    validate_branch_name,
 };
 use secrecy::{ExposeSecret, SecretString};
 
@@ -278,6 +281,20 @@ struct AppState {
     chat_context_loading: BTreeSet<String>,
     /// Why reading a chat's context window failed.
     chat_context_errors: BTreeMap<String, String>,
+    /// Whether chats show their Changes / Git panel.
+    chat_changes_open: bool,
+    /// Latest git status & diffs inspected for each chat.
+    chat_git_status: BTreeMap<String, ChatGitStatus>,
+    /// Chats whose git status/diffs are currently being read.
+    chat_git_loading: BTreeSet<String>,
+    /// Chats currently running a git action (commit, PR, apply).
+    chat_git_busy: BTreeSet<String>,
+    /// Latest git inspection or action error for a chat.
+    chat_git_errors: BTreeMap<String, String>,
+    /// Latest git action feedback banner for a chat.
+    chat_git_feedback: BTreeMap<String, String>,
+    /// Pull request URL opened from this chat during the current session.
+    chat_pr_urls: BTreeMap<String, String>,
     secret_store: Arc<dyn SecretStore>,
     secret_resolver: Arc<SecretResolver>,
     secrets: Vec<SecretRecord>,
@@ -1088,6 +1105,13 @@ impl AppState {
             chat_context_open: false,
             chat_context_loading: BTreeSet::new(),
             chat_context_errors: BTreeMap::new(),
+            chat_changes_open: false,
+            chat_git_status: BTreeMap::new(),
+            chat_git_loading: BTreeSet::new(),
+            chat_git_busy: BTreeSet::new(),
+            chat_git_errors: BTreeMap::new(),
+            chat_git_feedback: BTreeMap::new(),
+            chat_pr_urls: BTreeMap::new(),
             secret_store,
             secret_resolver,
             secrets,
@@ -3136,6 +3160,15 @@ struct ProviderLaunch {
     antigravity_binary: Option<std::path::PathBuf>,
 }
 
+/// Compact git change badge shown in the chat header.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ChatGitSummary {
+    pub(crate) uncommitted_files: usize,
+    pub(crate) additions: usize,
+    pub(crate) deletions: usize,
+    pub(crate) commits_ahead: usize,
+}
+
 /// What a chat's header and composer show.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveChatMeta {
@@ -3155,6 +3188,28 @@ pub(crate) struct ActiveChatMeta {
     pub(crate) worktree: Option<ChatWorktree>,
     /// Tokens in the context window and its size, after the latest turn.
     pub(crate) context: Option<(u64, u64)>,
+    /// Whether this chat's project is a git repository (enables the Changes drawer).
+    pub(crate) is_git_repo: bool,
+    /// Summary of uncommitted changes and commits ahead for the header Changes button.
+    pub(crate) git_summary: Option<ChatGitSummary>,
+}
+
+/// What the open chat's Changes drawer shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveChatChanges {
+    pub(crate) chat_id: String,
+    pub(crate) title: String,
+    pub(crate) working_dir: std::path::PathBuf,
+    pub(crate) is_worktree: bool,
+    pub(crate) default_branch: String,
+    pub(crate) open_prs_as_draft: bool,
+    pub(crate) running: bool,
+    pub(crate) loading: bool,
+    pub(crate) busy: bool,
+    pub(crate) status: Option<ChatGitStatus>,
+    pub(crate) error: Option<String>,
+    pub(crate) feedback: Option<String>,
+    pub(crate) pr_url: Option<String>,
 }
 
 /// What the open chat's context panel shows.
@@ -3589,12 +3644,17 @@ impl AppState {
 
 /// Opens a project's chats, showing the one last open there.
 pub(crate) fn open_chats_for_project(id: ProjectId) {
+    let mut selected_chat = None;
     state().update(|s| {
         s.selected_project = Some(id);
         s.expanded_projects.insert(id);
         s.active_view = ActiveView::Chat;
         s.status_message = None;
+        selected_chat = s.active_chat_id().cloned();
     });
+    if let Some(chat_id) = selected_chat {
+        refresh_chat_git_status(chat_id);
+    }
 }
 
 /// Opens a fresh composer in the selected (or first) project's chats.
@@ -3615,13 +3675,18 @@ pub(crate) fn start_new_chat() {
 }
 
 pub(crate) fn select_chat(id: &str) {
+    let mut found = false;
     state().update(|s| {
         if let Some(pid) = s.chat_sessions.get(id).map(|chat| chat.project_id) {
             s.selected_project = Some(pid);
             s.chat_selected.insert(pid, id.to_owned());
             s.active_view = ActiveView::Chat;
+            found = true;
         }
     });
+    if found {
+        refresh_chat_git_status(id.to_owned());
+    }
 }
 
 /// The project's chats, most recently active first.
@@ -3661,6 +3726,16 @@ pub(crate) fn active_chat_id() -> Option<String> {
 pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
     state().with(|s| {
         let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
+        let is_git_repo = !s.using_sample_projects
+            && s.factory
+                .project(chat.project_id)
+                .is_some_and(|project| project.root_path.join(".git").exists());
+        let git_summary = s.chat_git_status.get(&chat.id).map(|git| ChatGitSummary {
+            uncommitted_files: git.uncommitted_file_count(),
+            additions: git.uncommitted_additions(),
+            deletions: git.uncommitted_deletions(),
+            commits_ahead: git.commits_ahead,
+        });
         Some(ActiveChatMeta {
             id: chat.id.clone(),
             title: chat.display_title(),
@@ -3679,6 +3754,8 @@ pub(crate) fn active_chat_meta() -> Option<ActiveChatMeta> {
                 .context
                 .as_ref()
                 .map(|usage| (usage.used_tokens, usage.window_tokens)),
+            is_git_repo,
+            git_summary,
         })
     })
 }
@@ -4138,8 +4215,9 @@ fn start_chat_turn(chat_id: String, request: ChatTurnRequest) {
                     }
                 });
                 if finished {
-                    // See how the turn left the context window.
+                    // See how the turn left the context window and the git working tree.
                     refresh_chat_context(chat_id.clone());
+                    refresh_chat_git_status(chat_id.clone());
                     break;
                 }
             }
@@ -4237,6 +4315,9 @@ pub(crate) fn toggle_chat_context() {
     state().update(|s| {
         s.chat_context_open = !s.chat_context_open;
         opened = s.chat_context_open;
+        if opened {
+            s.chat_changes_open = false;
+        }
     });
     if opened {
         let missing = state().with(|s| {
@@ -4248,6 +4329,398 @@ pub(crate) fn toggle_chat_context() {
         if let Some(id) = missing {
             refresh_chat_context(id);
         }
+    }
+}
+
+pub(crate) fn chat_changes_open() -> bool {
+    state().with(|s| s.chat_changes_open)
+}
+
+/// Shows or hides the Changes / Git drawer for the open chat, refreshing git status on open.
+pub(crate) fn toggle_chat_changes() {
+    let mut opened = false;
+    let mut active_id = None;
+    state().update(|s| {
+        s.chat_changes_open = !s.chat_changes_open;
+        opened = s.chat_changes_open;
+        if opened {
+            s.chat_context_open = false;
+            active_id = s.active_chat_id().cloned();
+        }
+    });
+    if opened && let Some(id) = active_id {
+        refresh_chat_git_status(id);
+    }
+}
+
+/// Refreshes the open chat's git status and diffs.
+pub(crate) fn refresh_active_chat_changes() {
+    if let Some(id) = active_chat_id() {
+        refresh_chat_git_status(id);
+    }
+}
+
+pub(crate) fn active_chat_changes() -> Option<ActiveChatChanges> {
+    state().with(|s| {
+        let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
+        let project = s.factory.project(chat.project_id)?;
+        let settings = s.project_settings.get(&project.name);
+        let default_branch = settings
+            .map(|ps| ps.default_branch.clone())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "main".to_owned());
+        let open_prs_as_draft = settings.is_some_and(|ps| ps.open_prs_as_draft);
+        let (working_dir, is_worktree) = match (chat.workspace, chat.worktree.as_ref()) {
+            (ChatWorkspace::Worktree, Some(wt)) => (wt.path.clone(), true),
+            _ => (project.root_path.clone(), false),
+        };
+        Some(ActiveChatChanges {
+            chat_id: chat.id.clone(),
+            title: chat.display_title(),
+            working_dir,
+            is_worktree,
+            default_branch,
+            open_prs_as_draft,
+            running: chat.is_running(),
+            loading: s.chat_git_loading.contains(&chat.id),
+            busy: s.chat_git_busy.contains(&chat.id),
+            status: s.chat_git_status.get(&chat.id).cloned(),
+            error: s.chat_git_errors.get(&chat.id).cloned(),
+            feedback: s.chat_git_feedback.get(&chat.id).cloned(),
+            pr_url: s.chat_pr_urls.get(&chat.id).cloned(),
+        })
+    })
+}
+
+/// Inspects the chat's git status and diffs on a background thread.
+fn refresh_chat_git_status(chat_id: String) {
+    let mut job = None;
+    state().update(|s| {
+        if s.using_sample_projects || s.chat_git_loading.contains(&chat_id) {
+            return;
+        }
+        let Some(chat) = s.chat_sessions.get(&chat_id) else {
+            return;
+        };
+        let Some(project) = s.factory.project(chat.project_id) else {
+            return;
+        };
+        if !project.root_path.join(".git").exists() {
+            return;
+        }
+        let default_branch = s
+            .project_settings
+            .get(&project.name)
+            .map(|ps| ps.default_branch.clone())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "main".to_owned());
+        let (working_dir, is_worktree) = match (chat.workspace, chat.worktree.as_ref()) {
+            (ChatWorkspace::Worktree, Some(wt)) => (wt.path.clone(), true),
+            _ => (project.root_path.clone(), false),
+        };
+        if is_worktree && !working_dir.is_dir() {
+            return;
+        }
+        s.chat_git_loading.insert(chat_id.clone());
+        job = Some((working_dir, default_branch, is_worktree));
+    });
+    let Some((working_dir, default_branch, is_worktree)) = job else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result = spawn_blocking_task(move || {
+                inspect_chat_git_status(&working_dir, Some(&default_branch), is_worktree)
+            })
+            .await;
+            state().update(|s| {
+                s.chat_git_loading.remove(&chat_id);
+                match result {
+                    Ok(status) => {
+                        s.chat_git_errors.remove(&chat_id);
+                        s.chat_git_status.insert(chat_id.clone(), status);
+                    }
+                    Err(err) => {
+                        s.chat_git_errors.insert(chat_id.clone(), err.to_string());
+                    }
+                }
+            });
+        });
+    });
+}
+
+/// Sends a message to the active chat's agent asking it to review and commit the uncommitted changes.
+pub(crate) fn ask_agent_to_commit_active_chat() -> bool {
+    const COMMIT_PROMPT: &str = "Please review the uncommitted changes, stage what belongs in the commit, and create a git commit with a clear commit message.";
+    let now = current_unix_seconds();
+    let mut prepared = None;
+    state().update(|s| {
+        let Some(chat_id) = s.active_chat_id().cloned() else {
+            return;
+        };
+        if s.using_sample_projects || s.chat_git_busy.contains(&chat_id) {
+            return;
+        }
+        s.chat_git_errors.remove(&chat_id);
+        s.chat_git_feedback.remove(&chat_id);
+        prepared = Some(s.begin_chat_turn(COMMIT_PROMPT, &[], now));
+        if let Some(Err(message)) = &prepared {
+            s.chat_git_errors.insert(chat_id, message.clone());
+            s.status_message = Some(message.clone());
+        } else {
+            s.status_message = None;
+        }
+    });
+    match prepared {
+        Some(Ok((chat_id, request))) => {
+            start_chat_turn(chat_id, request);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Pushes the active chat's branch and opens a GitHub pull request via `gh pr create`.
+pub(crate) fn open_active_chat_pr(title: String, body: String, draft: bool) {
+    let mut job = None;
+    state().update(|s| {
+        let Some(chat_id) = s.active_chat_id().cloned() else {
+            return;
+        };
+        if s.using_sample_projects || s.chat_git_busy.contains(&chat_id) {
+            return;
+        }
+        let Some(chat) = s.chat_sessions.get(&chat_id) else {
+            return;
+        };
+        let Some(project) = s.factory.project(chat.project_id) else {
+            return;
+        };
+        let settings = s.project_settings.get(&project.name);
+        let default_branch = settings
+            .map(|ps| ps.default_branch.clone())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "main".to_owned());
+        let auth_mode = settings
+            .map(|ps| ps.github_auth_mode)
+            .unwrap_or(IssueSourceAuthMode::GitHubCli);
+        let pat_id = settings.and_then(|ps| ps.github_pat_id.clone());
+        let (working_dir, branch) = match (chat.workspace, chat.worktree.as_ref()) {
+            (ChatWorkspace::Worktree, Some(wt)) => (wt.path.clone(), wt.branch.clone()),
+            _ => (
+                project.root_path.clone(),
+                s.chat_git_status
+                    .get(&chat_id)
+                    .map(|g| g.branch.clone())
+                    .unwrap_or_default(),
+            ),
+        };
+        let ssh_auth_sock = {
+            let configured = s.preferences.advanced.ssh_auth_sock.trim();
+            if configured.is_empty() {
+                None
+            } else {
+                Some(configured.to_owned())
+            }
+        };
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        let resolver = Arc::clone(&s.secret_resolver);
+        s.chat_git_busy.insert(chat_id.clone());
+        s.chat_git_errors.remove(&chat_id);
+        s.chat_git_feedback.remove(&chat_id);
+        job = Some((
+            chat_id,
+            working_dir,
+            branch,
+            default_branch,
+            title,
+            body,
+            draft,
+            auth_mode,
+            pat_id,
+            resolver,
+            ssh_auth_sock,
+            path_env,
+        ));
+    });
+    let Some((
+        chat_id,
+        working_dir,
+        branch,
+        default_branch,
+        title,
+        body,
+        draft,
+        auth_mode,
+        pat_id,
+        resolver,
+        ssh_auth_sock,
+        path_env,
+    )) = job
+    else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result = spawn_blocking_task(move || {
+                let (github_auth, redactor) =
+                    resolve_github_auth_off_thread(auth_mode, pat_id.as_ref(), &resolver)?;
+                let res = open_chat_pull_request(&ChatPullRequestRequest {
+                    working_dir,
+                    branch,
+                    base_branch: Some(default_branch),
+                    title,
+                    body,
+                    draft,
+                    github_auth: Some(github_auth),
+                    gh_binary: None,
+                    ssh_auth_sock,
+                    path_env,
+                })
+                .map_err(|err| redactor.redact(&err.to_string()))?;
+                Ok::<_, String>(res)
+            })
+            .await;
+            state().update(|s| {
+                s.chat_git_busy.remove(&chat_id);
+                match result {
+                    Ok(pr) => {
+                        let label = if pr.draft {
+                            "Opened draft PR"
+                        } else {
+                            "Opened PR"
+                        };
+                        let note = if pr.url.is_empty() {
+                            format!("{label} for {}", pr.branch)
+                        } else {
+                            format!("{label}: {}", pr.url)
+                        };
+                        if !pr.url.is_empty() {
+                            s.chat_pr_urls.insert(chat_id.clone(), pr.url);
+                        }
+                        s.chat_git_feedback.insert(chat_id.clone(), note.clone());
+                        s.status_message = Some(note);
+                    }
+                    Err(msg) => {
+                        s.chat_git_errors.insert(chat_id.clone(), msg.clone());
+                        s.status_message = Some(msg);
+                    }
+                }
+            });
+            refresh_chat_git_status(chat_id);
+        });
+    });
+}
+
+/// Applies the active worktree chat's changes (patch or commits) to the main project checkout.
+pub(crate) fn apply_active_chat_to_checkout() {
+    let mut job = None;
+    state().update(|s| {
+        let Some(chat_id) = s.active_chat_id().cloned() else {
+            return;
+        };
+        if s.using_sample_projects || s.chat_git_busy.contains(&chat_id) {
+            return;
+        }
+        let Some(chat) = s.chat_sessions.get(&chat_id) else {
+            return;
+        };
+        let Some(project) = s.factory.project(chat.project_id) else {
+            return;
+        };
+        let Some(worktree) = chat
+            .worktree
+            .as_ref()
+            .filter(|_| chat.workspace == ChatWorkspace::Worktree)
+        else {
+            return;
+        };
+        let default_branch = s
+            .project_settings
+            .get(&project.name)
+            .map(|ps| ps.default_branch.clone())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "main".to_owned());
+        let ssh_auth_sock = {
+            let configured = s.preferences.advanced.ssh_auth_sock.trim();
+            if configured.is_empty() {
+                None
+            } else {
+                Some(configured.to_owned())
+            }
+        };
+        s.chat_git_busy.insert(chat_id.clone());
+        s.chat_git_errors.remove(&chat_id);
+        s.chat_git_feedback.remove(&chat_id);
+        job = Some((
+            chat_id,
+            project.root_path.clone(),
+            worktree.path.clone(),
+            default_branch,
+            ssh_auth_sock,
+        ));
+    });
+    let Some((chat_id, project_root, worktree_dir, default_branch, ssh_auth_sock)) = job else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let result = spawn_blocking_task(move || {
+                apply_chat_worktree_to_checkout(
+                    &project_root,
+                    &worktree_dir,
+                    Some(&default_branch),
+                    ssh_auth_sock.as_deref(),
+                )
+            })
+            .await;
+            state().update(|s| {
+                s.chat_git_busy.remove(&chat_id);
+                match result {
+                    Ok(applied) => {
+                        s.chat_git_feedback
+                            .insert(chat_id.clone(), applied.summary.clone());
+                        s.status_message = Some(applied.summary);
+                    }
+                    Err(err) => {
+                        let msg = err.to_string();
+                        s.chat_git_errors.insert(chat_id.clone(), msg.clone());
+                        s.status_message = Some(msg);
+                    }
+                }
+            });
+            refresh_chat_git_status(chat_id);
+        });
+    });
+}
+
+/// Opens the active chat's working directory in Terminal.app.
+pub(crate) fn open_active_chat_in_terminal() {
+    let dir = state().with(|s| {
+        let chat = s.active_chat_id().and_then(|id| s.chat_sessions.get(id))?;
+        let project = s.factory.project(chat.project_id)?;
+        Some(match (chat.workspace, chat.worktree.as_ref()) {
+            (ChatWorkspace::Worktree, Some(wt)) => wt.path.clone(),
+            _ => project.root_path.clone(),
+        })
+    });
+    if let Some(dir) = dir
+        && let Err(err) = open_dir_in_terminal(&dir)
+    {
+        set_status_message(err.to_string());
+    }
+}
+
+/// Opens the pull request URL created from the active chat in the default browser.
+pub(crate) fn open_active_chat_pr_url() {
+    let url = state().with(|s| {
+        let id = s.active_chat_id()?;
+        s.chat_pr_urls.get(id).cloned()
+    });
+    if let Some(url) = url
+        && let Err(err) = open_url_in_browser(&url)
+    {
+        set_status_message(err.to_string());
     }
 }
 
@@ -4354,6 +4827,12 @@ pub(crate) fn delete_chat(id: &str) {
         }
         s.chat_context_loading.remove(id);
         s.chat_context_errors.remove(id);
+        s.chat_git_status.remove(id);
+        s.chat_git_loading.remove(id);
+        s.chat_git_busy.remove(id);
+        s.chat_git_errors.remove(id);
+        s.chat_git_feedback.remove(id);
+        s.chat_pr_urls.remove(id);
         s.chat_secrets_caches.remove(id);
         s.status_message = Some(match chat.worktree.as_ref() {
             Some(worktree) if chat.workspace == ChatWorkspace::Worktree => format!(

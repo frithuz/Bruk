@@ -23,6 +23,7 @@ pub(crate) fn workflow_run_view() -> impl IntoElement {
     let steer_draft = signal(String::new());
     let attempt_details_open = signal(false);
     let toggled_tool_cards = signal(BTreeSet::<(usize, usize)>::new());
+    let collapsed_diff_files = signal(BTreeSet::<String>::new());
     let command_query = signal(String::new());
 
     view()
@@ -76,7 +77,9 @@ pub(crate) fn workflow_run_view() -> impl IntoElement {
                                 canvas
                             }
                         }
-                        RunDetailTab::Diff => canvas.child(diff_tab_view(&run)),
+                        RunDetailTab::Diff => {
+                            canvas.child(diff_tab_view(&run, collapsed_diff_files))
+                        }
                         RunDetailTab::Coverage => canvas.child(coverage_tab_view(&run)),
                     };
 
@@ -948,9 +951,74 @@ fn terminal_output_row(line: &TerminalLine) -> impl IntoElement {
 
 // --- Diff Tab ---------------------------------------------------------------------------
 
-fn diff_tab_view(run: &WorkflowRunViewData) -> impl IntoElement {
+fn diff_tab_view(
+    run: &WorkflowRunViewData,
+    collapsed_files: Signal<BTreeSet<String>>,
+) -> impl IntoElement {
     let total_add: usize = run.diffs.iter().map(|d| d.additions).sum();
     let total_del: usize = run.diffs.iter().map(|d| d.deletions).sum();
+    let collapsed = collapsed_files.get();
+    let all_collapsed =
+        !run.diffs.is_empty() && run.diffs.iter().all(|f| collapsed.contains(&f.path));
+    let all_paths: Vec<String> = run.diffs.iter().map(|f| f.path.clone()).collect();
+
+    let mut right_meta = view()
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .child(
+            text(format!("+{total_add}"))
+                .app_class("font-mono")
+                .text_size(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::diff_add_text()),
+        )
+        .child(
+            text(format!("−{total_del}"))
+                .app_class("font-mono")
+                .text_size(px(12.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::diff_del_text()),
+        );
+
+    if !run.diffs.is_empty() {
+        let toggle_label = if all_collapsed {
+            "Expand all"
+        } else {
+            "Collapse all"
+        };
+        right_meta = right_meta.child(
+            button()
+                .test_id("wf-run-diff-toggle-all")
+                .accessibility_label(toggle_label)
+                .on_press(move || {
+                    collapsed_files.update(|set| {
+                        if all_collapsed {
+                            for path in &all_paths {
+                                set.remove(path);
+                            }
+                        } else {
+                            for path in &all_paths {
+                                set.insert(path.clone());
+                            }
+                        }
+                    });
+                })
+                .px(px(8.0))
+                .py(px(3.5))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    text(toggle_label)
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::text_secondary()),
+                ),
+        );
+    }
 
     let mut list = view().gap(px(12.0)).child(
         view()
@@ -967,26 +1035,7 @@ fn diff_tab_view(run: &WorkflowRunViewData) -> impl IntoElement {
                 .font_weight(FontWeight::MEDIUM)
                 .text_color(palette::text_secondary()),
             )
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(
-                        text(format!("+{total_add}"))
-                            .app_class("font-mono")
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(palette::diff_add_text()),
-                    )
-                    .child(
-                        text(format!("−{total_del}"))
-                            .app_class("font-mono")
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::SEMIBOLD)
-                            .text_color(palette::diff_del_text()),
-                    ),
-            ),
+            .child(right_meta),
     );
 
     if run.diffs.is_empty() {
@@ -1006,62 +1055,61 @@ fn diff_tab_view(run: &WorkflowRunViewData) -> impl IntoElement {
         );
     } else {
         for file in &run.diffs {
-            list = list.child(diff_file_card(file));
+            let is_collapsed = collapsed.contains(&file.path);
+            list = list.child(diff_file_card(file, is_collapsed, collapsed_files));
         }
     }
 
     list
 }
 
-fn diff_file_card(file: &DiffFileChange) -> impl IntoElement {
-    let mut lines_col = view().py(px(6.0));
-    lines_col = lines_col.child(
-        text(file.hunk_header.clone())
-            .px(px(12.0))
-            .py(px(3.0))
-            .app_class("font-mono")
-            .text_size(px(11.0))
-            .text_color(palette::text_muted()),
-    );
-
-    for line in &file.lines {
-        let (bg, fg) = match line.kind {
-            DiffLineKind::Context => (AdaptiveColor::TRANSPARENT, palette::text_secondary()),
-            DiffLineKind::Added => (palette::diff_add_bg(), palette::diff_add_text()),
-            DiffLineKind::Removed => (palette::diff_del_bg(), palette::diff_del_text()),
-        };
-        lines_col = lines_col.child(
-            view().px(px(12.0)).py(px(2.5)).bg(bg).child(
-                text(line.text.clone())
-                    .app_class("font-mono")
-                    .text_size(px(11.5))
-                    .text_color(fg),
-            ),
-        );
-    }
-
-    view()
+fn diff_file_card(
+    file: &DiffFileChange,
+    collapsed: bool,
+    collapsed_files: Signal<BTreeSet<String>>,
+) -> impl IntoElement {
+    let toggle_path = file.path.clone();
+    let mut card = view()
         .rounded(px(9.0))
         .border_1()
         .border_color(palette::border_color())
         .bg(palette::card_bg())
         .overflow_hidden()
         .child(
-            view()
+            button()
+                .accessibility_label(format!("Toggle diff for {}", file.path))
+                .on_press(move || {
+                    collapsed_files.update(|set| {
+                        if !set.remove(&toggle_path) {
+                            set.insert(toggle_path.clone());
+                        }
+                    });
+                })
+                .w_full()
                 .flex_row()
                 .items_center()
                 .justify_between()
                 .px(px(12.0))
                 .py(px(8.5))
                 .bg(palette::card_inset_bg())
-                .border_b_1()
-                .border_color(palette::divider_color())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
                 .child(
-                    text(file.path.clone())
-                        .app_class("font-mono")
-                        .text_size(px(12.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette::text_primary()),
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(if collapsed {
+                            icons::chevron_right(palette::text_muted()).into_element()
+                        } else {
+                            icons::chevron_down(palette::text_muted()).into_element()
+                        })
+                        .child(
+                            text(file.path.clone())
+                                .app_class("font-mono")
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        ),
                 )
                 .child(
                     view()
@@ -1083,8 +1131,41 @@ fn diff_file_card(file: &DiffFileChange) -> impl IntoElement {
                                 .text_color(palette::diff_del_text()),
                         ),
                 ),
-        )
-        .child(lines_col)
+        );
+
+    if !collapsed {
+        let mut lines_col = view()
+            .border_t_1()
+            .border_color(palette::divider_color())
+            .py(px(6.0));
+        lines_col = lines_col.child(
+            text(file.hunk_header.clone())
+                .px(px(12.0))
+                .py(px(3.0))
+                .app_class("font-mono")
+                .text_size(px(11.0))
+                .text_color(palette::text_muted()),
+        );
+
+        for line in &file.lines {
+            let (bg, fg) = match line.kind {
+                DiffLineKind::Context => (AdaptiveColor::TRANSPARENT, palette::text_secondary()),
+                DiffLineKind::Added => (palette::diff_add_bg(), palette::diff_add_text()),
+                DiffLineKind::Removed => (palette::diff_del_bg(), palette::diff_del_text()),
+            };
+            lines_col = lines_col.child(
+                view().px(px(12.0)).py(px(2.5)).bg(bg).child(
+                    text(line.text.clone())
+                        .app_class("font-mono")
+                        .text_size(px(11.5))
+                        .text_color(fg),
+                ),
+            );
+        }
+        card = card.child(lines_col);
+    }
+
+    card
 }
 
 // --- Coverage Extension Tab -------------------------------------------------------------

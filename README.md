@@ -57,6 +57,13 @@ works:
   (`<branch prefix>chat-<title>`). The checkout is left alone. Deleting the chat removes the worktree,
   including uncommitted changes; the branch and its commits stay.
 
+For git projects, the **Changes** drawer in the chat header shows a live diff of every modified,
+staged, and newly created file (plus commits ahead of the base branch for worktrees), updated
+automatically after each reply, with per-file folding and a **Collapse all / Expand all** toggle.
+From the drawer you can ask the agent to commit your uncommitted edits, push a branch and open a
+GitHub pull request (`gh pr create`), apply a worktree's patch or commits back to your main
+project checkout, or jump straight into Terminal or Finder.
+
 Each message runs one non-interactive turn of the provider CLI and resumes the provider's own
 session (`claude --resume <id>`, `codex exec … resume <id>`, `agy --conversation <id>`), so the agent keeps the whole
 conversation. Turns get the same user-context isolation as workflow steps: only the chosen agent

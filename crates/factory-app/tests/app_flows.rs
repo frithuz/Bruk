@@ -4343,3 +4343,166 @@ fn secrets_preferences_and_project_environment_flows() {
     assert!(!raw_db_text.contains("sk_live_app_secret_99887766"));
     assert!(!raw_db_text.contains("proj_super_secret_55443322"));
 }
+
+#[cfg(unix)]
+#[test]
+fn chat_changes_drawer_inspects_diffs_applies_commits_and_opens_pr() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let bare_origin = temp.path().join("origin.git");
+    std::fs::create_dir_all(&bare_origin).unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "--bare"])
+            .current_dir(&bare_origin)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let repo_dir = temp.path().join("changes-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(repo_dir.join("README.md"), "demo\n").unwrap();
+    let origin_str = bare_origin.to_string_lossy().into_owned();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Test User"],
+        vec!["config", "commit.gpgsign", "false"],
+        vec!["config", "tag.gpgsign", "false"],
+        vec!["add", "."],
+        vec!["commit", "-m", "initial"],
+        vec!["remote", "add", "origin", &origin_str],
+        vec!["push", "-u", "origin", "main"],
+    ] {
+        let status = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo_dir)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+case " $* " in
+  *" --include-partial-messages "*)
+    prompt="$(cat)"
+    case "$prompt" in
+      *"create a git commit"*)
+        git add -A
+        git commit -m "Add hello module" > /dev/null
+        echo '{"type":"system","subtype":"init","session_id":"wt-diff-sess"}'
+        echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Committed the changes as Add hello module."}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":8,"output_tokens":3}}'
+        ;;
+      *)
+        printf 'demo\nupdated by agent\n' > README.md
+        printf 'pub fn hello() -> &str { "hi" }\n' > hello.rs
+        echo '{"type":"system","subtype":"init","session_id":"wt-diff-sess"}'
+        echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Updated README.md and created hello.rs"}]}}'
+        echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":12,"output_tokens":4}}'
+        ;;
+    esac
+    ;;
+  *" --fork-session "*)
+    cat > /dev/null
+    ;;
+  *)
+    echo '{"loggedIn":true,"authMethod":"claude.ai","email":"chat@example.com"}'
+    ;;
+esac
+"#,
+    );
+    let gh_log = temp.path().join("gh-calls.log");
+    write_fake_claude(
+        &bin_dir,
+        "gh",
+        &format!(
+            "#!/bin/sh\necho \"$*\" > '{}'\necho 'https://github.com/acme/changes-repo/pull/77'\n",
+            gh_log.display()
+        ),
+    );
+
+    let mut app =
+        start_with_db_and_claude_path(db_path.clone(), bin_dir.as_os_str().to_os_string());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "changes-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'changes-repo'").unwrap();
+
+    // Start a worktree chat and let the agent edit README.md + create hello.rs.
+    app.press("id:sidebar-chats-1").unwrap();
+    app.wait_for("Chat with an agent in changes-repo").unwrap();
+    app.press("id:chat-new-workspace").unwrap();
+    app.press("role:option[New worktree]").unwrap();
+    app.type_text("id:chat-composer-input", "Add hello module")
+        .unwrap();
+    app.press("id:chat-send-btn").unwrap();
+    app.wait_for("Updated README.md and created hello.rs")
+        .unwrap();
+
+    // Header Changes button updates automatically with file count & diff stats.
+    app.wait_for("2 files").unwrap();
+    app.press("id:chat-changes-btn").unwrap();
+    app.wait_for("id:chat-changes-panel").unwrap();
+    app.wait_for("Uncommitted changes · 2 files").unwrap();
+    assert!(app.screen().shows("README.md"));
+    assert!(app.screen().shows("hello.rs"));
+    assert!(app.screen().shows("New"));
+    assert!(app.screen().shows("+updated by agent"));
+
+    // Collapse all and Expand all toggle every file card in the diff view.
+    assert!(app.screen().shows("Collapse all"));
+    app.press("id:chat-diff-toggle-all").unwrap();
+    app.wait_for("Expand all").unwrap();
+    assert!(!app.screen().shows("+updated by agent"));
+    app.press("id:chat-diff-toggle-all").unwrap();
+    app.wait_for("Collapse all").unwrap();
+    assert!(app.screen().shows("+updated by agent"));
+
+    // Apply uncommitted worktree changes to the main project checkout.
+    app.press("id:chat-changes-apply-btn").unwrap();
+    app.wait_for("Applied 2 files to the project checkout.")
+        .unwrap();
+    assert_eq!(
+        std::fs::read_to_string(repo_dir.join("README.md")).unwrap(),
+        "demo\nupdated by agent\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo_dir.join("hello.rs")).unwrap(),
+        "pub fn hello() -> &str { \"hi\" }\n"
+    );
+
+    // Pressing Commit sends a message to the agent to create the commit, and the drawer refreshes.
+    app.press("id:chat-changes-commit-btn").unwrap();
+    app.wait_for("Committed the changes as Add hello module.")
+        .unwrap();
+    app.wait_for("1 commit ahead of main").unwrap();
+    assert!(app.screen().shows("Branch diff · 2 files"));
+
+    // Push branch and open a Pull Request via the inline PR form.
+    app.press("id:chat-changes-pr-toggle").unwrap();
+    app.wait_for("id:chat-pr-form").unwrap();
+    app.press("id:chat-pr-submit").unwrap();
+    app.wait_for("id:chat-pr-link-card").unwrap();
+    assert!(
+        app.screen()
+            .shows("https://github.com/acme/changes-repo/pull/77")
+    );
+    let gh_args = std::fs::read_to_string(&gh_log).unwrap();
+    assert!(gh_args.contains("pr create"));
+    assert!(gh_args.contains("Add hello module"));
+}

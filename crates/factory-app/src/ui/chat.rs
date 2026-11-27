@@ -7,10 +7,13 @@
 //! sends; Shift+Return adds a line. Files (screenshots, logs, any binary) attach by dropping
 //! them on the chat, pasting them into the composer, or the paper clip button.
 
+use std::collections::BTreeSet;
+
 use factory_core::{
-    ChatAttachment, ChatContextKind, ChatContextUsage, ChatEntry, ChatNoticeTone,
-    ChatSessionSummary, ChatToolStatus, ChatWorkspace, ProjectSandboxMode, ProviderKind,
-    current_unix_seconds, format_bytes, format_currency, format_tokens,
+    ChatAttachment, ChatContextKind, ChatContextUsage, ChatEntry, ChatGitStatus, ChatNoticeTone,
+    ChatSessionSummary, ChatToolStatus, ChatWorkspace, DiffFileChange, DiffLineKind,
+    ProjectSandboxMode, ProviderKind, current_unix_seconds, format_bytes, format_currency,
+    format_tokens,
 };
 use nsh_base::{
     SelectItem, SelectValue, TextViewPart, TextViewParts, button, input, select, text_view,
@@ -19,7 +22,10 @@ use nsh_base::{
 use nsh_core::prelude::*;
 
 use crate::{
-    store::{self, ActiveChatContext, ActiveChatMeta, ChatEntryRow, PendingChatAttachment},
+    store::{
+        self, ActiveChatChanges, ActiveChatContext, ActiveChatMeta, ChatEntryRow,
+        PendingChatAttachment,
+    },
     ui::{icons, palette},
 };
 
@@ -31,6 +37,7 @@ const DEFAULT_EFFORT_VALUE: &str = "__default_effort__";
 /// How close to the end the transcript must be scrolled to keep following new text.
 const FOLLOW_THRESHOLD: f32 = 56.0;
 const CONTEXT_PANEL_WIDTH: f32 = 300.0;
+const CHANGES_PANEL_WIDTH: f32 = 380.0;
 /// Items of a context group listed before "+N more".
 const CONTEXT_GROUP_SHOWN: usize = 8;
 
@@ -641,7 +648,8 @@ fn chat_conversation(draft: Signal<String>) -> impl IntoElement {
                             move || chat_composer(draft),
                         )),
                 )
-                .child(when(store::chat_context_open, context_panel)),
+                .child(when(store::chat_context_open, context_panel))
+                .child(when(store::chat_changes_open, changes_panel)),
         )
 }
 
@@ -747,6 +755,10 @@ fn chat_header(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
                                 }
                                 None => view().into_element(),
                             }))
+                            .child(when(
+                                move || meta.get().is_some_and(|m| m.is_git_repo),
+                                move || changes_button(meta),
+                            ))
                             .child(context_button(meta))
                             .child(sandbox_picker(
                                 "chat-access",
@@ -2513,4 +2525,1063 @@ fn pending_attachment(attachment: PendingChatAttachment) -> impl IntoElement {
                 .hover(|s| s.bg(palette::subtle_surface_bg()))
                 .child(icons::close_x(palette::text_secondary())),
         )
+}
+
+// --- Changes & Git Drawer ---------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChatDiffScope {
+    Uncommitted,
+    Branch,
+}
+
+/// Opens the Changes drawer; shows file count and +/- stats once inspected.
+fn changes_button(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
+    let open = computed(store::chat_changes_open);
+    let summary = computed(move || meta.get().and_then(|m| m.git_summary));
+
+    button()
+        .test_id("chat-changes-btn")
+        .accessibility_label(move || {
+            Some(
+                match summary.get() {
+                    Some(s) if s.uncommitted_files > 0 => format!(
+                        "Changes, {} files, +{} -{}",
+                        s.uncommitted_files, s.additions, s.deletions
+                    ),
+                    Some(s) if s.commits_ahead > 0 => {
+                        format!("Changes, {} commits ahead", s.commits_ahead)
+                    }
+                    _ => "Changes".to_owned(),
+                }
+                .into(),
+            )
+        })
+        .on_press(store::toggle_chat_changes)
+        .flex_row()
+        .items_center()
+        .gap(px(6.0))
+        .h(px(28.0))
+        .px(px(9.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(move || {
+            if open.get() {
+                palette::card_selected_border()
+            } else {
+                palette::border_color()
+            }
+        })
+        .bg(move || {
+            if open.get() {
+                palette::card_selected_bg()
+            } else {
+                palette::control_bg()
+            }
+        })
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.85))
+        .child(icons::git_diff(palette::text_muted()))
+        .child(dynamic(move || match summary.get() {
+            Some(s) if s.uncommitted_files > 0 => {
+                let noun = if s.uncommitted_files == 1 {
+                    "file"
+                } else {
+                    "files"
+                };
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.0))
+                    .child(
+                        text(format!("{} {noun}", s.uncommitted_files))
+                            .tabular_nums()
+                            .text_size(px(11.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_secondary()),
+                    )
+                    .child(
+                        text(format!("+{}", s.additions))
+                            .app_class("font-mono")
+                            .tabular_nums()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::diff_add_text()),
+                    )
+                    .child(
+                        text(format!("−{}", s.deletions))
+                            .app_class("font-mono")
+                            .tabular_nums()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::diff_del_text()),
+                    )
+                    .into_element()
+            }
+            Some(s) if s.commits_ahead > 0 => {
+                let noun = if s.commits_ahead == 1 {
+                    "commit"
+                } else {
+                    "commits"
+                };
+                text(format!("{} {noun}", s.commits_ahead))
+                    .tabular_nums()
+                    .text_size(px(11.5))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette::link_blue())
+                    .into_element()
+            }
+            _ => text("Changes")
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_secondary())
+                .into_element(),
+        }))
+}
+
+fn changes_panel() -> impl IntoElement {
+    let changes = computed(store::active_chat_changes);
+    let scope = signal(ChatDiffScope::Uncommitted);
+    let pr_form_open = signal(false);
+    let pr_title = signal(String::new());
+    let pr_body = signal(String::new());
+    let pr_draft = signal(false);
+    let collapsed_files = signal(BTreeSet::<String>::new());
+
+    let refresh_disabled = move || changes.get().is_some_and(|c| c.loading || c.busy);
+
+    view()
+        .test_id("chat-changes-panel")
+        .w(px(CHANGES_PANEL_WIDTH))
+        .flex_shrink_0()
+        .min_h(px(0.0))
+        .border_l_1()
+        .border_color(palette::divider_color())
+        .bg(palette::header_bg())
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .px(px(14.0))
+                .pt(px(12.0))
+                .pb(px(8.0))
+                .child(
+                    text("Changes")
+                        .text_size(px(12.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_primary()),
+                )
+                .child(dynamic(move || {
+                    let branch = changes
+                        .get()
+                        .and_then(|c| c.status.map(|s| s.branch))
+                        .unwrap_or_default();
+                    if branch.is_empty() {
+                        return view().flex_1().into_element();
+                    }
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            view()
+                                .max_w(px(190.0))
+                                .px(px(6.0))
+                                .py(px(2.0))
+                                .rounded(px(5.0))
+                                .bg(palette::tag_pill_bg())
+                                .child(
+                                    text(branch)
+                                        .truncate()
+                                        .app_class("font-mono")
+                                        .text_size(px(10.5))
+                                        .text_color(palette::text_subdued()),
+                                ),
+                        )
+                        .into_element()
+                }))
+                .child(
+                    button()
+                        .test_id("chat-changes-refresh")
+                        .accessibility_label("Refresh changes")
+                        .disabled(refresh_disabled)
+                        .on_press(store::refresh_active_chat_changes)
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .rounded(px(6.0))
+                        .items_center()
+                        .justify_center()
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .disabled_style(|s| s.opacity(0.4))
+                        .child(icons::sync_arrows(palette::text_subdued())),
+                )
+                .child(
+                    button()
+                        .test_id("chat-changes-close")
+                        .accessibility_label("Hide changes")
+                        .on_press(store::toggle_chat_changes)
+                        .w(px(24.0))
+                        .h(px(24.0))
+                        .rounded(px(6.0))
+                        .items_center()
+                        .justify_center()
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .child(icons::close_x(palette::text_subdued())),
+                ),
+        )
+        .child(
+            scroll().flex_1().min_h(px(0.0)).child(
+                view()
+                    .px(px(14.0))
+                    .pb(px(16.0))
+                    .gap(px(12.0))
+                    .child(dynamic(move || match changes.get() {
+                        Some(data) => changes_panel_body(
+                            data,
+                            scope,
+                            pr_form_open,
+                            pr_title,
+                            pr_body,
+                            pr_draft,
+                            collapsed_files,
+                        )
+                        .into_element(),
+                        None => view().into_element(),
+                    })),
+            ),
+        )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn changes_panel_body(
+    data: ActiveChatChanges,
+    scope: Signal<ChatDiffScope>,
+    pr_form_open: Signal<bool>,
+    pr_title: Signal<String>,
+    pr_body: Signal<String>,
+    pr_draft: Signal<bool>,
+    collapsed_files: Signal<BTreeSet<String>>,
+) -> impl IntoElement {
+    let mut body = view().gap(px(10.0));
+
+    // Action toolbar
+    body = body.child(changes_action_bar(
+        &data,
+        pr_form_open,
+        pr_title,
+        pr_body,
+        pr_draft,
+    ));
+
+    // Inline Open PR form
+    if pr_form_open.get() {
+        body = body.child(pr_form_card(
+            &data.default_branch,
+            data.busy || data.running,
+            pr_form_open,
+            pr_title,
+            pr_body,
+            pr_draft,
+        ));
+    }
+
+    // PR URL banner
+    if let Some(url) = data.pr_url.clone() {
+        body = body.child(
+            view()
+                .test_id("chat-pr-link-card")
+                .p(px(10.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::intake_banner_border())
+                .bg(palette::intake_banner_bg())
+                .gap(px(6.0))
+                .child(
+                    text("Pull request ready")
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::link_blue()),
+                )
+                .child(
+                    text(url)
+                        .selectable(true)
+                        .app_class("font-mono")
+                        .text_size(px(11.0))
+                        .text_color(palette::text_secondary()),
+                )
+                .child(
+                    button()
+                        .test_id("chat-pr-open-link")
+                        .accessibility_label("Open pull request in browser")
+                        .on_press(store::open_active_chat_pr_url)
+                        .self_start()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .child(icons::external_link(palette::link_blue()))
+                        .child(
+                            text("Open in Browser")
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
+        );
+    }
+
+    // Feedback & error callouts
+    if let Some(feedback) = data.feedback.clone() {
+        body = body.child(
+            view()
+                .test_id("chat-changes-feedback")
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::status_success_bg())
+                .child(
+                    text(feedback)
+                        .selectable(true)
+                        .text_size(px(11.5))
+                        .text_color(palette::success_text()),
+                ),
+        );
+    }
+
+    if let Some(error) = data.error.clone() {
+        body = body.child(
+            view()
+                .test_id("chat-changes-error")
+                .px(px(10.0))
+                .py(px(8.0))
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(palette::pill_error_border())
+                .bg(palette::pill_error_bg())
+                .child(
+                    text(error)
+                        .selectable(true)
+                        .text_size(px(11.5))
+                        .text_color(palette::pill_error_text()),
+                ),
+        );
+    }
+
+    let Some(status) = data.status else {
+        let msg = if data.loading {
+            "Checking git status…".to_owned()
+        } else if data.is_worktree && !data.working_dir.is_dir() {
+            "The worktree is created when you send the first message.".to_owned()
+        } else {
+            "No git status loaded yet.".to_owned()
+        };
+        return body.child(
+            text(msg)
+                .test_id("chat-changes-empty")
+                .text_size(px(12.0))
+                .text_color(palette::text_subdued()),
+        );
+    };
+
+    // Commits ahead section
+    if status.commits_ahead > 0 {
+        body = body.child(commits_ahead_card(&status));
+    }
+
+    // Scope switcher when both uncommitted and committed branch diffs exist
+    let effective_scope = if status.has_uncommitted_changes() && status.commits_ahead > 0 {
+        body = body.child(diff_scope_switcher(&status, scope));
+        scope.get()
+    } else if status.has_uncommitted_changes() {
+        ChatDiffScope::Uncommitted
+    } else if status.commits_ahead > 0 {
+        ChatDiffScope::Branch
+    } else {
+        ChatDiffScope::Uncommitted
+    };
+
+    let (diffs, add_total, del_total, section_label) = match effective_scope {
+        ChatDiffScope::Uncommitted => (
+            &status.uncommitted_diffs,
+            status.uncommitted_additions(),
+            status.uncommitted_deletions(),
+            "Uncommitted changes",
+        ),
+        ChatDiffScope::Branch => (
+            &status.committed_diffs,
+            status.committed_additions(),
+            status.committed_deletions(),
+            "Branch diff",
+        ),
+    };
+
+    if diffs.is_empty() {
+        return body.child(
+            view()
+                .test_id("chat-changes-empty")
+                .p(px(16.0))
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_bg())
+                .items_center()
+                .child(
+                    text("Working tree is clean.")
+                        .text_size(px(12.0))
+                        .text_color(palette::text_subdued()),
+                ),
+        );
+    }
+
+    let collapsed = collapsed_files.get();
+    let all_collapsed = diffs.iter().all(|f| collapsed.contains(&f.path));
+    let all_paths: Vec<String> = diffs.iter().map(|f| f.path.clone()).collect();
+    let toggle_all_label = if all_collapsed {
+        "Expand all"
+    } else {
+        "Collapse all"
+    };
+
+    let file_noun = if diffs.len() == 1 { "file" } else { "files" };
+    body = body.child(
+        view()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .pt(px(2.0))
+            .child(
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        text(format!("{section_label} · {} {file_noun}", diffs.len()))
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::text_subdued()),
+                    )
+                    .child(
+                        text(format!("+{add_total}"))
+                            .app_class("font-mono")
+                            .tabular_nums()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::diff_add_text()),
+                    )
+                    .child(
+                        text(format!("−{del_total}"))
+                            .app_class("font-mono")
+                            .tabular_nums()
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(palette::diff_del_text()),
+                    ),
+            )
+            .child(
+                button()
+                    .test_id("chat-diff-toggle-all")
+                    .accessibility_label(toggle_all_label)
+                    .on_press(move || {
+                        collapsed_files.update(|set| {
+                            if all_collapsed {
+                                for path in &all_paths {
+                                    set.remove(path);
+                                }
+                            } else {
+                                for path in &all_paths {
+                                    set.insert(path.clone());
+                                }
+                            }
+                        });
+                    })
+                    .px(px(6.5))
+                    .py(px(2.5))
+                    .rounded(px(5.0))
+                    .border_1()
+                    .border_color(palette::border_color())
+                    .bg(palette::control_bg())
+                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                    .child(
+                        text(toggle_all_label)
+                            .text_size(px(10.5))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::text_secondary()),
+                    ),
+            ),
+    );
+
+    for file in diffs {
+        let is_untracked = effective_scope == ChatDiffScope::Uncommitted
+            && status.untracked_paths.contains(&file.path);
+        let is_collapsed = collapsed.contains(&file.path);
+        body = body.child(chat_diff_file_card(
+            file,
+            is_untracked,
+            is_collapsed,
+            collapsed_files,
+        ));
+    }
+
+    body
+}
+
+fn changes_action_bar(
+    data: &ActiveChatChanges,
+    pr_form_open: Signal<bool>,
+    pr_title: Signal<String>,
+    pr_body: Signal<String>,
+    pr_draft: Signal<bool>,
+) -> impl IntoElement {
+    let status = data.status.as_ref();
+    let has_uncommitted = status.is_some_and(ChatGitStatus::has_uncommitted_changes);
+    let can_open_pr = status.is_some_and(ChatGitStatus::can_open_pr);
+    let has_any = status.is_some_and(ChatGitStatus::has_any_changes);
+    let locked = data.busy || data.running;
+    let default_pr_title = data.title.clone();
+    let default_draft = data.open_prs_as_draft;
+    let working_dir = data.working_dir.clone();
+
+    let mut row = view().flex_row().flex_wrap().items_center().gap(px(6.0));
+
+    // Commit button — asks the chat's agent to review and commit the uncommitted changes.
+    row = row.child(action_chip_button(
+        "chat-changes-commit-btn",
+        "Commit",
+        false,
+        !has_uncommitted || locked,
+        icons::git_commit(palette::text_secondary()),
+        move || {
+            pr_form_open.set(false);
+            store::ask_agent_to_commit_active_chat();
+        },
+    ));
+
+    // Open PR button (worktree or feature branch)
+    let show_pr = data.is_worktree || can_open_pr;
+    if show_pr {
+        row = row.child(action_chip_button(
+            "chat-changes-pr-toggle",
+            "Open PR",
+            pr_form_open.get(),
+            !can_open_pr || locked,
+            icons::git_pr(palette::text_secondary()),
+            move || {
+                let next = !pr_form_open.get_untracked();
+                pr_form_open.set(next);
+                if next {
+                    if pr_title.get_untracked().trim().is_empty() {
+                        pr_title.set(default_pr_title.clone());
+                    }
+                    pr_body.set(String::new());
+                    pr_draft.set(default_draft);
+                }
+            },
+        ));
+    }
+
+    // Apply to Checkout (worktree chats only)
+    if data.is_worktree {
+        row = row.child(action_chip_button(
+            "chat-changes-apply-btn",
+            "Apply to Checkout",
+            false,
+            !has_any || locked,
+            icons::download_tray(palette::text_secondary()),
+            store::apply_active_chat_to_checkout,
+        ));
+    }
+
+    // Open in Terminal
+    row = row.child(action_chip_button(
+        "chat-changes-terminal-btn",
+        "Terminal",
+        false,
+        !working_dir.is_dir(),
+        icons::terminal_prompt(palette::text_secondary()),
+        store::open_active_chat_in_terminal,
+    ));
+
+    // Reveal in Finder
+    let finder_dir = working_dir.clone();
+    row = row.child(action_chip_button(
+        "chat-changes-finder-btn",
+        "Finder",
+        false,
+        !working_dir.is_dir(),
+        icons::folder(palette::text_secondary()),
+        move || {
+            let shown = finder_dir.clone();
+            let answer = nsh_core::element::reveal_path(shown.clone());
+            spawn(async move {
+                if answer.await.is_err() {
+                    store::set_status_message(format!(
+                        "Could not show '{}' in Finder.",
+                        shown.display()
+                    ));
+                }
+            });
+        },
+    ));
+
+    row
+}
+
+fn action_chip_button(
+    test_id: &'static str,
+    label: &'static str,
+    active: bool,
+    disabled: bool,
+    icon: impl IntoElement,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .test_id(test_id)
+        .accessibility_label(label)
+        .disabled(disabled)
+        .on_press(on_press)
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .h(px(27.0))
+        .px(px(8.5))
+        .rounded(px(6.5))
+        .border_1()
+        .border_color(if active {
+            palette::card_selected_border()
+        } else {
+            palette::border_color()
+        })
+        .bg(if active {
+            palette::card_selected_bg()
+        } else {
+            palette::control_bg()
+        })
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .disabled_style(|s| s.opacity(0.42))
+        .child(icon)
+        .child(
+            text(label)
+                .text_size(px(11.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
+        )
+}
+
+fn pr_form_card(
+    base_branch: &str,
+    disabled: bool,
+    pr_form_open: Signal<bool>,
+    pr_title: Signal<String>,
+    pr_body: Signal<String>,
+    pr_draft: Signal<bool>,
+) -> impl IntoElement {
+    let submit = move || {
+        let title = pr_title.get_untracked();
+        if title.trim().is_empty() {
+            return;
+        }
+        let body = pr_body.get_untracked();
+        let draft = pr_draft.get_untracked();
+        pr_form_open.set(false);
+        store::open_active_chat_pr(title, body, draft);
+    };
+
+    view()
+        .test_id("chat-pr-form")
+        .p(px(10.0))
+        .rounded(px(8.5))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .gap(px(8.0))
+        .child(
+            text(format!("Push branch & open PR into {base_branch}"))
+                .text_size(px(11.5))
+                .font_weight(FontWeight::SEMIBOLD)
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            input()
+                .test_id("chat-pr-title-input")
+                .value(move || pr_title.get())
+                .placeholder("Pull request title")
+                .on_change(move |v: &str| pr_title.set(v.to_owned()))
+                .on_submit(move |_: &str| submit())
+                .h(px(30.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .text_size(px(12.0))
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            input()
+                .test_id("chat-pr-body-input")
+                .value(move || pr_body.get())
+                .placeholder("Description (optional)")
+                .on_change(move |v: &str| pr_body.set(v.to_owned()))
+                .h(px(30.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::control_bg())
+                .text_size(px(12.0))
+                .text_color(palette::text_primary()),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .child(
+                    button()
+                        .test_id("chat-pr-draft-toggle")
+                        .accessibility_label("Open as draft pull request")
+                        .on_press(move || pr_draft.set(!pr_draft.get_untracked()))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .px(px(7.0))
+                        .py(px(3.5))
+                        .rounded(px(6.0))
+                        .border_1()
+                        .border_color(move || {
+                            if pr_draft.get() {
+                                palette::card_selected_border()
+                            } else {
+                                palette::border_color()
+                            }
+                        })
+                        .bg(move || {
+                            if pr_draft.get() {
+                                palette::card_selected_bg()
+                            } else {
+                                palette::control_bg()
+                            }
+                        })
+                        .child(
+                            text(move || {
+                                if pr_draft.get() {
+                                    "✓ Draft PR"
+                                } else {
+                                    "Draft PR"
+                                }
+                            })
+                            .text_size(px(11.0))
+                            .text_color(palette::text_secondary()),
+                        ),
+                )
+                .child(
+                    view()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(
+                            button()
+                                .accessibility_label("Cancel pull request")
+                                .on_press(move || pr_form_open.set(false))
+                                .px(px(9.0))
+                                .py(px(4.5))
+                                .rounded(px(6.0))
+                                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                .child(
+                                    text("Cancel")
+                                        .text_size(px(11.5))
+                                        .text_color(palette::text_secondary()),
+                                ),
+                        )
+                        .child(
+                            button()
+                                .test_id("chat-pr-submit")
+                                .accessibility_label("Push and open pull request")
+                                .disabled(move || disabled || pr_title.get().trim().is_empty())
+                                .on_press(submit)
+                                .px(px(10.0))
+                                .py(px(4.5))
+                                .rounded(px(6.0))
+                                .bg(palette::nav_active_bg())
+                                .disabled_style(|s| s.opacity(0.45))
+                                .child(
+                                    text("Push & Open PR")
+                                        .text_size(px(11.5))
+                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .text_color(palette::nav_active_fg()),
+                                ),
+                        ),
+                ),
+        )
+}
+
+fn commits_ahead_card(status: &ChatGitStatus) -> impl IntoElement {
+    let noun = if status.commits_ahead == 1 {
+        "commit"
+    } else {
+        "commits"
+    };
+    let mut card = view()
+        .test_id("chat-changes-commits")
+        .rounded(px(8.5))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .overflow_hidden()
+        .child(
+            view()
+                .px(px(10.0))
+                .py(px(6.5))
+                .bg(palette::card_inset_bg())
+                .border_b_1()
+                .border_color(palette::divider_color())
+                .child(
+                    text(format!(
+                        "{} {noun} ahead of {}",
+                        status.commits_ahead, status.base_branch
+                    ))
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .text_color(palette::text_secondary()),
+                ),
+        );
+
+    let mut list = view().px(px(10.0)).py(px(6.0)).gap(px(4.0));
+    for commit in status.commits.iter().take(6) {
+        list = list.child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(7.0))
+                .child(
+                    text(commit.short_sha.clone())
+                        .app_class("font-mono")
+                        .text_size(px(10.5))
+                        .text_color(palette::link_blue()),
+                )
+                .child(
+                    text(commit.subject.clone())
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .truncate()
+                        .text_size(px(11.5))
+                        .text_color(palette::text_primary()),
+                ),
+        );
+    }
+    if status.commits_ahead > 6 {
+        list = list.child(
+            text(format!("+{} more", status.commits_ahead - 6))
+                .text_size(px(11.0))
+                .text_color(palette::text_muted()),
+        );
+    }
+    card = card.child(list);
+    card
+}
+
+fn diff_scope_switcher(status: &ChatGitStatus, scope: Signal<ChatDiffScope>) -> impl IntoElement {
+    let active = scope.get();
+    view()
+        .flex_row()
+        .p(px(2.5))
+        .rounded(px(7.0))
+        .bg(palette::segmented_track_bg())
+        .gap(px(2.0))
+        .child(scope_segment_button(
+            "chat-diff-scope-uncommitted",
+            format!("Uncommitted ({})", status.uncommitted_file_count()),
+            active == ChatDiffScope::Uncommitted,
+            move || scope.set(ChatDiffScope::Uncommitted),
+        ))
+        .child(scope_segment_button(
+            "chat-diff-scope-branch",
+            format!("Branch ({})", status.committed_file_count()),
+            active == ChatDiffScope::Branch,
+            move || scope.set(ChatDiffScope::Branch),
+        ))
+}
+
+fn scope_segment_button(
+    test_id: &'static str,
+    label: String,
+    selected: bool,
+    on_press: impl Fn() + 'static,
+) -> impl IntoElement {
+    button()
+        .test_id(test_id)
+        .accessibility_label(label.clone())
+        .on_press(on_press)
+        .flex_1()
+        .h(px(24.0))
+        .rounded(px(5.5))
+        .items_center()
+        .justify_center()
+        .bg(if selected {
+            palette::control_bg()
+        } else {
+            AdaptiveColor::TRANSPARENT
+        })
+        .child(
+            text(label)
+                .text_size(px(11.0))
+                .font_weight(if selected {
+                    FontWeight::SEMIBOLD
+                } else {
+                    FontWeight::MEDIUM
+                })
+                .text_color(if selected {
+                    palette::text_primary()
+                } else {
+                    palette::text_subdued()
+                }),
+        )
+}
+
+fn chat_diff_file_card(
+    file: &DiffFileChange,
+    is_untracked: bool,
+    collapsed: bool,
+    collapsed_files: Signal<BTreeSet<String>>,
+) -> impl IntoElement {
+    let toggle_path = file.path.clone();
+    let mut card = view()
+        .test_id("chat-diff-file-card")
+        .rounded(px(8.5))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .overflow_hidden()
+        .child(
+            button()
+                .accessibility_label(format!("Toggle diff for {}", file.path))
+                .on_press(move || {
+                    collapsed_files.update(|set| {
+                        if !set.remove(&toggle_path) {
+                            set.insert(toggle_path.clone());
+                        }
+                    });
+                })
+                .w_full()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(8.0))
+                .px(px(10.0))
+                .py(px(7.5))
+                .bg(palette::card_inset_bg())
+                .hover(|s| s.bg(palette::subtle_surface_bg()))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .child(if collapsed {
+                            icons::chevron_right(palette::text_muted()).into_element()
+                        } else {
+                            icons::chevron_down(palette::text_muted()).into_element()
+                        })
+                        .child(
+                            text(file.path.clone())
+                                .flex_1()
+                                .min_w(px(0.0))
+                                .truncate()
+                                .app_class("font-mono")
+                                .text_size(px(11.5))
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .text_color(palette::text_primary()),
+                        )
+                        .child(when(
+                            move || is_untracked,
+                            || {
+                                view()
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(4.0))
+                                    .bg(palette::status_success_bg())
+                                    .child(
+                                        text("New")
+                                            .text_size(px(9.5))
+                                            .font_weight(FontWeight::SEMIBOLD)
+                                            .text_color(palette::success_text()),
+                                    )
+                            },
+                        )),
+                )
+                .child(
+                    view()
+                        .flex_shrink_0()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(5.0))
+                        .child(
+                            text(format!("+{}", file.additions))
+                                .app_class("font-mono")
+                                .tabular_nums()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::diff_add_text()),
+                        )
+                        .child(
+                            text(format!("−{}", file.deletions))
+                                .app_class("font-mono")
+                                .tabular_nums()
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::diff_del_text()),
+                        ),
+                ),
+        );
+
+    if !collapsed {
+        let mut lines_col = view()
+            .border_t_1()
+            .border_color(palette::divider_color())
+            .py(px(5.0));
+        if !file.hunk_header.is_empty() {
+            lines_col = lines_col.child(
+                text(file.hunk_header.clone())
+                    .px(px(10.0))
+                    .py(px(2.5))
+                    .app_class("font-mono")
+                    .text_size(px(10.5))
+                    .text_color(palette::text_muted()),
+            );
+        }
+        for line in &file.lines {
+            let (prefix, bg, fg) = match line.kind {
+                DiffLineKind::Context => {
+                    (" ", AdaptiveColor::TRANSPARENT, palette::text_secondary())
+                }
+                DiffLineKind::Added => ("+", palette::diff_add_bg(), palette::diff_add_text()),
+                DiffLineKind::Removed => ("-", palette::diff_del_bg(), palette::diff_del_text()),
+            };
+            lines_col = lines_col.child(
+                view().px(px(10.0)).py(px(1.5)).bg(bg).child(
+                    text(format!("{prefix}{}", line.text))
+                        .selectable(true)
+                        .app_class("font-mono")
+                        .text_size(px(11.0))
+                        .text_color(fg),
+                ),
+            );
+        }
+        card = card.child(lines_col);
+    }
+
+    card
 }
