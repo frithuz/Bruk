@@ -59,8 +59,9 @@ jobs:
     name: Check release
     needs: [lint, test]
     # Lint and Test only run on main pushes. Tag pushes and manual dispatches
-    # rely on the v* tag ruleset, which requires Lint / Lint and Test / Test to
-    # have passed on the tagged commit before the release tag can be created.
+    # rely on the v* tag ruleset, which requires the targeted Lint and Test
+    # checks (Checks, Clippy Domain/macOS, Test Domain/macOS) to have passed on
+    # the tagged commit before the release tag can be created.
     if: >-
       !cancelled() &&
       (
