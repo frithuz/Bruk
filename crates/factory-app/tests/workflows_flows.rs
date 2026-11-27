@@ -300,8 +300,13 @@ fn project_settings_view_renders_issues_intake_and_interactive_tabs() {
     let mut app = start_with_demo_db(db_path);
     assert!(app.window_state("project-settings").unwrap().is_none());
 
-    // Open api-gateway Project Settings inside the main panel from the expanded sidebar tree.
-    app.press("id:sidebar-project-settings-1").unwrap();
+    // Sidebar does not expose a Project settings button; open via the Project menu shortcut (⇧⌘,).
+    assert!(
+        !app.screen()
+            .matches("id:sidebar-project-settings-1")
+            .unwrap()
+    );
+    app.press_key("mod+shift+,").unwrap();
     app.wait_for("api-gateway · Issues & intake").unwrap();
     assert!(app.window_state("project-settings").unwrap().is_none());
     assert!(app.screen().shows("Project settings"));
@@ -865,7 +870,7 @@ exit 0
         app.wait_for("Registered project 'billing-api'").unwrap();
 
         // Project Settings should auto-detect `acme/billing-api` from git origin.
-        app.press("id:sidebar-project-settings-1").unwrap();
+        app.press_key("mod+shift+,").unwrap();
         app.wait_for("billing-api · Issues & intake").unwrap();
         assert_eq!(
             app.screen().input_text("id:ps-github-repo").unwrap(),
@@ -937,7 +942,7 @@ exit 0
         assert!(reopened.screen().shows("Audit billing metrics"));
 
         // Switch to an invalid PAT and verify auth failure surfaces cleanly.
-        reopened.press("id:sidebar-project-settings-1").unwrap();
+        reopened.press_key("mod+shift+,").unwrap();
         reopened.wait_for("billing-api · Issues & intake").unwrap();
         reopened.press("id:ps-use-token-btn").unwrap();
         reopened.wait_for("id:ps-token-input").unwrap();
@@ -990,7 +995,7 @@ exit 0
     app.press("role:button[Link Project]").unwrap();
     app.wait_for("Registered project 'filters-demo'").unwrap();
 
-    app.press("id:sidebar-project-settings-1").unwrap();
+    app.press_key("mod+shift+,").unwrap();
     app.wait_for("filters-demo · Issues & intake").unwrap();
 
     // Configure repo and add an optional assignee search filter (`assignee:factory-bot`).

@@ -969,7 +969,12 @@ fn registered_project_without_demo_mode_shows_clean_empty_project_views() {
 
     // Project Settings for the real project has no fake repo, rules, or secrets,
     // and shows the built-in catalog workflows.
-    app.press("id:sidebar-project-settings-1").unwrap();
+    assert!(
+        !app.screen()
+            .matches("id:sidebar-project-settings-1")
+            .unwrap()
+    );
+    app.press_key("mod+shift+,").unwrap();
     app.wait_for("my-service · Issues & intake").unwrap();
     assert!(app.window_state("project-settings").unwrap().is_none());
     assert!(app.screen().shows(
