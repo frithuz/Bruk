@@ -33,29 +33,126 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  verify-checks:
+    name: Verify CI checks
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      checks: read
+    outputs:
+      run_lint: ${{ steps.checks.outputs.run_lint }}
+      run_test: ${{ steps.checks.outputs.run_test }}
+    steps:
+      - name: Check existing Lint and Test results
+        id: checks
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_SHA: ${{ github.sha }}
+          INPUT_BUMP: ${{ inputs.bump }}
+          INPUT_CHANGELOG: ${{ inputs.changelog }}
+        run: |
+          bump="$(printf '%s' "${INPUT_BUMP:-}" | tr -d '[:space:]')"
+          case "$bump" in
+            major|minor|patch) ;;
+            *)
+              echo "error: bump input '${INPUT_BUMP:-}' must be one of: patch, minor, major" >&2
+              exit 1
+              ;;
+          esac
+
+          trimmed_changelog="${INPUT_CHANGELOG:-}"
+          trimmed_changelog="${trimmed_changelog#"${trimmed_changelog%%[![:space:]]*}"}"
+          trimmed_changelog="${trimmed_changelog%"${trimmed_changelog##*[![:space:]]}"}"
+          if [ -z "$trimmed_changelog" ]; then
+            echo "error: changelog input must not be empty" >&2
+            exit 1
+          fi
+
+          results="$(
+            gh api --paginate --slurp \
+              "repos/${GH_REPO}/commits/${TARGET_SHA}/check-runs?per_page=100" \
+              --jq '
+                [.[].check_runs[] | select(.app.slug == "github-actions" and .status == "completed" and .conclusion != "skipped")]
+                | {
+                    lint: ([.[] | select(.name == "Lint" or .name == "Lint / Lint")] | sort_by(.id) | last | .conclusion // ""),
+                    test: ([.[] | select(.name == "Test" or .name == "Test / Test")] | sort_by(.id) | last | .conclusion // "")
+                  }
+                | "lint=\(.lint)\ntest=\(.test)"
+              '
+          )"
+
+          lint_conclusion=""
+          test_conclusion=""
+          while IFS='=' read -r key val; do
+            case "$key" in
+              lint) lint_conclusion="$val" ;;
+              test) test_conclusion="$val" ;;
+            esac
+          done <<< "$results"
+
+          if [ "$lint_conclusion" = "success" ]; then
+            echo "Lint already passed on ${TARGET_SHA}; skipping duplicate run."
+            run_lint="false"
+          else
+            echo "Lint has not passed on ${TARGET_SHA} (latest: '${lint_conclusion:-none}'); will run Lint."
+            run_lint="true"
+          fi
+
+          if [ "$test_conclusion" = "success" ]; then
+            echo "Test already passed on ${TARGET_SHA}; skipping duplicate run."
+            run_test="false"
+          else
+            echo "Test has not passed on ${TARGET_SHA} (latest: '${test_conclusion:-none}'); will run Test."
+            run_test="true"
+          fi
+
+          {
+            echo "run_lint=${run_lint}"
+            echo "run_test=${run_test}"
+          } >> "$GITHUB_OUTPUT"
+
   lint:
     name: Lint
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [verify-checks]
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && needs.verify-checks.result == 'success' && needs.verify-checks.outputs.run_lint == 'true')
+      )
     permissions:
       contents: read
     uses: $/.github/workflows/lint.yml
 
   test:
     name: Test
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [verify-checks]
+    if: >-
+      !cancelled() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+        (github.event_name == 'workflow_dispatch' && needs.verify-checks.result == 'success' && needs.verify-checks.outputs.run_test == 'true')
+      )
     permissions:
       contents: read
     uses: $/.github/workflows/test.yml
 
   check-release:
     name: Check release
-    needs: [lint, test]
+    needs: [verify-checks, lint, test]
     if: >-
       !cancelled() &&
       (
         (github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.lint.result == 'success' && needs.test.result == 'success') ||
         (github.event_name == 'push' && github.ref_type == 'tag') ||
-        github.event_name == 'workflow_dispatch'
+        (
+          github.event_name == 'workflow_dispatch' &&
+          needs.verify-checks.result == 'success' &&
+          (needs.verify-checks.outputs.run_lint == 'false' || needs.lint.result == 'success') &&
+          (needs.verify-checks.outputs.run_test == 'false' || needs.test.result == 'success')
+        )
       )
     runs-on: ubuntu-slim
     timeout-minutes: 5
