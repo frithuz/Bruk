@@ -23,34 +23,111 @@ permissions: {}
 env:
   CARGO_INCREMENTAL: "0"
   CARGO_TERM_COLOR: always
+  CARGO_PROFILE_TEST_DEBUG: line-tables-only
 
 jobs:
-  test-platform:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    environment: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
-    timeout-minutes: 30
+  plan:
+    name: Plan Test Scope
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
-      matrix:
-        os:
-          - macos-26
+    outputs:
+      run_domain_test: ${{ steps.scope.outputs.run_domain_test }}
+      run_macos_test: ${{ steps.scope.outputs.run_macos_test }}
+      domain_test_args: ${{ steps.scope.outputs.domain_test_args }}
+      macos_test_args: ${{ steps.scope.outputs.macos_test_args }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: ${{ github.event_name != 'pull_request' && 1 || 0 }}
+          persist-credentials: false
+
+      - name: Determine affected crates
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            python3 scripts/ci-affected-crates.py \
+              --base "$PR_BASE_SHA" \
+              --head "$PR_HEAD_SHA" \
+              --github-output "$GITHUB_OUTPUT"
+          else
+            python3 scripts/ci-affected-crates.py \
+              --full \
+              --github-output "$GITHUB_OUTPUT"
+          fi
+
+  test-linux:
+    name: Test Domain (ubuntu-latest)
+    needs: [plan]
+    if: needs.plan.outputs.run_domain_test == 'true'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Set up Rust and sccache
+      - name: Install Linux system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libdbus-1-dev
+
+      - name: Set up Rust, nextest, and sccache
         uses: $/.github/actions/setup-rust
         with:
           pnpr-token: ${{ secrets.PNPR_TOKEN }}
           sccache-rw-mode: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'READ_WRITE' || 'READ_ONLY' }}
+          install-nextest: "true"
+
+      - name: Run automated domain tests
+        env:
+          CARGO_ARGS: ${{ needs.plan.outputs.domain_test_args }}
+        run: |
+          read -r -a cargo_args <<< "$CARGO_ARGS"
+          cargo nextest run "${cargo_args[@]}" --locked --no-fail-fast --no-tests=pass
+
+      - name: Show sccache stats
+        if: always() && env.RUSTC_WRAPPER == 'sccache'
+        run: sccache --show-stats
+
+  test-macos:
+    name: Test (macos-26)
+    needs: [plan]
+    if: needs.plan.outputs.run_macos_test == 'true'
+    runs-on: macos-26
+    environment: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'CI Cache Write' || 'CI Cache Read' }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust, nextest, and sccache
+        uses: $/.github/actions/setup-rust
+        with:
+          pnpr-token: ${{ secrets.PNPR_TOKEN }}
+          sccache-rw-mode: ${{ github.event_name != 'pull_request' && inputs.cache_write && 'READ_WRITE' || 'READ_ONLY' }}
+          install-nextest: "true"
 
       - name: Run automated tests
-        run: cargo test --workspace --locked --no-fail-fast
+        env:
+          CARGO_ARGS: ${{ needs.plan.outputs.macos_test_args }}
+        run: |
+          read -r -a cargo_args <<< "$CARGO_ARGS"
+          cargo nextest run "${cargo_args[@]}" --locked --no-fail-fast --no-tests=pass
 
       - name: Show sccache stats
         if: always() && env.RUSTC_WRAPPER == 'sccache'
@@ -58,7 +135,7 @@ jobs:
 
   test:
     name: Test
-    needs: [test-platform]
+    needs: [plan, test-linux, test-macos]
     if: always() && !cancelled()
     runs-on: ubuntu-slim
     timeout-minutes: 5
@@ -66,9 +143,23 @@ jobs:
     steps:
       - name: Verify test jobs succeeded
         env:
-          TEST_RESULT: ${{ needs.test-platform.result }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+          RUN_DOMAIN: ${{ needs.plan.outputs.run_domain_test }}
+          RUN_MACOS: ${{ needs.plan.outputs.run_macos_test }}
+          TEST_LINUX_RESULT: ${{ needs.test-linux.result }}
+          TEST_MACOS_RESULT: ${{ needs.test-macos.result }}
         run: |
-          if [ "$TEST_RESULT" != "success" ]; then
-            echo "error: tests failed (test-platform=${TEST_RESULT})" >&2
+          failed=0
+          if [ "$PLAN_RESULT" != "success" ]; then
+            failed=1
+          fi
+          if [ "$RUN_DOMAIN" = "true" ] && [ "$TEST_LINUX_RESULT" != "success" ]; then
+            failed=1
+          fi
+          if [ "$RUN_MACOS" = "true" ] && [ "$TEST_MACOS_RESULT" != "success" ]; then
+            failed=1
+          fi
+          if [ "$failed" -ne 0 ]; then
+            echo "error: tests failed (plan=${PLAN_RESULT}, test-linux=${TEST_LINUX_RESULT}, test-macos=${TEST_MACOS_RESULT})" >&2
             exit 1
           fi
