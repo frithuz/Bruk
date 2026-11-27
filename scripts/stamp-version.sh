@@ -46,7 +46,7 @@ mv nsh.json.tmp nsh.json
 
 # 3. Refresh workspace member versions in Cargo.lock without touching external deps
 if [ -f Cargo.lock ] && command -v cargo >/dev/null 2>&1; then
-  cargo metadata --format-version 1 --offline >/dev/null
+  cargo metadata --format-version 1 >/dev/null
 fi
 
 echo "Stamped release version ${version} into Cargo.toml, nsh.json, and Cargo.lock"
