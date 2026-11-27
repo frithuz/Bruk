@@ -84,9 +84,21 @@ tasks:
       - cargo test --workspace {{.CLI_ARGS}}
 
   test:core:
-    desc: Run factory-core unit and SQLite storage tests
+    desc: Run non-UI domain and SQLite storage tests
     cmds:
-      - cargo test -p factory-core {{.CLI_ARGS}}
+      - >-
+        cargo test
+        -p factory-types
+        -p factory-machines
+        -p factory-github
+        -p factory-secrets
+        -p factory-providers
+        -p factory-config
+        -p factory-workflows
+        -p factory-chat
+        -p factory-runner
+        -p factory-storage
+        {{.CLI_ARGS}}
 
   test:ui:
     desc: Run factory-app headless Native Shell UI flow tests
