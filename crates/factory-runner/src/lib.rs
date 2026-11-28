@@ -82,6 +82,8 @@ pub enum RunnerError {
     Secret(String),
     #[error("{0}")]
     Worktree(String),
+    #[error("this workflow can't run: its composites use themselves ({0})")]
+    CompositeCycle(String),
 }
 
 /// Complete configuration passed to [`spawn_workflow_run`] or [`execute_workflow_blocking`].
@@ -390,9 +392,14 @@ pub fn execute_workflow_blocking(
     });
     let _ = fs::create_dir_all(&runtime_root);
 
-    // A run that should be isolated but can't get its worktree fails before any step runs, rather
-    // than going ahead in the user's own checkout.
-    let checkout = prepare_checkout(&request, &runtime_root);
+    // A workflow whose composites use themselves fails before anything is set up, and a run that
+    // should be isolated but can't get its worktree fails before any step runs, rather than going
+    // ahead in the user's own checkout.
+    let checkout =
+        match find_composite_cycle(&request.workflow.nodes, &request.catalog, &mut Vec::new()) {
+            Some(chain) => Err(RunnerError::CompositeCycle(chain)),
+            None => prepare_checkout(&request, &runtime_root).map_err(RunnerError::Worktree),
+        };
     let (working_dir, branch_name, is_isolated_worktree) = match &checkout {
         Ok(prepared) => prepared.clone(),
         Err(_) => (request.project_root.clone(), String::new(), false),
@@ -447,13 +454,14 @@ pub fn execute_workflow_blocking(
         secrets_cache: RunSecretsCache::new(),
         redactor: SecretRedactor::empty(),
         internal_secrets_for_redaction: Vec::new(),
+        composite_stack: Vec::new(),
     };
 
     // Start-of-run AST secret preflight (§9): resolve all required workflow secrets in one batch
     // before step 1 begins.
     let preflight_result = match checkout {
         Ok(_) => preflight_workflow_secrets(&mut state),
-        Err(message) => Err(RunnerError::Worktree(message)),
+        Err(err) => Err(err),
     };
     let result = match preflight_result {
         Ok(()) => execute_node_list(&mut state, &request.workflow.nodes, &mut template_ctx),
@@ -552,6 +560,8 @@ struct ExecutionCursor<'a> {
     redactor: SecretRedactor,
     /// Internal secrets resolved during this run (for redaction across outputs/diffs/errors).
     internal_secrets_for_redaction: Vec<SecretString>,
+    /// Canonical ids of the composites being executed, outermost first.
+    composite_stack: Vec<String>,
 }
 
 impl ExecutionCursor<'_> {
@@ -1754,6 +1764,12 @@ fn execute_composite(
         .resolve_composite(&step.uses)
         .cloned()
         .ok_or_else(|| RunnerError::CompositeNotFound(step.uses.clone()))?;
+    let canonical = comp.canonical_id();
+    if cursor.composite_stack.contains(&canonical) {
+        let mut chain = cursor.composite_stack.clone();
+        chain.push(canonical);
+        return Err(RunnerError::CompositeCycle(chain.join(" → ")));
+    }
 
     let mut child_ctx = TemplateContext {
         inputs: BTreeMap::new(),
@@ -1773,7 +1789,9 @@ fn execute_composite(
 
     let outer_policy = cursor.mcp_policy;
     cursor.mcp_policy = outer_policy.stricter(comp.mcp_sources);
+    cursor.composite_stack.push(canonical);
     let result = execute_node_list(cursor, &comp.nodes, &mut child_ctx);
+    cursor.composite_stack.pop();
     cursor.mcp_policy = outer_policy;
     result?;
 
@@ -2530,11 +2548,27 @@ fn collect_planned_steps(
     catalog: &BrukCatalog,
 ) -> Vec<PlannedStepSummary> {
     let mut out = Vec::new();
+    collect_planned_steps_into(nodes, catalog, &mut Vec::new(), &mut out);
+    out
+}
+
+/// Appends the steps `nodes` will run to `out`, expanding composites; `composite_stack` holds the
+/// composites being expanded, so one that uses itself is listed as a step instead of recursing.
+fn collect_planned_steps_into(
+    nodes: &[WorkflowNodeDef],
+    catalog: &BrukCatalog,
+    composite_stack: &mut Vec<String>,
+    out: &mut Vec<PlannedStepSummary>,
+) {
     for node in nodes {
         match node {
             WorkflowNodeDef::Composite(comp_step) => {
-                if let Some(comp) = catalog.resolve_composite(&comp_step.uses) {
-                    out.extend(collect_planned_steps(&comp.nodes, catalog));
+                if let Some(comp) = catalog.resolve_composite(&comp_step.uses)
+                    && !composite_stack.contains(&comp.canonical_id())
+                {
+                    composite_stack.push(comp.canonical_id());
+                    collect_planned_steps_into(&comp.nodes, catalog, composite_stack, out);
+                    composite_stack.pop();
                 } else {
                     out.push(PlannedStepSummary {
                         step_id: comp_step.id.clone(),
@@ -2544,7 +2578,7 @@ fn collect_planned_steps(
                 }
             }
             WorkflowNodeDef::Loop(lp) => {
-                out.extend(collect_planned_steps(&lp.steps, catalog));
+                collect_planned_steps_into(&lp.steps, catalog, composite_stack, out);
             }
             WorkflowNodeDef::AgentTask(s) => out.push(PlannedStepSummary {
                 step_id: s.id.clone(),
@@ -2583,7 +2617,37 @@ fn collect_planned_steps(
             }),
         }
     }
-    out
+}
+
+/// The chain of composites that leads back to one already being expanded, if `nodes` (or the
+/// composites they use) contain one. Such a workflow would expand forever, so it isn't run.
+fn find_composite_cycle(
+    nodes: &[WorkflowNodeDef],
+    catalog: &BrukCatalog,
+    composite_stack: &mut Vec<String>,
+) -> Option<String> {
+    nodes.iter().find_map(|node| match node {
+        WorkflowNodeDef::Composite(step) => {
+            let comp = catalog.resolve_composite(&step.uses)?;
+            let id = comp.canonical_id();
+            if composite_stack.contains(&id) {
+                let mut chain = composite_stack.clone();
+                chain.push(id);
+                return Some(chain.join(" → "));
+            }
+            composite_stack.push(id);
+            let cycle = find_composite_cycle(&comp.nodes, catalog, composite_stack);
+            composite_stack.pop();
+            cycle
+        }
+        WorkflowNodeDef::Loop(lp) => find_composite_cycle(&lp.steps, catalog, composite_stack)
+            .or_else(|| {
+                lp.fallback.as_deref().and_then(|fallback| {
+                    find_composite_cycle(std::slice::from_ref(fallback), catalog, composite_stack)
+                })
+            }),
+        _ => None,
+    })
 }
 
 /// Structured event parsed from a Claude `stream-json` or Codex `--json` stdout line.
@@ -3842,6 +3906,47 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
         });
         assert_eq!(branch.as_deref(), Some("agent/fix-run-1-2"));
         assert!(runtime_root.join("worktree/marker.txt").exists());
+        assert!(!repo.join("marker.txt").exists());
+    }
+    fn write_self_using_composite(repo: &Path) {
+        fs::create_dir_all(repo.join(".agents/bruk/composites")).unwrap();
+        fs::write(
+            repo.join(".agents/bruk/composites/again.yaml"),
+            "id: again\nname: Again\nnodes:\n  - kind: shell_command\n    id: touch\n    name: Touch\n    command: echo touched > marker.txt\n  - kind: composite\n    id: recurse\n    name: Recurse\n    uses: again\n",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn workflow_whose_composite_uses_itself_fails_before_running_any_step() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        write_self_using_composite(&repo);
+        let mut req = tool_only_request(
+            &repo,
+            vec![WorkflowNodeDef::Composite(CompositeStepDef {
+                id: "outer".to_owned(),
+                name: "Outer".to_owned(),
+                uses: "again".to_owned(),
+                with: BTreeMap::new(),
+            })],
+            temp.path().join("rt"),
+        );
+        req.catalog = BrukCatalog::load_for_project(&repo);
+
+        let events = run_to_end(req);
+
+        assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
+        let error = events.iter().find_map(|e| match e {
+            RunnerEvent::RunFinished { error, .. } => error.clone(),
+            _ => None,
+        });
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("use themselves")),
+            "{error:?}"
+        );
         assert!(!repo.join("marker.txt").exists());
     }
 }
