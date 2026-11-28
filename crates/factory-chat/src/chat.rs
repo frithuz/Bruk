@@ -524,6 +524,10 @@ pub struct ChatSession {
     /// The provider session's running total behind `turn_tokens`, when it reports one.
     #[serde(skip)]
     turn_session_total: Option<ChatTokenBreakdown>,
+    /// When the chat was archived: put away with its transcript kept, and its worktree
+    /// removed once its branch merged. Archived chats don't take new messages.
+    #[serde(default)]
+    pub archived_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -539,6 +543,7 @@ pub struct ChatSessionSummary {
     pub preview: String,
     pub message_count: usize,
     pub updated_at: i64,
+    pub archived_at: Option<i64>,
 }
 
 impl ChatSession {
@@ -577,6 +582,7 @@ impl ChatSession {
             token_breakdown: ChatTokenBreakdown::default(),
             turn_tokens: ChatTokenBreakdown::default(),
             turn_session_total: None,
+            archived_at: None,
             created_at: now,
             updated_at: now,
         }
@@ -660,7 +666,19 @@ impl ChatSession {
             preview: self.preview(),
             message_count: self.message_count(),
             updated_at: self.updated_at,
+            archived_at: self.archived_at,
         }
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
+    /// Whether the chat has a worktree of its own (created, or planned for its first turn).
+    pub fn worktree_in_use(&self) -> Option<&ChatWorktree> {
+        self.worktree
+            .as_ref()
+            .filter(|_| self.workspace == ChatWorkspace::Worktree)
     }
 
     /// Records a message the user sent; the first one names the chat.

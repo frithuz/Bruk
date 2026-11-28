@@ -518,6 +518,408 @@ pub fn open_url_in_browser(url: &str) -> Result<(), ChatGitError> {
 
 // --- Internals --------------------------------------------------------------------------
 
+/// How a chat branch's work is known to have reached the base branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchMergeEvidence {
+    /// The branch's commits are in the base branch's history (merge commit or fast-forward).
+    InHistory { base: String },
+    /// Each of the branch's commits has an identical patch on the base branch (rebase or
+    /// cherry-pick merge).
+    Rebased { base: String },
+    /// The branch's whole change landed as one commit on the base branch (squash merge).
+    Squashed { base: String },
+    /// GitHub reports a merged pull request from the branch at its current commit.
+    PullRequest { url: String },
+}
+
+impl BranchMergeEvidence {
+    /// "merged into origin/main", "merged in #42", … for logs and summaries.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::InHistory { base } => format!("merged into {base}"),
+            Self::Rebased { base } => format!("rebased onto {base}"),
+            Self::Squashed { base } => format!("squash-merged into {base}"),
+            Self::PullRequest { url } => format!("merged pull request {url}"),
+        }
+    }
+}
+
+/// How to ask GitHub whether a branch's pull request merged.
+#[derive(Debug, Clone)]
+pub struct GitHubPullRequestLookup {
+    pub gh_binary: PathBuf,
+    pub github_auth: GitHubAuth,
+    pub path_env: Option<OsString>,
+}
+
+/// Brings `origin/<base_branch>` up to date so merges done on the remote are seen. Does
+/// nothing when the repository has no `origin` remote.
+pub fn fetch_base_branch(
+    project_root: &Path,
+    base_branch: &str,
+    ssh_auth_sock: Option<&str>,
+) -> Result<(), String> {
+    let remotes = git_output(project_root, &["remote"])?;
+    if !remotes.lines().any(|remote| remote.trim() == "origin") {
+        return Ok(());
+    }
+    let refspec = format!("+refs/heads/{base_branch}:refs/remotes/origin/{base_branch}");
+    git_remote_command(
+        project_root,
+        &["fetch", "--quiet", "--no-tags", "origin", &refspec],
+        ssh_auth_sock,
+    )
+    .map(|_| ())
+}
+
+/// Whether the work on `branch` has reached `base_branch` (locally or on `origin`), and how.
+/// `Ok(None)` when it hasn't, or when the branch has no commits of its own yet.
+///
+/// Checks, in order: the branch is in the base's history (only once it has commits of its own,
+/// so a fresh branch isn't taken for merged); every commit was rebased onto the base; its whole
+/// change was squashed into one base commit; GitHub has a merged pull request from it at its
+/// current commit. Commits added after a merge keep the branch unmerged.
+pub fn chat_branch_merge_evidence(
+    project_root: &Path,
+    branch: &str,
+    base_branch: &str,
+    github: Option<&GitHubPullRequestLookup>,
+) -> Result<Option<BranchMergeEvidence>, String> {
+    let branch_ref = format!("refs/heads/{branch}");
+    let tip = git_output(
+        project_root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{branch_ref}^{{commit}}"),
+        ],
+    )
+    .map_err(|_| format!("branch {branch} doesn't exist"))?;
+
+    // Falls back to main or master when the configured branch doesn't exist.
+    let base_branch = resolve_base_branch(project_root, Some(base_branch), "");
+    let bases: Vec<String> = [format!("origin/{base_branch}"), base_branch.clone()]
+        .into_iter()
+        .filter(|base| {
+            !base_branch.is_empty() && base != branch && git_ref_exists(project_root, base)
+        })
+        .collect();
+
+    for base in &bases {
+        let in_history =
+            git_output(project_root, &["merge-base", "--is-ancestor", &tip, base]).is_ok();
+        if in_history {
+            // A branch nobody committed to yet also sits in the base's history.
+            if branch_has_own_commits(project_root, &branch_ref, &tip) {
+                return Ok(Some(BranchMergeEvidence::InHistory { base: base.clone() }));
+            }
+            continue;
+        }
+        let Ok(cherry) = git_output(project_root, &["cherry", base, &tip]) else {
+            continue;
+        };
+        let marks: Vec<&str> = cherry.lines().filter(|l| !l.trim().is_empty()).collect();
+        if !marks.is_empty() && marks.iter().all(|line| line.starts_with('-')) {
+            return Ok(Some(BranchMergeEvidence::Rebased { base: base.clone() }));
+        }
+        if branch_squashed_into(project_root, &tip, base) {
+            return Ok(Some(BranchMergeEvidence::Squashed { base: base.clone() }));
+        }
+    }
+
+    if let Some(github) = github
+        && branch_was_pushed(project_root, branch)
+        && let Some(url) = merged_pull_request_url(project_root, branch, &tip, github)
+    {
+        return Ok(Some(BranchMergeEvidence::PullRequest { url }));
+    }
+    Ok(None)
+}
+
+/// What happened to a merged branch's copy on its remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteBranchCleanup {
+    /// The repository has no such remote, or the remote has no such branch (never pushed, or
+    /// already deleted, as GitHub does after a merge).
+    NotOnRemote,
+    /// The remote branch was at the local branch's commit and is deleted.
+    Deleted {
+        remote: String,
+        branch: String,
+    },
+    /// The remote branch is at another commit, so it was left alone.
+    Diverged {
+        remote: String,
+        branch: String,
+    },
+    Failed(String),
+}
+
+/// What [`delete_merged_branch`] did, locally and on the remote.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MergedBranchCleanup {
+    /// `Ok(true)` when the local branch was deleted, `Ok(false)` when it was already gone.
+    pub local: Result<bool, String>,
+    pub remote: RemoteBranchCleanup,
+}
+
+/// Deletes a branch already known to be merged: locally (forced, since a squash-merged
+/// branch isn't merged as far as `git branch -d` can tell), and on its remote when the
+/// remote branch is still at the same commit as the local one. A remote branch with other
+/// commits is kept. The remote is the branch's upstream (or `origin`).
+pub fn delete_merged_branch(
+    project_root: &Path,
+    branch: &str,
+    ssh_auth_sock: Option<&str>,
+) -> MergedBranchCleanup {
+    let branch_ref = format!("refs/heads/{branch}");
+    let Ok(tip) = git_output(
+        project_root,
+        &[
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            &format!("{branch_ref}^{{commit}}"),
+        ],
+    ) else {
+        return MergedBranchCleanup {
+            local: Ok(false),
+            remote: RemoteBranchCleanup::NotOnRemote,
+        };
+    };
+    // Read the upstream before `git branch -D` drops the branch's config.
+    let remote = git_output(
+        project_root,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )
+    .ok()
+    .filter(|r| !r.is_empty() && r != ".")
+    .unwrap_or_else(|| "origin".to_owned());
+    let remote_ref = git_output(
+        project_root,
+        &["config", "--get", &format!("branch.{branch}.merge")],
+    )
+    .ok()
+    .filter(|r| r.starts_with("refs/heads/"))
+    .unwrap_or_else(|| branch_ref.clone());
+    let remote_branch = remote_ref.trim_start_matches("refs/heads/").to_owned();
+    let has_remote = git_output(project_root, &["remote"])
+        .is_ok_and(|out| out.lines().any(|r| r.trim() == remote));
+    let remote_tip = if has_remote {
+        Some(
+            git_remote_command(
+                project_root,
+                &["ls-remote", &remote, &remote_ref],
+                ssh_auth_sock,
+            )
+            .map(|out| {
+                out.lines()
+                    .filter_map(|line| line.split_once('\t'))
+                    .find(|(_, name)| name.trim() == remote_ref)
+                    .map(|(sha, _)| sha.trim().to_owned())
+            }),
+        )
+    } else {
+        None
+    };
+
+    let local = git_output(project_root, &["branch", "-D", branch]).map(|_| true);
+    if local.is_ok() {
+        log::info!(target: "bruk::chat", "chat.git.branch_deleted branch={branch} tip={tip}");
+    }
+
+    let remote_outcome = match remote_tip {
+        None | Some(Ok(None)) => {
+            // Forget a stale remote-tracking ref of a branch the remote already deleted.
+            let _ = git_output(
+                project_root,
+                &[
+                    "update-ref",
+                    "-d",
+                    &format!("refs/remotes/{remote}/{remote_branch}"),
+                ],
+            );
+            RemoteBranchCleanup::NotOnRemote
+        }
+        Some(Err(err)) => RemoteBranchCleanup::Failed(err),
+        Some(Ok(Some(sha))) if sha != tip => RemoteBranchCleanup::Diverged {
+            remote,
+            branch: remote_branch,
+        },
+        Some(Ok(Some(_))) => {
+            match git_remote_command(
+                project_root,
+                &["push", "--quiet", &remote, "--delete", &remote_ref],
+                ssh_auth_sock,
+            ) {
+                Ok(_) => {
+                    log::info!(
+                        target: "bruk::chat",
+                        "chat.git.remote_branch_deleted remote={remote} branch={remote_branch}"
+                    );
+                    RemoteBranchCleanup::Deleted {
+                        remote,
+                        branch: remote_branch,
+                    }
+                }
+                Err(err) => RemoteBranchCleanup::Failed(err),
+            }
+        }
+    };
+    MergedBranchCleanup {
+        local,
+        remote: remote_outcome,
+    }
+}
+
+/// Runs a git command that talks to a remote, never stopping to ask for credentials.
+fn git_remote_command(
+    dir: &Path,
+    args: &[&str],
+    ssh_auth_sock: Option<&str>,
+) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null());
+    if let Some(sock) = ssh_auth_sock.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.env(SSH_AUTH_SOCK_ENV, sock);
+    }
+    let output = cmd
+        .output()
+        .map_err(|err| format!("couldn't run git: {err}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(last_lines(&stderr, 3)
+            .map(|text| text.trim_start_matches("fatal: ").to_owned())
+            .unwrap_or_else(|| format!("git {} failed", args.join(" "))))
+    }
+}
+
+/// Whether `dir` has modified, staged, or untracked (not ignored) files.
+pub fn worktree_has_uncommitted_changes(dir: &Path) -> Result<bool, String> {
+    git_output(dir, &["status", "--porcelain", "--untracked-files=normal"])
+        .map(|out| !out.trim().is_empty())
+}
+
+/// Whether the branch moved since it was created, going by its reflog. Without a reflog
+/// (expired, or disabled) the answer is "no", so the branch isn't taken for merged.
+fn branch_has_own_commits(project_root: &Path, branch_ref: &str, tip: &str) -> bool {
+    git_output(project_root, &["reflog", "show", "--format=%H", branch_ref])
+        .ok()
+        .and_then(|log| {
+            log.lines()
+                .map(str::trim)
+                .rfind(|l| !l.is_empty())
+                .map(str::to_owned)
+        })
+        .is_some_and(|created_at| created_at != tip)
+}
+
+/// Whether the branch's net change since it left `base` matches one commit on `base`: builds
+/// a throwaway commit holding that change and asks `git cherry` whether `base` has it.
+fn branch_squashed_into(project_root: &Path, tip: &str, base: &str) -> bool {
+    let Ok(merge_base) = git_output(project_root, &["merge-base", base, tip]) else {
+        return false;
+    };
+    // An empty net change (work that was reverted) proves nothing.
+    if git_output(project_root, &["diff", "--quiet", &merge_base, tip]).is_ok() {
+        return false;
+    }
+    let tree = format!("{tip}^{{tree}}");
+    let Ok(squashed) = git_output(
+        project_root,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &merge_base,
+            "-m",
+            "bruk: squash probe",
+        ],
+    ) else {
+        return false;
+    };
+    git_output(project_root, &["cherry", base, &squashed])
+        .is_ok_and(|out| out.trim_start().starts_with('-'))
+}
+
+/// Whether the branch ever had a remote: it tracks one, or `origin/<branch>` exists.
+fn branch_was_pushed(project_root: &Path, branch: &str) -> bool {
+    git_output(
+        project_root,
+        &["config", "--get", &format!("branch.{branch}.remote")],
+    )
+    .is_ok()
+        || git_ref_exists(project_root, &format!("refs/remotes/origin/{branch}"))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MergedPullRequest {
+    #[serde(default)]
+    url: String,
+    #[serde(default)]
+    head_ref_oid: String,
+}
+
+/// The URL of a merged pull request from `branch` that includes the local `tip`, if GitHub
+/// has one. Any failure (no `gh`, not a GitHub repository, offline) counts as "none".
+fn merged_pull_request_url(
+    project_root: &Path,
+    branch: &str,
+    tip: &str,
+    github: &GitHubPullRequestLookup,
+) -> Option<String> {
+    let mut cmd = Command::new(&github.gh_binary);
+    cmd.current_dir(project_root)
+        .args([
+            "pr",
+            "list",
+            "--head",
+            branch,
+            "--state",
+            "merged",
+            "--limit",
+            "10",
+            "--json",
+            "url,headRefOid",
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
+        .stdin(Stdio::null());
+    if let Some(path_env) = github.path_env.as_ref() {
+        cmd.env("PATH", path_env);
+    }
+    if let GitHubAuth::PersonalToken(token) = &github.github_auth {
+        cmd.env("GH_TOKEN", token);
+    }
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        log::debug!(
+            target: "bruk::chat",
+            "chat.git.pr_lookup_failed branch={branch} err={}",
+            last_lines(&String::from_utf8_lossy(&output.stderr), 2).unwrap_or_default()
+        );
+        return None;
+    }
+    let prs: Vec<MergedPullRequest> = serde_json::from_slice(&output.stdout).ok()?;
+    prs.into_iter()
+        .find(|pr| {
+            !pr.head_ref_oid.is_empty()
+                && (pr.head_ref_oid == tip
+                    || git_output(
+                        project_root,
+                        &["merge-base", "--is-ancestor", tip, &pr.head_ref_oid],
+                    )
+                    .is_ok())
+        })
+        .map(|pr| pr.url)
+}
+
 fn canonical_or_raw(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -1154,5 +1556,264 @@ mod tests {
         // Confirm branch was pushed to bare origin.
         let remote_heads = git_output(&bare, &["branch", "--list"]).unwrap();
         assert!(remote_heads.contains("agent/chat-pr"));
+    }
+
+    fn commit_file(dir: &Path, name: &str, contents: &str, message: &str) -> String {
+        fs::write(dir.join(name), contents).unwrap();
+        git_output(dir, &["add", name]).unwrap();
+        git_output(dir, &["commit", "-m", message]).unwrap();
+        git_output(dir, &["rev-parse", "HEAD"]).unwrap()
+    }
+
+    fn merge_state(repo: &Path, branch: &str) -> Option<BranchMergeEvidence> {
+        chat_branch_merge_evidence(repo, branch, "main", None).unwrap()
+    }
+
+    #[test]
+    fn a_branch_without_commits_of_its_own_is_not_merged() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_git_repo(&repo);
+        add_worktree(&repo, &temp.path().join("wt"), "agent/chat-fresh");
+        // Even once the base branch moves on.
+        commit_file(&repo, "other.txt", "other\n", "Unrelated work");
+
+        assert_eq!(merge_state(&repo, "agent/chat-fresh"), None);
+    }
+
+    #[test]
+    fn detects_merge_commits_and_fast_forwards() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let worktree = temp.path().join("wt");
+        init_git_repo(&repo);
+        add_worktree(&repo, &worktree, "agent/chat-merged");
+        commit_file(&worktree, "feature.txt", "feature\n", "Add feature");
+        assert_eq!(merge_state(&repo, "agent/chat-merged"), None);
+
+        git_output(
+            &repo,
+            &["merge", "--no-ff", "-m", "Merge", "agent/chat-merged"],
+        )
+        .unwrap();
+        assert_eq!(
+            merge_state(&repo, "agent/chat-merged"),
+            Some(BranchMergeEvidence::InHistory {
+                base: "main".to_owned()
+            })
+        );
+
+        // Work added after the merge isn't merged.
+        commit_file(&worktree, "more.txt", "more\n", "More work");
+        assert_eq!(merge_state(&repo, "agent/chat-merged"), None);
+    }
+
+    #[test]
+    fn detects_rebased_and_squashed_branches() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_git_repo(&repo);
+        commit_file(&repo, "base.txt", "base\n", "Base moves on");
+
+        let rebased = temp.path().join("rebased");
+        add_worktree(&repo, &rebased, "agent/chat-rebased");
+        git_output(&rebased, &["reset", "--hard", "HEAD~1"]).unwrap();
+        let first = commit_file(&rebased, "a.txt", "a\n", "Add a");
+        let second = commit_file(&rebased, "b.txt", "b\n", "Add b");
+        git_output(&repo, &["cherry-pick", &first, &second]).unwrap();
+        assert_eq!(
+            merge_state(&repo, "agent/chat-rebased"),
+            Some(BranchMergeEvidence::Rebased {
+                base: "main".to_owned()
+            })
+        );
+
+        let squashed = temp.path().join("squashed");
+        add_worktree(&repo, &squashed, "agent/chat-squashed");
+        commit_file(&squashed, "c.txt", "c\n", "Add c");
+        commit_file(&squashed, "c.txt", "c\nd\n", "Extend c");
+        assert_eq!(merge_state(&repo, "agent/chat-squashed"), None);
+        git_output(&repo, &["merge", "--squash", "agent/chat-squashed"]).unwrap();
+        git_output(&repo, &["commit", "-m", "Squashed c (#7)"]).unwrap();
+        assert_eq!(
+            merge_state(&repo, "agent/chat-squashed"),
+            Some(BranchMergeEvidence::Squashed {
+                base: "main".to_owned()
+            })
+        );
+    }
+
+    #[test]
+    fn prefers_the_remote_base_branch_after_fetching_it() {
+        let temp = TempDir::new().unwrap();
+        let bare = temp.path().join("origin.git");
+        fs::create_dir_all(&bare).unwrap();
+        git_output(&bare, &["init", "--bare", "-b", "main"]).unwrap();
+        let repo = temp.path().join("repo");
+        init_git_repo(&repo);
+        git_output(&repo, &["remote", "add", "origin", &bare.to_string_lossy()]).unwrap();
+        git_output(&repo, &["push", "-u", "origin", "main"]).unwrap();
+
+        let worktree = temp.path().join("wt");
+        add_worktree(&repo, &worktree, "agent/chat-remote");
+        commit_file(&worktree, "r.txt", "r\n", "Remote work");
+        // Merged on the remote; the local main stays behind.
+        git_output(&repo, &["push", "origin", "agent/chat-remote:main"]).unwrap();
+        git_output(&repo, &["update-ref", "refs/remotes/origin/main", "main"]).unwrap();
+        assert_eq!(merge_state(&repo, "agent/chat-remote"), None);
+
+        fetch_base_branch(&repo, "main", None).unwrap();
+        assert_eq!(
+            merge_state(&repo, "agent/chat-remote"),
+            Some(BranchMergeEvidence::InHistory {
+                base: "origin/main".to_owned()
+            })
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn asks_github_about_pushed_branches_and_requires_the_merged_commit() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let worktree = temp.path().join("wt");
+        init_git_repo(&repo);
+        add_worktree(&repo, &worktree, "agent/chat-pr");
+        let tip = commit_file(&worktree, "pr.txt", "pr\n", "PR work");
+        // Rewritten on merge, so only GitHub knows.
+        commit_file(&repo, "pr.txt", "pr, edited on merge\n", "PR work (#9)");
+        git_output(&repo, &["config", "branch.agent/chat-pr.remote", "origin"]).unwrap();
+
+        let bin_dir = temp.path().join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let gh_bin = bin_dir.join("gh");
+        let write_gh = |oid: &str| {
+            fs::write(
+                &gh_bin,
+                format!(
+                    "#!/bin/sh\necho '[{{\"url\":\"https://github.com/acme/repo/pull/9\",\"headRefOid\":\"{oid}\"}}]'\n"
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&gh_bin, fs::Permissions::from_mode(0o755)).unwrap();
+        };
+        let lookup = GitHubPullRequestLookup {
+            gh_binary: gh_bin.clone(),
+            github_auth: GitHubAuth::GitHubCli,
+            path_env: None,
+        };
+
+        write_gh(&tip);
+        assert_eq!(
+            chat_branch_merge_evidence(&repo, "agent/chat-pr", "main", Some(&lookup)).unwrap(),
+            Some(BranchMergeEvidence::PullRequest {
+                url: "https://github.com/acme/repo/pull/9".to_owned()
+            })
+        );
+
+        // The pull request merged an older commit; newer work is still unmerged.
+        commit_file(&worktree, "later.txt", "later\n", "Later work");
+        assert_eq!(
+            chat_branch_merge_evidence(&repo, "agent/chat-pr", "main", Some(&lookup)).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn reports_uncommitted_changes_in_a_worktree() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let worktree = temp.path().join("wt");
+        init_git_repo(&repo);
+        add_worktree(&repo, &worktree, "agent/chat-dirty");
+        assert!(!worktree_has_uncommitted_changes(&worktree).unwrap());
+        fs::write(worktree.join("scratch.txt"), "notes\n").unwrap();
+        assert!(worktree_has_uncommitted_changes(&worktree).unwrap());
+    }
+
+    fn bare_origin_for(repo: &Path, temp: &Path) -> PathBuf {
+        let bare = temp.join("origin.git");
+        fs::create_dir_all(&bare).unwrap();
+        git_output(&bare, &["init", "--bare", "-b", "main"]).unwrap();
+        git_output(repo, &["remote", "add", "origin", &bare.to_string_lossy()]).unwrap();
+        git_output(repo, &["push", "-u", "origin", "main"]).unwrap();
+        bare
+    }
+
+    #[test]
+    fn deletes_a_merged_branch_locally_and_on_the_remote_when_even() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_git_repo(&repo);
+        let bare = bare_origin_for(&repo, temp.path());
+        let worktree = temp.path().join("wt");
+        add_worktree(&repo, &worktree, "agent/chat-even");
+        commit_file(&worktree, "e.txt", "e\n", "Even work");
+        git_output(&worktree, &["push", "-u", "origin", "agent/chat-even"]).unwrap();
+        git_output(
+            &repo,
+            &["merge", "--no-ff", "-m", "Merge", "agent/chat-even"],
+        )
+        .unwrap();
+        git_output(&repo, &["worktree", "remove", &worktree.to_string_lossy()]).unwrap();
+
+        let cleanup = delete_merged_branch(&repo, "agent/chat-even", None);
+        assert_eq!(cleanup.local, Ok(true));
+        assert_eq!(
+            cleanup.remote,
+            RemoteBranchCleanup::Deleted {
+                remote: "origin".to_owned(),
+                branch: "agent/chat-even".to_owned()
+            }
+        );
+        assert!(!git_ref_exists(&repo, "refs/heads/agent/chat-even"));
+        assert!(!git_ref_exists(
+            &repo,
+            "refs/remotes/origin/agent/chat-even"
+        ));
+        assert!(!git_ref_exists(&bare, "refs/heads/agent/chat-even"));
+        assert!(git_ref_exists(&bare, "refs/heads/main"));
+    }
+
+    #[test]
+    fn keeps_a_remote_branch_at_another_commit_and_skips_unpushed_ones() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_git_repo(&repo);
+        let bare = bare_origin_for(&repo, temp.path());
+
+        let ahead = temp.path().join("ahead");
+        add_worktree(&repo, &ahead, "agent/chat-ahead");
+        commit_file(&ahead, "a.txt", "a\n", "Pushed work");
+        git_output(&ahead, &["push", "-u", "origin", "agent/chat-ahead"]).unwrap();
+        commit_file(&ahead, "a.txt", "a\nmore\n", "Unpushed work");
+        git_output(&repo, &["worktree", "remove", &ahead.to_string_lossy()]).unwrap();
+
+        let cleanup = delete_merged_branch(&repo, "agent/chat-ahead", None);
+        assert_eq!(cleanup.local, Ok(true));
+        assert_eq!(
+            cleanup.remote,
+            RemoteBranchCleanup::Diverged {
+                remote: "origin".to_owned(),
+                branch: "agent/chat-ahead".to_owned()
+            }
+        );
+        assert!(git_ref_exists(&bare, "refs/heads/agent/chat-ahead"));
+
+        let local_only = temp.path().join("local");
+        add_worktree(&repo, &local_only, "agent/chat-local");
+        commit_file(&local_only, "l.txt", "l\n", "Local work");
+        git_output(
+            &repo,
+            &["worktree", "remove", &local_only.to_string_lossy()],
+        )
+        .unwrap();
+        let cleanup = delete_merged_branch(&repo, "agent/chat-local", None);
+        assert_eq!(cleanup.local, Ok(true));
+        assert_eq!(cleanup.remote, RemoteBranchCleanup::NotOnRemote);
+
+        // Already gone.
+        let cleanup = delete_merged_branch(&repo, "agent/chat-local", None);
+        assert_eq!(cleanup.local, Ok(false));
     }
 }

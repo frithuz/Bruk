@@ -1113,6 +1113,7 @@ fn sidebar_project_row(id: ProjectId) -> impl IntoElement {
                 )
                 .child(
                     button()
+                        .test_id(&format!("sidebar-project-{id}"))
                         .flex_1()
                         .min_w(px(0.0))
                         .on_press(move || store::select_project(id))

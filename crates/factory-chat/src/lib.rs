@@ -20,8 +20,10 @@ pub use chat_attachment::{
     attachment_mime_type, format_bytes, is_model_image_type, plan_chat_attachments,
 };
 pub use chat_git::{
-    ChatApplyResult, ChatCommitResult, ChatCommitSummary, ChatGitError, ChatGitStatus,
-    ChatPullRequestRequest, ChatPullRequestResult, apply_chat_worktree_to_checkout,
-    commit_chat_changes, inspect_chat_git_status, open_chat_pull_request, open_dir_in_terminal,
-    open_url_in_browser,
+    BranchMergeEvidence, ChatApplyResult, ChatCommitResult, ChatCommitSummary, ChatGitError,
+    ChatGitStatus, ChatPullRequestRequest, ChatPullRequestResult, GitHubPullRequestLookup,
+    MergedBranchCleanup, RemoteBranchCleanup, apply_chat_worktree_to_checkout,
+    chat_branch_merge_evidence, commit_chat_changes, delete_merged_branch, fetch_base_branch,
+    inspect_chat_git_status, open_chat_pull_request, open_dir_in_terminal, open_url_in_browser,
+    worktree_has_uncommitted_changes,
 };

@@ -17,10 +17,12 @@ use factory_chat::{
     CHAT_ATTACHMENT_MAX_BYTES, ChatContextUsage, ChatEntry, ChatEvent, ChatGitStatus,
     ChatPullRequestRequest, ChatSession, ChatSessionStatus, ChatSessionSummary, ChatTokenBreakdown,
     ChatTurnControl, ChatTurnRequest, ChatUsageDelta, ChatWorkspace, ChatWorktree,
-    ChatWorktreeSetup, apply_chat_worktree_to_checkout, attachment_mime_type, chat_worktree_branch,
-    format_bytes, inspect_chat_git_status, is_model_image_type, open_chat_pull_request,
-    open_dir_in_terminal, open_url_in_browser, plan_chat_attachments, query_chat_context,
-    remove_chat_worktree, spawn_chat_turn,
+    ChatWorktreeSetup, GitHubPullRequestLookup, MergedBranchCleanup, RemoteBranchCleanup,
+    apply_chat_worktree_to_checkout, attachment_mime_type, chat_branch_merge_evidence,
+    chat_worktree_branch, delete_merged_branch, fetch_base_branch, format_bytes,
+    inspect_chat_git_status, is_model_image_type, open_chat_pull_request, open_dir_in_terminal,
+    open_url_in_browser, plan_chat_attachments, query_chat_context, remove_chat_worktree,
+    spawn_chat_turn, worktree_has_uncommitted_changes,
 };
 use factory_config::{
     AgentBadge, AlwaysAllowScope, AnsweredInboxItem, AppPreferences, AttentionRequest,
@@ -33,7 +35,7 @@ use factory_config::{
 use factory_github::{
     AGENT_WORKING_LABEL, GitHubAuth, GitHubFilterClause, IntakeRule, ProjectWorkQueue,
     WorkQueueStage, WorkQueueViewMode, add_github_issue_label, detect_git_remote_info,
-    fetch_github_open_issues_with_filter, remove_github_issue_label,
+    fetch_github_open_issues_with_filter, remove_github_issue_label, resolve_gh_binary,
 };
 use factory_machines::{
     CoreUpdatePolicy, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
@@ -318,6 +320,10 @@ struct AppState {
     chat_git_feedback: BTreeMap<String, String>,
     /// Pull request URL opened from this chat during the current session.
     chat_pr_urls: BTreeMap<String, String>,
+    /// Projects whose merged chat worktrees are being looked for and pruned.
+    worktree_prune_projects: BTreeSet<ProjectId>,
+    /// Chats whose worktree is being checked for pruning; they take no messages meanwhile.
+    chats_pruning: BTreeSet<String>,
     secret_store: Arc<dyn SecretStore>,
     secret_resolver: Arc<SecretResolver>,
     secrets: Vec<SecretRecord>,
@@ -1141,6 +1147,8 @@ impl AppState {
             chat_git_errors: BTreeMap::new(),
             chat_git_feedback: BTreeMap::new(),
             chat_pr_urls: BTreeMap::new(),
+            worktree_prune_projects: BTreeSet::new(),
+            chats_pruning: BTreeSet::new(),
             secret_store,
             secret_resolver,
             secrets,
@@ -3222,6 +3230,8 @@ pub struct ActiveChatMeta {
     pub is_git_repo: bool,
     /// Summary of uncommitted changes and commits ahead for the header Changes button.
     pub git_summary: Option<ChatGitSummary>,
+    /// When the chat was archived; archived chats are read-only.
+    pub archived_at: Option<i64>,
 }
 
 /// What the open chat's Changes drawer shows.
@@ -3542,6 +3552,15 @@ impl AppState {
                 "Wait for the reply, or stop it, before sending another message".to_owned(),
             );
         }
+        if session.is_archived() {
+            return Err("This chat is archived. Unarchive it to keep chatting.".to_owned());
+        }
+        if self.chats_pruning.contains(&chat_id) {
+            return Err(
+                "Bruk is checking whether this chat's branch merged. Try again in a moment."
+                    .to_owned(),
+            );
+        }
         let uploads = plan_chat_attachments(&chat_dir, attachment_sources)?;
         let attachments = uploads.iter().map(|u| u.attachment.clone()).collect();
         session.push_user_message_with_attachments(text, attachments, now);
@@ -3719,13 +3738,13 @@ pub fn select_chat(id: &str) {
     }
 }
 
-/// The project's chats, most recently active first.
+/// The project's chats that aren't archived, most recently active first.
 pub fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
     state().with(|s| {
         let mut chats: Vec<ChatSessionSummary> = s
             .chat_sessions
             .values()
-            .filter(|chat| chat.project_id == id)
+            .filter(|chat| chat.project_id == id && !chat.is_archived())
             .map(ChatSession::summary)
             .collect();
         chats.sort_by(|a, b| {
@@ -3737,12 +3756,31 @@ pub fn chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
     })
 }
 
-/// How many chats a project has, and how many are working on a reply.
+/// The project's archived chats, most recently archived first.
+pub fn archived_chat_summaries_for_project(id: ProjectId) -> Vec<ChatSessionSummary> {
+    state().with(|s| {
+        let mut chats: Vec<ChatSessionSummary> = s
+            .chat_sessions
+            .values()
+            .filter(|chat| chat.project_id == id && chat.is_archived())
+            .map(ChatSession::summary)
+            .collect();
+        chats.sort_by(|a, b| {
+            b.archived_at
+                .cmp(&a.archived_at)
+                .then_with(|| b.updated_at.cmp(&a.updated_at))
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        chats
+    })
+}
+
+/// How many chats a project has (archived ones aside), and how many are working on a reply.
 pub fn chat_counts_for_project(id: ProjectId) -> (usize, usize) {
     state().with(|s| {
         s.chat_sessions
             .values()
-            .filter(|chat| chat.project_id == id)
+            .filter(|chat| chat.project_id == id && !chat.is_archived())
             .fold((0, 0), |(total, running), chat| {
                 (total + 1, running + usize::from(chat.is_running()))
             })
@@ -3786,6 +3824,7 @@ pub fn active_chat_meta() -> Option<ActiveChatMeta> {
                 .map(|usage| (usage.used_tokens, usage.window_tokens)),
             is_git_repo,
             git_summary,
+            archived_at: chat.archived_at,
         })
     })
 }
@@ -4283,6 +4322,13 @@ fn refresh_chat_context(chat_id: String) {
     let mut request = None;
     state().update(|s| {
         if s.using_sample_projects || s.chat_context_loading.contains(&chat_id) {
+            return;
+        }
+        // Its worktree may be gone; the last reading stays shown.
+        if s.chat_sessions
+            .get(&chat_id)
+            .is_none_or(ChatSession::is_archived)
+        {
             return;
         }
         if let Ok(prepared) = s.chat_turn_request(&chat_id, "")
@@ -4874,6 +4920,421 @@ pub fn delete_chat(id: &str) {
         });
         s.refresh_dashboard_dataset();
     });
+}
+
+/// Puts a chat away: it leaves the chat list for its Archived section and takes no messages
+/// until unarchived. Its transcript and worktree stay; once its branch merges, Prune Merged
+/// Worktrees cleans the worktree up like any other.
+pub fn archive_chat(id: &str) {
+    state().update(|s| {
+        let Some(chat) = s.chat_sessions.get_mut(id) else {
+            return;
+        };
+        if chat.is_archived() {
+            return;
+        }
+        if chat.is_running() {
+            s.status_message =
+                Some("Wait for the reply, or stop it, before archiving the chat".to_owned());
+            return;
+        }
+        chat.archived_at = Some(current_unix_seconds());
+        let title = chat.display_title();
+        log::info!(target: "bruk::chat", "chat.archived chat_id={id}");
+        s.persist_chat(id);
+        s.status_message = Some(format!("Archived chat '{title}'"));
+    });
+}
+
+/// Takes an archived chat out of the archive. If its worktree was pruned, its next message
+/// creates a new one from the checkout's `HEAD`.
+pub fn unarchive_chat(id: &str) {
+    state().update(|s| {
+        let Some(chat) = s.chat_sessions.get_mut(id) else {
+            return;
+        };
+        if chat.archived_at.take().is_none() {
+            return;
+        }
+        let title = chat.display_title();
+        log::info!(target: "bruk::chat", "chat.unarchived chat_id={id}");
+        s.persist_chat(id);
+        s.status_message = Some(format!("Unarchived chat '{title}'"));
+    });
+}
+
+/// Whether the selected project can have its merged chat worktrees pruned (a git project).
+pub fn can_prune_merged_worktrees() -> bool {
+    state().with(|s| {
+        !s.using_sample_projects
+            && s.selected_project
+                .and_then(|pid| s.factory.project(pid))
+                .is_some_and(|project| project.root_path.join(".git").exists())
+    })
+}
+
+/// Whether the selected project's merged chat worktrees are being pruned right now.
+pub fn pruning_merged_worktrees() -> bool {
+    state().with(|s| {
+        s.selected_project
+            .is_some_and(|pid| s.worktree_prune_projects.contains(&pid))
+    })
+}
+
+/// A chat worktree checked for a merged branch.
+struct WorktreePruneCandidate {
+    chat_id: String,
+    title: String,
+    worktree: ChatWorktree,
+}
+
+enum WorktreePruneOutcome {
+    /// The branch merged; the worktree is gone and the branch was cleaned up.
+    Pruned {
+        evidence: String,
+        branch: MergedBranchCleanup,
+    },
+    /// The branch merged but the worktree has uncommitted changes, so it stays.
+    MergedButDirty,
+    NotMerged,
+    /// Neither the worktree nor its branch exist (a first turn that never ran).
+    NothingToPrune,
+    Failed(String),
+}
+
+/// Tallies a prune for its status message.
+#[derive(Default)]
+struct WorktreePruneReport {
+    archived: Vec<String>,
+    dirty: Vec<String>,
+    failed: Vec<(String, String)>,
+    not_merged: usize,
+    local_branches_deleted: usize,
+    remote_branches_deleted: usize,
+    /// `remote/branch` names kept because they're at other commits.
+    remote_branches_kept: Vec<String>,
+    branch_failures: Vec<(String, String)>,
+}
+
+/// Removes the worktree of every chat in the selected project whose branch has merged into
+/// the project's default branch (locally, on `origin` after fetching it, or as a merged GitHub
+/// pull request), deletes the branch locally and on its remote (when the remote branch is at
+/// the same commit), and archives those chats. Worktrees with uncommitted changes, and chats
+/// that are replying, are left alone.
+pub fn prune_merged_worktrees() {
+    let mut job = None;
+    state().update(|s| {
+        if s.using_sample_projects {
+            return;
+        }
+        let Some(pid) = s.selected_project else {
+            return;
+        };
+        if s.worktree_prune_projects.contains(&pid) {
+            return;
+        }
+        let Some(project) = s.factory.project(pid).cloned() else {
+            return;
+        };
+        if !project.root_path.join(".git").exists() {
+            s.status_message = Some(format!(
+                "{} isn't a git repository, so it has no worktrees to prune.",
+                project.name
+            ));
+            return;
+        }
+        let candidates: Vec<WorktreePruneCandidate> = s
+            .chat_sessions
+            .values()
+            .filter(|chat| {
+                chat.project_id == pid && !chat.is_running() && !s.chat_git_busy.contains(&chat.id)
+            })
+            .filter_map(|chat| {
+                chat.worktree_in_use()
+                    // An archived chat counts while its worktree is still there.
+                    .filter(|worktree| !chat.is_archived() || worktree.path.is_dir())
+                    .map(|worktree| WorktreePruneCandidate {
+                        chat_id: chat.id.clone(),
+                        title: chat.display_title(),
+                        worktree: worktree.clone(),
+                    })
+            })
+            .collect();
+        if candidates.is_empty() {
+            s.status_message = Some(format!(
+                "No chats in {} have a worktree to prune.",
+                project.name
+            ));
+            return;
+        }
+        let settings = s.project_settings.get(&project.name);
+        let default_branch = settings
+            .map(|ps| ps.default_branch.clone())
+            .filter(|b| !b.trim().is_empty())
+            .unwrap_or_else(|| "main".to_owned());
+        let auth_mode = settings
+            .map(|ps| ps.github_auth_mode)
+            .unwrap_or(IssueSourceAuthMode::GitHubCli);
+        let pat_id = settings.and_then(|ps| ps.github_pat_id.clone());
+        let ssh_auth_sock = Some(s.preferences.advanced.ssh_auth_sock.trim().to_owned())
+            .filter(|sock| !sock.is_empty());
+        let path_env = s.claude_path_lookup.resolve_path_env();
+        let resolver = Arc::clone(&s.secret_resolver);
+        s.worktree_prune_projects.insert(pid);
+        s.chats_pruning
+            .extend(candidates.iter().map(|c| c.chat_id.clone()));
+        s.status_message = Some(format!(
+            "Looking for merged branches among {} chat worktree{} in {}…",
+            candidates.len(),
+            if candidates.len() == 1 { "" } else { "s" },
+            project.name
+        ));
+        log::info!(
+            target: "bruk::chat",
+            "chat.worktree.prune_started project={:?} candidates={} base={default_branch}",
+            project.name,
+            candidates.len()
+        );
+        job = Some((
+            pid,
+            project.name.clone(),
+            project.root_path.clone(),
+            candidates,
+            default_branch,
+            auth_mode,
+            pat_id,
+            resolver,
+            ssh_auth_sock,
+            path_env,
+        ));
+    });
+    let Some((
+        pid,
+        project_name,
+        project_root,
+        candidates,
+        default_branch,
+        auth_mode,
+        pat_id,
+        resolver,
+        ssh_auth_sock,
+        path_env,
+    )) = job
+    else {
+        return;
+    };
+    Owner::detached().run(|| {
+        spawn(async move {
+            let results = spawn_blocking_task(move || {
+                if let Err(err) =
+                    fetch_base_branch(&project_root, &default_branch, ssh_auth_sock.as_deref())
+                {
+                    log::warn!(
+                        target: "bruk::chat",
+                        "chat.worktree.prune_fetch_failed base={default_branch} err={err}"
+                    );
+                }
+                // Without `gh` (or its auth), only merges git can see locally count.
+                let github = resolve_github_auth_off_thread(auth_mode, pat_id.as_ref(), &resolver)
+                    .ok()
+                    .and_then(|(github_auth, _)| {
+                        resolve_gh_binary(path_env.as_deref())
+                            .ok()
+                            .map(|gh_binary| GitHubPullRequestLookup {
+                                gh_binary,
+                                github_auth,
+                                path_env: path_env.clone(),
+                            })
+                    });
+                candidates
+                    .into_iter()
+                    .map(|candidate| {
+                        let outcome = prune_chat_worktree_if_merged(
+                            &project_root,
+                            &default_branch,
+                            &candidate,
+                            github.as_ref(),
+                            ssh_auth_sock.as_deref(),
+                        );
+                        (candidate, outcome)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await;
+            state().update(|s| {
+                s.worktree_prune_projects.remove(&pid);
+                let now = current_unix_seconds();
+                let mut report = WorktreePruneReport::default();
+                for (candidate, outcome) in results {
+                    s.chats_pruning.remove(&candidate.chat_id);
+                    match outcome {
+                        WorktreePruneOutcome::Pruned { evidence, branch } => {
+                            log::info!(
+                                target: "bruk::chat",
+                                "chat.worktree.pruned chat_id={} branch={} evidence={evidence:?} cleanup={branch:?}",
+                                candidate.chat_id,
+                                candidate.worktree.branch
+                            );
+                            report.tally_branch(&candidate.worktree.branch, branch);
+                            let Some(chat) = s.chat_sessions.get_mut(&candidate.chat_id) else {
+                                continue;
+                            };
+                            chat.archived_at.get_or_insert(now);
+                            s.persist_chat(&candidate.chat_id);
+                            s.chat_git_status.remove(&candidate.chat_id);
+                            s.chat_git_errors.remove(&candidate.chat_id);
+                            s.chat_git_feedback.remove(&candidate.chat_id);
+                            report.archived.push(candidate.title);
+                        }
+                        WorktreePruneOutcome::MergedButDirty => {
+                            report.dirty.push(candidate.title);
+                        }
+                        WorktreePruneOutcome::NotMerged => report.not_merged += 1,
+                        WorktreePruneOutcome::NothingToPrune => {}
+                        WorktreePruneOutcome::Failed(err) => {
+                            log::warn!(
+                                target: "bruk::chat",
+                                "chat.worktree.prune_failed chat_id={} err={err}",
+                                candidate.chat_id
+                            );
+                            report.failed.push((candidate.title, err));
+                        }
+                    }
+                }
+                s.status_message = Some(report.summary(&project_name));
+            });
+        });
+    });
+}
+
+fn prune_chat_worktree_if_merged(
+    project_root: &Path,
+    default_branch: &str,
+    candidate: &WorktreePruneCandidate,
+    github: Option<&GitHubPullRequestLookup>,
+    ssh_auth_sock: Option<&str>,
+) -> WorktreePruneOutcome {
+    let path = &candidate.worktree.path;
+    let evidence = match chat_branch_merge_evidence(
+        project_root,
+        &candidate.worktree.branch,
+        default_branch,
+        github,
+    ) {
+        Ok(Some(evidence)) => evidence,
+        Ok(None) => return WorktreePruneOutcome::NotMerged,
+        // A worktree planned for a first turn that never ran has no branch yet.
+        Err(_) if !path.exists() => return WorktreePruneOutcome::NothingToPrune,
+        Err(err) => return WorktreePruneOutcome::Failed(err),
+    };
+    if path.is_dir() {
+        match worktree_has_uncommitted_changes(path) {
+            Ok(false) => {}
+            Ok(true) => return WorktreePruneOutcome::MergedButDirty,
+            Err(err) => return WorktreePruneOutcome::Failed(err),
+        }
+    }
+    if let Err(err) = remove_chat_worktree(project_root, path) {
+        return WorktreePruneOutcome::Failed(err);
+    }
+    WorktreePruneOutcome::Pruned {
+        evidence: evidence.describe(),
+        branch: delete_merged_branch(project_root, &candidate.worktree.branch, ssh_auth_sock),
+    }
+}
+
+impl WorktreePruneReport {
+    fn tally_branch(&mut self, branch: &str, cleanup: MergedBranchCleanup) {
+        match cleanup.local {
+            Ok(true) => self.local_branches_deleted += 1,
+            Ok(false) => {}
+            Err(err) => self.branch_failures.push((branch.to_owned(), err)),
+        }
+        match cleanup.remote {
+            RemoteBranchCleanup::NotOnRemote => {}
+            RemoteBranchCleanup::Deleted { .. } => self.remote_branches_deleted += 1,
+            RemoteBranchCleanup::Diverged { remote, branch } => {
+                self.remote_branches_kept.push(format!("{remote}/{branch}"));
+            }
+            RemoteBranchCleanup::Failed(err) => {
+                self.branch_failures
+                    .push((format!("{branch} on its remote"), err));
+            }
+        }
+    }
+
+    /// What the status bar says once the prune finishes.
+    fn summary(&self, project_name: &str) -> String {
+        fn quoted(titles: &[String]) -> String {
+            titles
+                .iter()
+                .map(|t| format!("'{t}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+        fn plural(count: usize, one: &str, many: &str) -> String {
+            format!("{count} {}", if count == 1 { one } else { many })
+        }
+        let mut parts = Vec::new();
+        if self.archived.is_empty() {
+            parts.push(format!(
+                "No merged chat worktrees to prune in {project_name}."
+            ));
+        } else {
+            parts.push(format!(
+                "Pruned {} and archived {}: {}.",
+                plural(self.archived.len(), "merged worktree", "merged worktrees"),
+                if self.archived.len() == 1 {
+                    "its chat"
+                } else {
+                    "their chats"
+                },
+                quoted(&self.archived)
+            ));
+        }
+        match (self.local_branches_deleted, self.remote_branches_deleted) {
+            (0, 0) => {}
+            (local, 0) => parts.push(format!(
+                "Deleted {}.",
+                plural(local, "local branch", "local branches")
+            )),
+            (0, remote) => parts.push(format!(
+                "Deleted {}.",
+                plural(remote, "remote branch", "remote branches")
+            )),
+            (local, remote) => parts.push(format!(
+                "Deleted {} and {}.",
+                plural(local, "local branch", "local branches"),
+                plural(remote, "remote branch", "remote branches")
+            )),
+        }
+        if !self.remote_branches_kept.is_empty() {
+            parts.push(format!(
+                "Kept {} at other commits than the local branch.",
+                self.remote_branches_kept.join(", ")
+            ));
+        }
+        for (branch, err) in &self.branch_failures {
+            parts.push(format!("Couldn't delete branch {branch}: {err}."));
+        }
+        if !self.dirty.is_empty() {
+            parts.push(format!(
+                "Kept {} with uncommitted changes: {}.",
+                plural(self.dirty.len(), "merged worktree", "merged worktrees"),
+                quoted(&self.dirty)
+            ));
+        }
+        for (title, err) in &self.failed {
+            parts.push(format!("Couldn't prune '{title}': {err}."));
+        }
+        if self.not_merged > 0 {
+            parts.push(format!(
+                "{} not merged yet.",
+                plural(self.not_merged, "branch", "branches")
+            ));
+        }
+        parts.join(" ")
+    }
 }
 
 // --- Dashboard state --------------------------------------------------------------------

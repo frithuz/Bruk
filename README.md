@@ -57,6 +57,21 @@ works:
   (`<branch prefix>chat-<title>`). The checkout is left alone. Deleting the chat removes the worktree,
   including uncommitted changes; the branch and its commits stay.
 
+**Prune Merged Worktrees** on the project page removes the worktree of every chat whose branch
+has merged into the project's default branch, deletes that branch, and archives those chats. A
+branch counts as merged
+when its commits are in the default branch's history (merge commit or fast-forward), were rebased
+onto it, or were squashed into one commit on it (checked against the local branch and
+`origin/<default branch>`, fetched first), or when `gh` reports a merged pull request from it at
+its current commit. The branch is deleted locally, and on its remote (its upstream, or `origin`)
+when the remote branch is at the same commit as the local one; a remote branch with other commits
+is kept. Worktrees with uncommitted changes and chats that are replying are left alone.
+
+Chats can also be archived by hand with the archive button in the chat header; that keeps the
+worktree and branch until a later prune finds the branch merged. Archived chats sit folded under
+**Archived** in the chat list with their transcripts. They take no messages until unarchived; a
+pruned chat's next message after that starts a new worktree.
+
 For git projects, the **Changes** drawer in the chat header shows a live diff of every modified,
 staged, and newly created file (plus commits ahead of the base branch for worktrees), updated
 automatically after each reply, with per-file folding and a **Collapse all / Expand all** toggle.
