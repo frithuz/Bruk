@@ -87,6 +87,29 @@ struct RunnerRegistry {
     active_by_key: BTreeMap<(String, String), RunControlHandle>,
     gates_by_id: BTreeMap<String, (RunControlHandle, (String, String))>,
     run_seq: u64,
+    /// The next run number to hand out per project, by the project's root path (one process
+    /// can open more than one database, whose project ids overlap). A run's row is only written
+    /// when it finishes, so the database alone would give overlapping runs the same number (and
+    /// branch).
+    next_run_numbers: BTreeMap<std::path::PathBuf, u32>,
+}
+
+/// Hands out the run number for a new run of the project at `project_root`: the database's next
+/// number, or past any number already handed out to a run still going in this session.
+fn reserve_run_number(project_root: &Path, next_in_database: u32) -> u32 {
+    let Ok(mut reg) = runner_registry().lock() else {
+        return next_in_database;
+    };
+    let number = reg
+        .next_run_numbers
+        .get(project_root)
+        .copied()
+        .unwrap_or(0)
+        .max(next_in_database)
+        .max(1);
+    reg.next_run_numbers
+        .insert(project_root.to_path_buf(), number + 1);
+    number
 }
 
 fn runner_registry() -> &'static Mutex<RunnerRegistry> {
@@ -12396,11 +12419,12 @@ fn spawn_real_workflow_run(
                 )
             });
 
-        let run_number =
+        let next_in_database =
             s.db.as_ref()
                 .and_then(|arc| arc.lock().ok())
                 .and_then(|db| db.next_run_number_for_project(project.id).ok())
                 .unwrap_or(1);
+        let run_number = reserve_run_number(&project.root_path, next_in_database);
 
         let ProviderLaunch {
             claude_binary,
@@ -14186,6 +14210,18 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn overlapping_runs_get_distinct_run_numbers() {
+        // A project path no other test uses, since the registry is process-wide.
+        let project = Path::new("/nonexistent/bruk-test/overlapping-runs");
+        assert_eq!(reserve_run_number(project, 4), 4);
+        // The first run hasn't finished, so the database still says 4.
+        assert_eq!(reserve_run_number(project, 4), 5);
+        // Runs recorded elsewhere move the next number past what was handed out.
+        assert_eq!(reserve_run_number(project, 9), 9);
+        assert_eq!(reserve_run_number(project, 1), 10);
+    }
 
     #[test]
     fn build_for_mode_toggles_between_empty_and_demo_without_losing_real_projects() {

@@ -80,6 +80,8 @@ pub enum RunnerError {
     Mcp(String),
     #[error("{0}")]
     Secret(String),
+    #[error("{0}")]
+    Worktree(String),
 }
 
 /// Complete configuration passed to [`spawn_workflow_run`] or [`execute_workflow_blocking`].
@@ -388,8 +390,13 @@ pub fn execute_workflow_blocking(
     });
     let _ = fs::create_dir_all(&runtime_root);
 
-    let (working_dir, branch_name, is_isolated_worktree) =
-        prepare_checkout(&request, &runtime_root);
+    // A run that should be isolated but can't get its worktree fails before any step runs, rather
+    // than going ahead in the user's own checkout.
+    let checkout = prepare_checkout(&request, &runtime_root);
+    let (working_dir, branch_name, is_isolated_worktree) = match &checkout {
+        Ok(prepared) => prepared.clone(),
+        Err(_) => (request.project_root.clone(), String::new(), false),
+    };
 
     let planned = collect_planned_steps(&request.workflow.nodes, &request.catalog);
     log::info!(
@@ -444,7 +451,10 @@ pub fn execute_workflow_blocking(
 
     // Start-of-run AST secret preflight (§9): resolve all required workflow secrets in one batch
     // before step 1 begins.
-    let preflight_result = preflight_workflow_secrets(&mut state);
+    let preflight_result = match checkout {
+        Ok(_) => preflight_workflow_secrets(&mut state),
+        Err(message) => Err(RunnerError::Worktree(message)),
+    };
     let result = match preflight_result {
         Ok(()) => execute_node_list(&mut state, &request.workflow.nodes, &mut template_ctx),
         Err(err) => Err(err),
@@ -2242,61 +2252,86 @@ fn evaluate_exit_condition(
     }
 }
 
-fn prepare_checkout(request: &WorkflowRunRequest, runtime_root: &Path) -> (PathBuf, String, bool) {
+fn prepare_checkout(
+    request: &WorkflowRunRequest,
+    runtime_root: &Path,
+) -> Result<(PathBuf, String, bool), String> {
     let prefix = if request.branch_prefix.trim().is_empty() {
         "agent/"
     } else {
         request.branch_prefix.trim()
     };
-    let branch_name = match request.issue_number {
+    let wanted_branch = match request.issue_number {
         Some(issue_no) => format!("{prefix}issue-{issue_no}-run-{}", request.run_number),
         None => format!("{prefix}{}-run-{}", request.workflow.id, request.run_number),
     };
 
-    if request.use_isolated_worktrees && is_git_repo_with_head(&request.project_root) {
-        let worktree_dir = runtime_root.join("worktree");
-        let output = Command::new("git")
-            .args([
-                "worktree",
-                "add",
-                "-b",
-                &branch_name,
-                &worktree_dir.to_string_lossy(),
-                "HEAD",
-            ])
-            .current_dir(&request.project_root)
-            .output();
-        match output {
-            Ok(out) if out.status.success() => {
-                log::info!(
-                    "workflow.worktree.created run_id={} branch={branch_name} path={}",
-                    request.run_id,
-                    worktree_dir.display()
-                );
-                return (worktree_dir, branch_name, true);
-            }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                log::warn!(
-                    "workflow.worktree.fallback run_id={} branch={branch_name} err={}",
-                    request.run_id,
-                    stderr.trim()
-                );
-            }
-            Err(err) => {
-                log::warn!(
-                    "workflow.worktree.fallback run_id={} branch={branch_name} err={err}",
-                    request.run_id
-                );
-            }
-        }
+    if !request.use_isolated_worktrees || !is_git_repo_with_head(&request.project_root) {
+        return Ok((
+            request.project_root.clone(),
+            request.default_branch.clone(),
+            false,
+        ));
     }
 
-    (
-        request.project_root.clone(),
-        request.default_branch.clone(),
-        false,
-    )
+    let branch_name = unused_branch_name(&request.project_root, &wanted_branch);
+    let worktree_dir = runtime_root.join("worktree");
+    let worktree_arg = worktree_dir.to_string_lossy();
+    match run_git(
+        &request.project_root,
+        &["worktree", "add", "-b", &branch_name, &worktree_arg, "HEAD"],
+        None,
+    ) {
+        Ok(_) => {
+            log::info!(
+                "workflow.worktree.created run_id={} branch={branch_name} path={}",
+                request.run_id,
+                worktree_dir.display()
+            );
+            Ok((worktree_dir, branch_name, true))
+        }
+        Err(err) => {
+            log::warn!(
+                "workflow.worktree.failed run_id={} branch={branch_name} err={err}",
+                request.run_id
+            );
+            Err(format!(
+                "Couldn't create an isolated worktree for this run, so it didn't start: {err}"
+            ))
+        }
+    }
+}
+
+/// `wanted`, or `wanted-2`, `wanted-3`, … when a branch by that name already exists (left over
+/// from an earlier run, or from a project that was removed and added again).
+fn unused_branch_name(repo: &Path, wanted: &str) -> String {
+    let taken = |name: &str| {
+        Command::new("git")
+            .args([
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{name}"),
+            ])
+            .current_dir(repo)
+            .stdin(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
+    };
+    if !taken(wanted) {
+        return wanted.to_owned();
+    }
+    (2..1000)
+        .map(|n| format!("{wanted}-{n}"))
+        .find(|name| !taken(name))
+        .unwrap_or_else(|| format!("{wanted}-{}", millis_suffix()))
+}
+
+fn millis_suffix() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().to_string())
+        .unwrap_or_default()
 }
 
 fn is_git_repo_with_head(dir: &Path) -> bool {
@@ -3737,5 +3772,76 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
             failed.as_deref().is_some_and(|p| p.contains("not found")),
             "{failed:?}"
         );
+    }
+    fn init_repo_with_commit(repo: &Path) {
+        fs::create_dir_all(repo).unwrap();
+        git_ok(repo, &["init", "--quiet", "-b", "main"]);
+        git_ok(repo, &["config", "user.email", "test@example.com"]);
+        git_ok(repo, &["config", "user.name", "Test"]);
+        git_ok(repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("status.txt"), "broken\n").unwrap();
+        git_ok(repo, &["add", "."]);
+        git_ok(repo, &["commit", "--quiet", "-m", "init"]);
+    }
+
+    fn touch_marker_step() -> Vec<WorkflowNodeDef> {
+        vec![WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
+            id: "touch".to_owned(),
+            name: "Touch".to_owned(),
+            command: "echo touched > marker.txt".to_owned(),
+        })]
+    }
+
+    #[test]
+    fn isolated_run_fails_instead_of_using_the_checkout_when_its_worktree_cant_be_made() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_repo_with_commit(&repo);
+        let runtime_root = temp.path().join("rt");
+        // Something already occupies the worktree path, so `git worktree add` fails.
+        fs::create_dir_all(runtime_root.join("worktree")).unwrap();
+        fs::write(runtime_root.join("worktree/occupied"), "x").unwrap();
+
+        let events = run_to_end(tool_only_request(&repo, touch_marker_step(), runtime_root));
+
+        assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
+        let error = events.iter().find_map(|e| match e {
+            RunnerEvent::RunFinished { error, .. } => error.clone(),
+            _ => None,
+        });
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("isolated worktree")),
+            "{error:?}"
+        );
+        assert!(
+            !repo.join("marker.txt").exists(),
+            "no step may run in the user's checkout"
+        );
+    }
+
+    #[test]
+    fn isolated_run_takes_a_free_branch_when_its_run_branch_already_exists() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        init_repo_with_commit(&repo);
+        git_ok(&repo, &["branch", "agent/fix-run-1"]);
+        let runtime_root = temp.path().join("rt");
+
+        let events = run_to_end(tool_only_request(
+            &repo,
+            touch_marker_step(),
+            runtime_root.clone(),
+        ));
+
+        assert_eq!(run_status(&events), Some(RunExecutionState::Succeeded));
+        let branch = events.iter().find_map(|e| match e {
+            RunnerEvent::RunStarted { branch_name, .. } => Some(branch_name.clone()),
+            _ => None,
+        });
+        assert_eq!(branch.as_deref(), Some("agent/fix-run-1-2"));
+        assert!(runtime_root.join("worktree/marker.txt").exists());
+        assert!(!repo.join("marker.txt").exists());
     }
 }
