@@ -144,8 +144,8 @@ fn preferences_header() -> impl IntoElement {
         .pb(px(10.0))
         .window_drag(false);
 
-    for tab in PreferencesTab::ALL {
-        tab_strip = tab_strip.child(toolbar_tab_button(*tab));
+    for tab in PreferencesTab::available() {
+        tab_strip = tab_strip.child(toolbar_tab_button(tab));
     }
 
     view()
@@ -2782,9 +2782,9 @@ fn general_tab() -> impl IntoElement {
                     .rounded(px(8.0))
                     .bg(palette::segmented_track_bg())
                     .gap(px(2.0));
-                for option in DefaultLandingView::ALL {
-                    let active = prefs.default_landing_view == *option;
-                    let target = *option;
+                for option in DefaultLandingView::available() {
+                    let active = prefs.default_landing_view == option;
+                    let target = option;
                     landing_picker = landing_picker.child(segment_button(
                         option.label(),
                         active,

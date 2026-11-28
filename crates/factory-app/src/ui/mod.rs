@@ -673,7 +673,7 @@ fn sidebar() -> impl IntoElement {
                 .gap(px(2.0))
                 .child(sidebar_dashboard_item())
                 .child(sidebar_inbox_item())
-                .child(sidebar_machines_item()),
+                .child(when(factory_flags::machines, sidebar_machines_item)),
         )
         .child(
             scroll().flex_1().child(

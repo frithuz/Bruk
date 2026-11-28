@@ -168,28 +168,10 @@ fn dashboard_empty_state() -> impl IntoElement {
                                         .text_color(palette::text_primary()),
                                 ),
                         )
-                        .child(
-                            button()
-                                .test_id("dashboard-empty-machines")
-                                .accessibility_label("Add a Machine")
-                                .on_press(store::open_machines)
-                                .h(px(34.0))
-                                .px(px(14.0))
-                                .rounded(px(8.0))
-                                .border_1()
-                                .border_color(palette::border_color())
-                                .bg(palette::control_bg())
-                                .items_center()
-                                .justify_center()
-                                .hover(|s| s.bg(palette::subtle_surface_bg()))
-                                .active(|s| s.opacity(0.8))
-                                .child(
-                                    text("Machines")
-                                        .text_size(px(13.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::text_primary()),
-                                ),
-                        ),
+                        .child(when(
+                            factory_flags::machines,
+                            empty_state_machines_button,
+                        )),
                 )
                 .child(
                     view()
@@ -208,6 +190,29 @@ fn dashboard_empty_state() -> impl IntoElement {
                             .text_color(palette::text_muted()),
                         ),
                 ),
+        )
+}
+
+fn empty_state_machines_button() -> impl IntoElement {
+    button()
+        .test_id("dashboard-empty-machines")
+        .accessibility_label("Add a Machine")
+        .on_press(store::open_machines)
+        .h(px(34.0))
+        .px(px(14.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .items_center()
+        .justify_center()
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.8))
+        .child(
+            text("Machines")
+                .text_size(px(13.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
         )
 }
 

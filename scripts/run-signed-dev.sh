@@ -5,7 +5,14 @@ set -euo pipefail
 # identifier (`dev.frithuz.bruk`) and local dev certificate when available,
 # preventing repeated macOS Keychain ACL prompts across rebuilds.
 
-cargo build -p factory-desktop
+# Build flags (see crates/factory-flags): dev runs include unreleased work by default. Set
+# BRUK_FEATURES to pick specific flags, or to the empty string to run what a release ships.
+BRUK_FEATURES="${BRUK_FEATURES-unreleased}"
+if [ -n "$BRUK_FEATURES" ]; then
+  cargo build -p factory-desktop --features "$BRUK_FEATURES"
+else
+  cargo build -p factory-desktop
+fi
 
 BIN="target/debug/factory-desktop"
 if [ "$(uname -s)" = "Darwin" ] && [ -x "$BIN" ]; then

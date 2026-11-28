@@ -9,6 +9,11 @@ name = "factory-desktop"
 path = "src/main.rs"
 test = false
 
+[features]
+# Build flags, forwarded to `factory-flags` (see that crate for what each one gates).
+machines = ["factory-app/machines"]
+unreleased = ["factory-app/unreleased"]
+
 [dependencies]
 factory-app.workspace = true
 

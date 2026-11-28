@@ -419,28 +419,32 @@ fn run_menu(snapshot: &MenuSnapshot) -> MenuItem {
 }
 
 fn window_menu() -> MenuItem {
-    MenuItem::submenu(
-        "Window",
-        [
-            MenuItem::role(MenuRole::Minimize),
-            MenuItem::role(MenuRole::Zoom),
-            MenuItem::separator(),
-            MenuItem::new("Dashboard")
-                .shortcut("mod+shift+d")
-                .on_select(open_dashboard_window),
-            MenuItem::new("Inbox")
-                .shortcut("mod+i")
-                .on_select(open_inbox_window),
+    let mut items = vec![
+        MenuItem::role(MenuRole::Minimize),
+        MenuItem::role(MenuRole::Zoom),
+        MenuItem::separator(),
+        MenuItem::new("Dashboard")
+            .shortcut("mod+shift+d")
+            .on_select(open_dashboard_window),
+        MenuItem::new("Inbox")
+            .shortcut("mod+i")
+            .on_select(open_inbox_window),
+    ];
+    if factory_flags::machines() {
+        items.push(
             MenuItem::new("Machines")
                 .shortcut("alt+mod+m")
                 .on_select(open_machines_window),
-            MenuItem::new("Run Monitor")
-                .shortcut("mod+shift+m")
-                .disabled(true),
-            MenuItem::separator(),
-            MenuItem::new("Bring All to Front").disabled(true),
-        ],
-    )
+        );
+    }
+    items.extend([
+        MenuItem::new("Run Monitor")
+            .shortcut("mod+shift+m")
+            .disabled(true),
+        MenuItem::separator(),
+        MenuItem::new("Bring All to Front").disabled(true),
+    ]);
+    MenuItem::submenu("Window", items)
 }
 
 fn help_menu() -> MenuItem {

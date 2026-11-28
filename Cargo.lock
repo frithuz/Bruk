@@ -821,6 +821,7 @@ version = "0.0.0"
 dependencies = [
  "factory-config",
  "factory-core",
+ "factory-flags",
  "factory-fonts",
  "factory-github",
  "factory-logging",
@@ -866,6 +867,7 @@ name = "factory-config"
 version = "0.0.0"
 dependencies = [
  "dirs",
+ "factory-flags",
  "factory-github",
  "factory-providers",
  "factory-secrets",
@@ -902,6 +904,10 @@ dependencies = [
  "factory-app",
  "nsh-platform-macos",
 ]
+
+[[package]]
+name = "factory-flags"
+version = "0.0.0"
 
 [[package]]
 name = "factory-fonts"
@@ -1029,6 +1035,7 @@ version = "0.0.0"
 dependencies = [
  "factory-chat",
  "factory-config",
+ "factory-flags",
  "factory-fonts",
  "factory-github",
  "factory-logging",
@@ -1096,6 +1103,7 @@ name = "factory-ui-ops"
 version = "0.0.0"
 dependencies = [
  "factory-config",
+ "factory-flags",
  "factory-logging",
  "factory-machines",
  "factory-storage",

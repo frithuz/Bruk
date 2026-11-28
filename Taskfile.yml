@@ -26,7 +26,7 @@ tasks:
       - bash scripts/setup-dev-cert.sh
 
   run:
-    desc: Run the native macOS app via Cargo (signed with local dev identity when available)
+    desc: Run the native macOS app via Cargo with unreleased build flags on (BRUK_FEATURES= for the release set)
     aliases: [dev]
     cmds:
       - bash scripts/run-signed-dev.sh {{.CLI_ARGS}}
@@ -89,6 +89,7 @@ tasks:
       - >-
         cargo test
         -p factory-types
+        -p factory-flags
         -p factory-machines
         -p factory-github
         -p factory-secrets
