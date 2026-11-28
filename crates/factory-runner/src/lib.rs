@@ -3,6 +3,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::OsString,
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
@@ -119,6 +120,10 @@ pub struct WorkflowRunRequest {
     pub open_prs_as_draft: bool,
     pub link_pr_closes_issue: bool,
     pub project_env: BTreeMap<String, String>,
+    /// `PATH` searched for helper CLIs such as `gh`, resolved the same way as for provider CLIs.
+    pub path_env: Option<OsString>,
+    /// `SSH_AUTH_SOCK` for pushing the run's branch (Preferences › Advanced), when configured.
+    pub ssh_auth_sock: Option<String>,
     /// MCP servers the run's steps choose from, gathered when the run starts.
     pub mcp: McpSources,
     pub runtime_root: Option<PathBuf>,
@@ -1912,9 +1917,15 @@ fn execute_comment_on_issue(
         cursor.request.issue_number,
         resolved_auth.as_ref(),
     ) {
-        comment_on_github_issue(repo, issue_no, &body, auth, None)
-            .map(|()| format!("Posted comment on {repo}#{issue_no}"))
-            .map_err(|err| RunnerError::Process(cursor.redactor.redact(&err.to_string())))
+        comment_on_github_issue(
+            repo,
+            issue_no,
+            &body,
+            auth,
+            cursor.request.path_env.as_deref(),
+        )
+        .map(|()| format!("Posted comment on {repo}#{issue_no}"))
+        .map_err(|err| RunnerError::Process(cursor.redactor.redact(&err.to_string())))
     } else {
         Ok(format!("Comment prepared (no linked GitHub issue): {body}"))
     };
@@ -1978,25 +1989,45 @@ fn execute_set_issue_status(
     });
 
     let resolved_auth = cursor.resolve_github_auth_for_step()?;
+    let mut summary = "No linked GitHub issue; labels unchanged".to_owned();
+    let mut failures = Vec::new();
     if let (Some(repo), Some(issue_no), Some(auth)) = (
         cursor.request.github_repo.as_deref(),
         cursor.request.issue_number,
         resolved_auth.as_ref(),
     ) {
+        let path_env = cursor.request.path_env.as_deref();
         for label in &step.add_labels {
-            let _ = add_github_issue_label(repo, issue_no, label, auth, None);
+            if let Err(err) = add_github_issue_label(repo, issue_no, label, auth, path_env) {
+                failures.push(format!("couldn't add '{}': {err}", label.trim()));
+            }
         }
         for label in &step.remove_labels {
-            let _ = remove_github_issue_label(repo, issue_no, label, auth, None);
+            if let Err(err) = remove_github_issue_label(repo, issue_no, label, auth, path_env) {
+                failures.push(format!("couldn't remove '{}': {err}", label.trim()));
+            }
         }
+        summary = format!("Updated labels on {repo}#{issue_no}");
     }
 
     let duration_ms = started.elapsed().as_millis() as u64;
+    if !failures.is_empty() {
+        let message = cursor.redactor.redact(&failures.join("; "));
+        let _ = cursor.tx.send(RunnerEvent::StepFinished {
+            step_index,
+            status: RunStepStatus::Failed,
+            duration_ms,
+            output_preview: message.clone(),
+            tokens_used: 0,
+            cost_cents: 0,
+        });
+        return Err(RunnerError::Process(message));
+    }
     let _ = cursor.tx.send(RunnerEvent::StepFinished {
         step_index,
         status: RunStepStatus::Done,
         duration_ms,
-        output_preview: "Updated issue labels".to_owned(),
+        output_preview: summary,
         tokens_used: 0,
         cost_cents: 0,
     });
@@ -2012,7 +2043,15 @@ fn execute_open_pr(
     cursor.next_step_index += 1;
     let started = Instant::now();
 
-    let title = cursor.redactor.redact(&ctx.render(&step.title));
+    let rendered_title = cursor.redactor.redact(&ctx.render(&step.title));
+    let title = if rendered_title.trim().is_empty() {
+        format!(
+            "{} (run #{})",
+            cursor.request.workflow.name, cursor.request.run_number
+        )
+    } else {
+        rendered_title.trim().to_owned()
+    };
     let mut body = cursor.redactor.redact(&ctx.render(&step.body));
     if cursor.request.link_pr_closes_issue
         && let Some(issue_no) = cursor.request.issue_number
@@ -2041,11 +2080,22 @@ fn execute_open_pr(
     });
 
     let resolved_auth = cursor.resolve_github_auth_for_step()?;
-    let pr_result = match resolve_gh_binary(None) {
-        Ok(gh_bin) => {
+    let pr_result = match resolve_gh_binary(cursor.request.path_env.as_deref())
+        .map_err(|err| err.to_string())
+        .and_then(|gh_bin| push_run_branch_for_pr(cursor, &title).map(|branch| (gh_bin, branch)))
+    {
+        Ok((gh_bin, branch)) => {
             let mut cmd = Command::new(gh_bin);
             cmd.current_dir(cursor.working_dir)
-                .args(["pr", "create", "--title", &title, "--body", &body]);
+                .stdin(Stdio::null())
+                .env("GH_PROMPT_DISABLED", "1")
+                .args([
+                    "pr", "create", "--head", &branch, "--title", &title, "--body", &body,
+                ]);
+            let base = cursor.request.default_branch.trim();
+            if !base.is_empty() {
+                cmd.args(["--base", base]);
+            }
             if step.draft.unwrap_or(cursor.request.open_prs_as_draft) {
                 cmd.arg("--draft");
             }
@@ -2074,9 +2124,7 @@ fn execute_open_pr(
                     }
                 })
         }
-        Err(err) => Err(RunnerError::Process(
-            cursor.redactor.redact(&err.to_string()),
-        )),
+        Err(err) => Err(RunnerError::Process(cursor.redactor.redact(&err))),
     };
 
     let duration_ms = started.elapsed().as_millis() as u64;
@@ -2109,6 +2157,61 @@ fn execute_open_pr(
             Err(err)
         }
     }
+}
+
+/// Gets the run's branch onto `origin` so `gh pr create` has a head to open the pull request
+/// from, and returns the branch name. In the run's own worktree, outstanding changes (the diff
+/// the review gate approved) are committed first; the user's own checkout is never committed to.
+fn push_run_branch_for_pr(cursor: &ExecutionCursor<'_>, title: &str) -> Result<String, String> {
+    let dir = cursor.working_dir;
+    let branch = run_git(dir, &["rev-parse", "--abbrev-ref", "HEAD"], None)?;
+    let base = cursor.request.default_branch.trim();
+    if branch == "HEAD" || branch == base {
+        return Err(format!(
+            "Can't open a pull request from '{branch}'. Turn on isolated worktrees in Project \
+             Settings, or check out a feature branch first."
+        ));
+    }
+    if cursor.is_isolated_worktree && !run_git(dir, &["status", "--porcelain"], None)?.is_empty() {
+        run_git(dir, &["add", "-A"], None)?;
+        run_git(dir, &["commit", "--quiet", "-m", title], None)?;
+    }
+    run_git(
+        dir,
+        &["push", "--quiet", "-u", "origin", &branch],
+        cursor.request.ssh_auth_sock.as_deref(),
+    )?;
+    Ok(branch)
+}
+
+/// Runs `git` in `dir` without a terminal, returning trimmed stdout, or the end of stderr.
+fn run_git(dir: &Path, args: &[&str], ssh_auth_sock: Option<&str>) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.args(args)
+        .current_dir(dir)
+        .stdin(Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0");
+    if let Some(sock) = ssh_auth_sock.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.env("SSH_AUTH_SOCK", sock);
+    }
+    let out = cmd
+        .output()
+        .map_err(|err| format!("couldn't run git {}: {err}", args[0]))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned());
+    }
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let tail = lines[lines.len().saturating_sub(3)..].join(" ");
+    Err(if tail.is_empty() {
+        format!("git {} failed", args.join(" "))
+    } else {
+        format!("git {}: {tail}", args[0])
+    })
 }
 
 fn evaluate_exit_condition(
@@ -3136,6 +3239,8 @@ echo '{"type":"result","total_cost_usd":0.05,"usage":{"input_tokens":400,"output
             open_prs_as_draft: false,
             link_pr_closes_issue: false,
             project_env: BTreeMap::new(),
+            path_env: None,
+            ssh_auth_sock: None,
             mcp: Default::default(),
             runtime_root: Some(runtime_root.clone()),
             budget_limit_cents: 500,
@@ -3280,6 +3385,8 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
             open_prs_as_draft: false,
             link_pr_closes_issue: false,
             project_env: BTreeMap::new(),
+            path_env: None,
+            ssh_auth_sock: None,
             mcp: McpSources {
                 project,
                 allow_project_servers: true,
@@ -3385,5 +3492,250 @@ echo '{{"type":"result","total_cost_usd":0.01,"usage":{{"input_tokens":1,"output
                 ..
             }
         )));
+    }
+
+    fn git_ok(dir: &Path, args: &[&str]) -> String {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    }
+
+    fn write_fake_cli(dir: &Path, name: &str, script: &str) {
+        fs::create_dir_all(dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// A run request with no provider CLIs, for workflows made of shell and GitHub steps.
+    fn tool_only_request(
+        project_root: &Path,
+        nodes: Vec<WorkflowNodeDef>,
+        runtime_root: PathBuf,
+    ) -> WorkflowRunRequest {
+        WorkflowRunRequest {
+            run_id: "run-tools".to_owned(),
+            run_number: 1,
+            project_id: 1,
+            project_name: "repo".to_owned(),
+            project_root: project_root.to_path_buf(),
+            default_branch: "main".to_owned(),
+            workflow: WorkflowDef {
+                id: "fix".to_owned(),
+                name: "Fix".to_owned(),
+                description: String::new(),
+                draft: false,
+                triggers: WorkflowTriggersDef::default(),
+                inputs: BTreeMap::new(),
+                mcp_sources: McpSourcesPolicy::All,
+                nodes,
+                origin: factory_workflows::definitions::DefinitionOrigin::BuiltIn,
+            },
+            catalog: BrukCatalog::builtin_only(),
+            inputs: BTreeMap::new(),
+            issue_number: None,
+            github_repo: None,
+            github_auth: None,
+            github_auth_mode: IssueSourceAuthMode::GitHubCli,
+            github_pat_secret_id: None,
+            secret_resolver: None,
+            default_provider: ProviderKind::Claude,
+            default_sandbox: ProjectSandboxMode::WorkspaceWrite,
+            model_override: None,
+            claude_binary: None,
+            claude_default_model: None,
+            claude_settings: ClaudeSpawnSettings::default(),
+            codex_binary: None,
+            codex_default_model: None,
+            codex_settings: CodexSpawnSettings::default(),
+            source_codex_home: None,
+            antigravity_binary: None,
+            antigravity_default_model: None,
+            use_isolated_worktrees: true,
+            branch_prefix: "agent/".to_owned(),
+            open_prs_as_draft: false,
+            link_pr_closes_issue: false,
+            project_env: BTreeMap::new(),
+            path_env: None,
+            ssh_auth_sock: None,
+            mcp: Default::default(),
+            runtime_root: Some(runtime_root),
+            budget_limit_cents: 500,
+        }
+    }
+
+    fn run_to_end(req: WorkflowRunRequest) -> Vec<RunnerEvent> {
+        let (control, rx) = spawn_workflow_run(req);
+        let mut events = Vec::new();
+        loop {
+            let event = match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(event) => event,
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    control.stop();
+                    panic!("workflow run did not finish within 60s");
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let done = matches!(event, RunnerEvent::RunFinished { .. });
+            events.push(event);
+            if done {
+                break;
+            }
+        }
+        events
+    }
+
+    #[test]
+    fn open_pull_request_commits_the_worktree_pushes_the_branch_and_uses_gh_from_the_app_path() {
+        let temp = TempDir::new().unwrap();
+        let origin = temp.path().join("origin.git");
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        git_ok(
+            temp.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                "-b",
+                "main",
+                &origin.to_string_lossy(),
+            ],
+        );
+        git_ok(&repo, &["init", "--quiet", "-b", "main"]);
+        git_ok(&repo, &["config", "user.email", "test@example.com"]);
+        git_ok(&repo, &["config", "user.name", "Test"]);
+        git_ok(&repo, &["config", "commit.gpgsign", "false"]);
+        fs::write(repo.join("status.txt"), "broken\n").unwrap();
+        git_ok(&repo, &["add", "."]);
+        git_ok(&repo, &["commit", "--quiet", "-m", "init"]);
+        git_ok(
+            &repo,
+            &["remote", "add", "origin", &origin.to_string_lossy()],
+        );
+        git_ok(&repo, &["push", "--quiet", "-u", "origin", "main"]);
+
+        let bin = temp.path().join("bin");
+        let gh_log = temp.path().join("gh.log");
+        write_fake_cli(
+            &bin,
+            "gh",
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\necho https://github.com/acme/repo/pull/9\n",
+                gh_log.display()
+            ),
+        );
+
+        let mut req = tool_only_request(
+            &repo,
+            vec![
+                WorkflowNodeDef::ShellCommand(ShellCommandStepDef {
+                    id: "fix".to_owned(),
+                    name: "Fix".to_owned(),
+                    command: "echo fixed > status.txt".to_owned(),
+                }),
+                WorkflowNodeDef::OpenPullRequest(OpenPullRequestStepDef {
+                    id: "pr".to_owned(),
+                    name: "Open PR".to_owned(),
+                    title: "Fix status".to_owned(),
+                    body: "Body".to_owned(),
+                    draft: None,
+                }),
+            ],
+            temp.path().join("rt"),
+        );
+        req.path_env = Some(bin.into_os_string());
+        let events = run_to_end(req);
+
+        assert_eq!(
+            run_status(&events),
+            Some(RunExecutionState::Succeeded),
+            "{events:#?}"
+        );
+        let gh_args = fs::read_to_string(&gh_log).unwrap();
+        let args: Vec<&str> = gh_args.lines().collect();
+        assert_eq!(&args[..2], ["pr", "create"]);
+        assert!(args.windows(2).any(|w| w == ["--head", "agent/fix-run-1"]));
+        assert!(args.windows(2).any(|w| w == ["--base", "main"]));
+        assert_eq!(
+            git_ok(&origin, &["show", "agent/fix-run-1:status.txt"]),
+            "fixed"
+        );
+        assert_eq!(
+            git_ok(&origin, &["log", "-1", "--format=%s", "agent/fix-run-1"]),
+            "Fix status"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join("status.txt")).unwrap(),
+            "broken\n",
+            "the user's checkout must not be committed to"
+        );
+    }
+
+    #[test]
+    fn issue_steps_find_gh_on_the_app_path_and_failed_label_updates_fail_the_step() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        let bin = temp.path().join("bin");
+        let gh_log = temp.path().join("gh.log");
+        write_fake_cli(
+            &bin,
+            "gh",
+            &format!(
+                "#!/bin/sh\necho \"$*\" >> '{}'\ncase \"$*\" in *--add-label*) echo \"could not add label: 'triage' not found\" >&2; exit 1;; esac\n",
+                gh_log.display()
+            ),
+        );
+
+        let mut req = tool_only_request(
+            &repo,
+            vec![
+                WorkflowNodeDef::CommentOnIssue(CommentOnIssueStepDef {
+                    id: "comment".to_owned(),
+                    name: "Comment".to_owned(),
+                    body: "Working on it".to_owned(),
+                }),
+                WorkflowNodeDef::SetIssueStatus(SetIssueStatusStepDef {
+                    id: "label".to_owned(),
+                    name: "Label".to_owned(),
+                    add_labels: vec!["triage".to_owned()],
+                    remove_labels: Vec::new(),
+                }),
+            ],
+            temp.path().join("rt"),
+        );
+        req.github_repo = Some("acme/repo".to_owned());
+        req.issue_number = Some(7);
+        req.path_env = Some(bin.into_os_string());
+        let events = run_to_end(req);
+
+        let calls = fs::read_to_string(&gh_log).unwrap();
+        assert!(
+            calls.contains("issue comment 7 --repo acme/repo --body Working on it"),
+            "{calls}"
+        );
+        assert!(calls.contains("--add-label triage"), "{calls}");
+        assert_eq!(run_status(&events), Some(RunExecutionState::Failed));
+        let failed = events.iter().find_map(|e| match e {
+            RunnerEvent::StepFinished {
+                status: RunStepStatus::Failed,
+                output_preview,
+                ..
+            } => Some(output_preview.clone()),
+            _ => None,
+        });
+        assert!(
+            failed.as_deref().is_some_and(|p| p.contains("not found")),
+            "{failed:?}"
+        );
     }
 }

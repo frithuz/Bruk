@@ -12483,6 +12483,9 @@ fn spawn_real_workflow_run(
                 open_prs_as_draft: settings.open_prs_as_draft,
                 link_pr_closes_issue: settings.link_pr_closes_issue,
                 project_env,
+                path_env: s.claude_path_lookup.resolve_path_env(),
+                ssh_auth_sock: Some(s.preferences.advanced.ssh_auth_sock.trim().to_owned())
+                    .filter(|sock| !sock.is_empty()),
                 mcp: s.mcp_sources(&project.root_path, Some(&settings)),
                 secret_resolver,
                 runtime_root,
