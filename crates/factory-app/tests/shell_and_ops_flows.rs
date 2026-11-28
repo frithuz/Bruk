@@ -139,6 +139,35 @@ fn registers_project_in_sqlite_and_reloads_on_restart() {
 }
 
 #[test]
+fn rejects_a_second_project_with_a_name_already_in_use() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let mut app = start_with_db(db_path.clone());
+    app.press("role:button[Register Project]").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "billing-api").unwrap();
+    app.type_text("text:Repository path", "/workspace/billing-api")
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'billing-api'").unwrap();
+
+    // Settings, work queues and workflows are kept per project name, so another project can't
+    // take a name that's in use, whatever its case.
+    app.type_text("text:Project name", "Billing-API").unwrap();
+    app.type_text("text:Repository path", "/workspace/billing-api-2")
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("a project named 'Billing-API' is already registered; pick another name")
+        .unwrap();
+    let projects = factory_core::ProjectDatabase::open(&db_path)
+        .unwrap()
+        .list_projects()
+        .unwrap();
+    assert_eq!(projects.len(), 1);
+}
+
+#[test]
 fn preferences_window_manages_providers_tabs_and_persists_to_sqlite() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
