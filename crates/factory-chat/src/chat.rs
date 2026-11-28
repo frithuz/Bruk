@@ -16,7 +16,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::{BufRead, BufReader, Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{
@@ -2484,6 +2484,10 @@ fn run_chat_turn(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let provider_label = request.provider.label();
+    // Codex writes usage to its rollout after each model request. Start tracking before
+    // spawning so a resumed turn skips the existing history without missing new counts.
+    let mut codex_live = (request.provider == ProviderKind::Codex)
+        .then(|| CodexLiveUsage::new(&request.runtime_dir, request.resume_session_id.clone()));
     let mut child = match cmd.spawn() {
         Ok(child) => {
             log::debug!(
@@ -2522,18 +2526,41 @@ fn run_chat_turn(
     // Rolling-tail streaming redactor so secrets split across Claude `--include-partial-messages`
     // token deltas never appear unredacted in the live UI (§7).
     let mut delta_redactor = StreamingRedactor::new(Arc::clone(&redactor));
-    // Codex streams no token counts; its rollout file records one after each model request.
     // Claude's and Antigravity's requests of this turn: the finished ones' tokens and the latest one's.
     let mut finished_requests = ChatTokenBreakdown::default();
     let mut latest_request: Option<ChatTokenBreakdown> = None;
-    let mut codex_live = (request.provider == ProviderKind::Codex).then(|| CodexLiveContext {
-        thread_id: request.resume_session_id.clone(),
-        rollout: None,
-        last_read: None,
-    });
 
     if let Some(stdout) = child.stdout.take() {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+        let lines = BufReader::new(stdout).lines().map_while(Result::ok);
+        let (mut direct_lines, codex_lines) = if codex_live.is_some() {
+            // The rollout poll must stay responsive while Codex is quiet on stdout.
+            let (line_tx, line_rx) = mpsc::sync_channel(16);
+            std::thread::spawn(move || {
+                for line in lines {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            });
+            (None, Some(line_rx))
+        } else {
+            (Some(lines), None)
+        };
+        loop {
+            let line = match (&mut codex_live, &codex_lines) {
+                (Some(live), Some(lines)) => {
+                    live.poll(tx);
+                    let until_poll = live.next_read.saturating_duration_since(Instant::now());
+                    match lines.recv_timeout(until_poll) {
+                        Ok(line) => Some(line),
+                        Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                        Err(mpsc::RecvTimeoutError::Disconnected) => None,
+                    }
+                }
+                (None, Some(lines)) => lines.recv().ok(),
+                (_, None) => direct_lines.as_mut().and_then(Iterator::next),
+            };
+            let Some(line) = line else { break };
             if request.provider == ProviderKind::Claude
                 && line.contains("\"mcp_servers\"")
                 && let Ok(event) = serde_json::from_str::<Value>(&line)
@@ -2565,23 +2592,6 @@ fn run_chat_turn(
                 }
                 continue;
             }
-            if let Some(live) = codex_live.as_mut() {
-                if let Some(ChatStreamItem::SessionStarted(id)) = items
-                    .iter()
-                    .find(|item| matches!(item, ChatStreamItem::SessionStarted(_)))
-                {
-                    live.thread_id = Some(id.clone());
-                }
-                if let Some((usage, totals)) = live.read(&request.runtime_dir) {
-                    let _ = tx.send(ChatEvent::ContextUsage(usage));
-                    if let Some(tokens) = totals {
-                        let _ = tx.send(ChatEvent::TokenUse {
-                            tokens,
-                            scope: TokenScope::SessionTotal,
-                        });
-                    }
-                }
-            }
             for item in items {
                 // Flush any buffered streaming delta tail before non-delta events.
                 if !matches!(item, ChatStreamItem::TextDelta(_)) {
@@ -2593,6 +2603,9 @@ fn run_chat_turn(
                 }
                 let event = match item {
                     ChatStreamItem::SessionStarted(session_id) => {
+                        if let Some(live) = &mut codex_live {
+                            live.set_thread(&session_id);
+                        }
                         ChatEvent::ProviderSessionStarted { session_id }
                     }
                     ChatStreamItem::ContextTokens(used_tokens) => {
@@ -2665,6 +2678,8 @@ fn run_chat_turn(
                         tokens,
                         cost_micros,
                     } => {
+                        // A rollout reading could lag behind the final stdout totals.
+                        codex_live = None;
                         if tokens.value() > 0 || cost_micros.value() > 0 {
                             let _ = tx.send(ChatEvent::Usage {
                                 tokens,
@@ -2774,40 +2789,89 @@ fn run_chat_turn(
     ))
 }
 
-/// How often a running Codex turn's rollout is read for its latest token count.
-const CODEX_LIVE_CONTEXT_INTERVAL: Duration = Duration::from_millis(1500);
+/// How often to check an active Codex rollout for new token counts.
+const CODEX_LIVE_USAGE_INTERVAL: Duration = Duration::from_millis(500);
 
-/// Follows a running Codex turn's context window through its rollout file.
-struct CodexLiveContext {
+struct CodexLiveUsage {
     thread_id: Option<String>,
+    sessions_dir: PathBuf,
     rollout: Option<PathBuf>,
-    last_read: Option<Instant>,
+    offset: u64,
+    model: Option<String>,
+    next_read: Instant,
 }
 
-impl CodexLiveContext {
-    /// The window as the rollout last recorded it, at most every
-    /// [`CODEX_LIVE_CONTEXT_INTERVAL`].
-    fn read(
-        &mut self,
-        runtime_dir: &Path,
-    ) -> Option<(ChatContextUsage, Option<ChatTokenBreakdown>)> {
-        if self
-            .last_read
-            .is_some_and(|at| at.elapsed() < CODEX_LIVE_CONTEXT_INTERVAL)
+impl CodexLiveUsage {
+    fn new(runtime_dir: &Path, thread_id: Option<String>) -> Self {
+        let sessions_dir = runtime_dir.join(ISOLATED_CODEX_HOME_DIR).join("sessions");
+        let rollout = thread_id
+            .as_deref()
+            .and_then(|id| find_codex_rollout(&sessions_dir, id));
+        let offset = rollout
+            .as_ref()
+            .and_then(|path| path.metadata().ok())
+            .map_or(0, |meta| meta.len());
+        Self {
+            thread_id,
+            sessions_dir,
+            rollout,
+            offset,
+            model: None,
+            next_read: Instant::now(),
+        }
+    }
+
+    fn set_thread(&mut self, thread_id: &str) {
+        if self.thread_id.as_deref() != Some(thread_id) {
+            self.thread_id = Some(thread_id.to_owned());
+            self.rollout = None;
+            self.offset = 0;
+            self.model = None;
+            self.next_read = Instant::now();
+        }
+    }
+
+    fn poll(&mut self, tx: &mpsc::Sender<ChatEvent>) {
+        let now = Instant::now();
+        if now < self.next_read {
+            return;
+        }
+        self.next_read = now + CODEX_LIVE_USAGE_INTERVAL;
+        let Some(contents) = self.read_appended() else {
+            return;
+        };
+        if let Some(info) = parse_codex_rollout_info(&contents, &mut self.model)
+            && let Some(mut usage) = codex_context_from_info(
+                &info,
+                self.model.clone(),
+                factory_types::current_unix_seconds(),
+            )
         {
-            return None;
+            usage.live = true;
+            let _ = tx.send(ChatEvent::ContextUsage(usage));
         }
+        if let Some(tokens) = parse_codex_rollout_token_totals(&contents) {
+            let _ = tx.send(ChatEvent::TokenUse {
+                tokens,
+                scope: TokenScope::SessionTotal,
+            });
+        }
+    }
+
+    fn read_appended(&mut self) -> Option<String> {
         let thread_id = self.thread_id.as_deref()?;
-        self.last_read = Some(Instant::now());
         if self.rollout.is_none() {
-            let sessions = runtime_dir.join(ISOLATED_CODEX_HOME_DIR).join("sessions");
-            self.rollout = find_codex_rollout(&sessions, thread_id);
+            self.rollout = find_codex_rollout(&self.sessions_dir, thread_id);
         }
-        let contents = std::fs::read_to_string(self.rollout.as_ref()?).ok()?;
-        let mut usage =
-            parse_codex_rollout_context(&contents, factory_types::current_unix_seconds())?;
-        usage.live = true;
-        Some((usage, parse_codex_rollout_token_totals(&contents)))
+        let mut file = std::fs::File::open(self.rollout.as_ref()?).ok()?;
+        file.seek(SeekFrom::Start(self.offset)).ok()?;
+        let mut contents = Vec::new();
+        file.read_to_end(&mut contents).ok()?;
+        // A concurrent append can leave the last JSON line incomplete until the next read.
+        let end = contents.iter().rposition(|byte| *byte == b'\n')? + 1;
+        self.offset += end as u64;
+        contents.truncate(end);
+        Some(String::from_utf8_lossy(&contents).into_owned())
     }
 }
 
@@ -3201,8 +3265,13 @@ pub fn parse_codex_rollout_token_totals(contents: &str) -> Option<ChatTokenBreak
 /// Reads the latest token count in a Codex rollout file. Codex reports how much of the window
 /// the last request filled, not what filled it.
 pub fn parse_codex_rollout_context(contents: &str, now: i64) -> Option<ChatContextUsage> {
+    let mut model = None;
+    let info = parse_codex_rollout_info(contents, &mut model)?;
+    codex_context_from_info(&info, model, now)
+}
+
+fn parse_codex_rollout_info(contents: &str, model: &mut Option<String>) -> Option<Value> {
     let mut info: Option<Value> = None;
-    let mut model: Option<String> = None;
     for line in contents.lines() {
         let Ok(val) = serde_json::from_str::<Value>(line.trim()) else {
             continue;
@@ -3220,13 +3289,20 @@ pub fn parse_codex_rollout_context(contents: &str, now: i64) -> Option<ChatConte
             }
             Some("turn_context") => {
                 if let Some(name) = string_field(payload, "model").filter(|m| !m.is_empty()) {
-                    model = Some(name);
+                    *model = Some(name);
                 }
             }
             _ => {}
         }
     }
-    let info = info?;
+    info
+}
+
+fn codex_context_from_info(
+    info: &Value,
+    model: Option<String>,
+    now: i64,
+) -> Option<ChatContextUsage> {
     let last = info.get("last_token_usage")?;
     let count = |key: &str| last.get(key).and_then(Value::as_u64).unwrap_or(0);
     let input = count("input_tokens");
@@ -4362,6 +4438,95 @@ echo "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":$((40 * turns))
         );
         // Codex reports the thread's running total (42, then 84): each turn counts once.
         assert_eq!(chat.total_tokens, 84);
+    }
+
+    #[test]
+    fn codex_streams_rollout_usage_while_stdout_is_idle() {
+        let temp = TempDir::new().unwrap();
+        let codex = write_script(
+            temp.path(),
+            "codex",
+            r#"#!/bin/sh
+cat > /dev/null
+echo '{"type":"thread.started","thread_id":"codex-live-1"}'
+attempt=0
+while [ ! -f "$CODEX_HOME/finish" ]; do
+    [ "$attempt" -lt 100 ] || exit 1
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+echo '{"type":"turn.completed","usage":{"input_tokens":1500,"cached_input_tokens":900,"output_tokens":40}}'
+"#,
+        );
+        let mut req = request(&temp, ProviderKind::Codex, &codex);
+        req.resume_session_id = Some("codex-live-1".to_owned());
+        let home = req.runtime_dir.join(ISOLATED_CODEX_HOME_DIR);
+        let day = home.join("sessions/2026/11/27");
+        fs::create_dir_all(&day).unwrap();
+        let mut rollout =
+            fs::File::create(day.join("rollout-2026-11-27-codex-live-1.jsonl")).unwrap();
+        let token_count = |input, cached, output, context| {
+            serde_json::json!({
+                "type": "event_msg", "payload": {"type": "token_count", "info": {
+                    "total_token_usage": {
+                        "input_tokens": input, "cached_input_tokens": cached, "output_tokens": output
+                    },
+                    "last_token_usage": {"total_tokens": context},
+                    "model_context_window": 272000
+                }}
+            })
+        };
+        writeln!(rollout, "{}", token_count(400, 300, 10, 410)).unwrap();
+
+        let mut chat = session();
+        chat.provider = ProviderKind::Codex;
+        chat.provider_session_id.clone_from(&req.resume_session_id);
+        chat.token_breakdown = ChatTokenBreakdown {
+            input: 100,
+            output: 10,
+            cache_read: 300,
+            cache_write: 0,
+        };
+        chat.total_tokens = chat.token_breakdown.total();
+        chat.provider_totals.tokens = chat.total_tokens;
+        chat.provider_totals.breakdown = chat.token_breakdown;
+        let (_, events) = spawn_chat_turn(req);
+        let next_event = || events.recv_timeout(Duration::from_secs(3)).unwrap();
+        let started = next_event();
+        assert!(matches!(started, ChatEvent::TurnStarted));
+        chat.apply_event(&started, 0);
+        let resumed = next_event();
+        assert!(matches!(resumed, ChatEvent::ProviderSessionStarted { .. }));
+        chat.apply_event(&resumed, 0);
+
+        assert!(matches!(
+            events.recv_timeout(CODEX_LIVE_USAGE_INTERVAL * 2),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        for (input, cached, output, context) in [(800, 500, 20, 420), (1420, 840, 30, 630)] {
+            writeln!(rollout, "{}", token_count(input, cached, output, context)).unwrap();
+            let ChatEvent::ContextUsage(usage) = next_event() else {
+                panic!("expected live context usage");
+            };
+            assert!(usage.live);
+            assert_eq!((usage.used_tokens, usage.window_tokens), (context, 272000));
+            let tokens = next_event();
+            assert!(matches!(tokens, ChatEvent::TokenUse { .. }));
+            chat.apply_event(&tokens, 0);
+            assert!(chat.is_running());
+            assert_eq!(chat.total_tokens, 410);
+            assert_eq!(chat.token_use().total(), input + output);
+            assert_eq!(chat.token_use().cache_read, cached);
+        }
+
+        fs::write(home.join("finish"), "").unwrap();
+        for event in events {
+            chat.apply_event(&event, 0);
+        }
+        assert_eq!(chat.status, ChatSessionStatus::Idle);
+        assert_eq!(chat.total_tokens, 1540);
+        assert_eq!(chat.token_use().total(), 1540);
+        assert_eq!(chat.token_use().cache_read, 900);
     }
 
     fn command_args(req: &ChatTurnRequest) -> Vec<String> {
