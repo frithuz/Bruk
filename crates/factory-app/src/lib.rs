@@ -10,7 +10,9 @@ mod ui;
 
 use std::{ffi::OsString, path::PathBuf};
 
-pub use fonts::{EMBEDDED_FONTS, default_tokens, tokens_for_appearance, with_embedded_fonts};
+pub use fonts::{
+    EMBEDDED_FONTS, FONT_ASSETS, default_tokens, tokens_for_appearance, with_embedded_fonts,
+};
 use nsh_base::theme;
 use nsh_core::{element::Root, prelude::*};
 
@@ -23,7 +25,10 @@ fn native(registry: &mut Registry) {
         factory_types::BRUK_DATA_SCHEMA,
     );
     let _span = boot_log::span("boot.native_module.register");
-    registry.register::<App>().assets(assets!());
+    registry
+        .register::<App>()
+        .assets(assets!())
+        .assets(fonts::FONT_ASSETS);
 }
 
 /// Root component mounted by `cargo run`, `nsh run`, and `nsh package`.
@@ -200,4 +205,39 @@ fn app_surface() -> impl IntoElement {
         .child(when(|| !store::needs_home_setup(), ui::shell))
         .child(ui::menubar::menubar_popover_window())
         .child(ui::preferences::preferences_window())
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::element::AssetKind;
+
+    use super::*;
+
+    #[test]
+    fn native_module_registry_bundles_all_embedded_fonts() {
+        let registry = registry();
+        let font_uris: Vec<&str> = registry
+            .asset_files()
+            .filter(|file| matches!(file.kind, AssetKind::Font))
+            .map(|file| file.uri)
+            .collect();
+
+        assert_eq!(
+            font_uris.len(),
+            EMBEDDED_FONTS.len(),
+            "expected native module registry to bundle all embedded Atkinson Hyperlegible fonts"
+        );
+        assert!(
+            font_uris
+                .iter()
+                .any(|uri| uri.contains("AtkinsonHyperlegibleNext-Regular.otf")),
+            "missing Atkinson Hyperlegible Next regular font in native module assets: {font_uris:?}"
+        );
+        assert!(
+            font_uris
+                .iter()
+                .any(|uri| uri.contains("AtkinsonHyperlegibleMono-Regular.otf")),
+            "missing Atkinson Hyperlegible Mono regular font in native module assets: {font_uris:?}"
+        );
+    }
 }
