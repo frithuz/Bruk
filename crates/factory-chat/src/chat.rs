@@ -1088,7 +1088,8 @@ pub enum ChatStreamItem {
     /// The window holds this many tokens as of the latest model request (prompt, cache and
     /// what the reply has written so far).
     ContextTokens(u64),
-    /// A model request of the turn started, with its prompt's tokens (Claude).
+    /// A model request of the turn, with its tokens (Claude's `message_start`, Antigravity's
+    /// finished `agent_response` step).
     RequestStarted(ChatTokenBreakdown),
     /// The latest model request has written this many tokens (Claude).
     RequestOutput(u64),
@@ -1510,8 +1511,9 @@ fn codex_token_breakdown(usage: Option<&Value>) -> ChatTokenBreakdown {
 }
 
 /// Reads one line of `agy --output-format stream-json`. Each `step_update` is one step of the
-/// conversation (a reply, a tool call); text arrives as `text_delta`s, and the closing `result`
-/// carries the turn's whole reply and its tokens.
+/// conversation (a reply, a tool call); text arrives as `text_delta`s, each finished reply
+/// reports its request's `usage`, and the closing `result` carries the turn's whole reply and
+/// totals.
 pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
     let Ok(val) = serde_json::from_str::<Value>(line.trim()) else {
         return Vec::new();
@@ -1527,10 +1529,25 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
             };
             let state = step.get("state").and_then(Value::as_str).unwrap_or("");
             match step.get("step_type").and_then(Value::as_str) {
-                Some("agent_response") => string_field(step, "text_delta")
-                    .filter(|t| !t.is_empty())
-                    .map(|t| vec![ChatStreamItem::TextDelta(t)])
-                    .unwrap_or_default(),
+                Some("agent_response") => {
+                    let mut items = Vec::new();
+                    // Keep the text delta ahead of usage items so any buffered streaming tail
+                    // is pushed before non-delta events flush the redactor.
+                    if let Some(text) = string_field(step, "text_delta").filter(|t| !t.is_empty()) {
+                        items.push(ChatStreamItem::TextDelta(text));
+                    }
+                    let usage = step.get("usage");
+                    if let Some(tokens) = antigravity_window_tokens(usage) {
+                        items.push(ChatStreamItem::ContextTokens(tokens));
+                    }
+                    if state != "ACTIVE" {
+                        let breakdown = antigravity_token_breakdown(usage);
+                        if !breakdown.is_zero() {
+                            items.push(ChatStreamItem::RequestStarted(breakdown));
+                        }
+                    }
+                    items
+                }
                 Some("tool") => {
                     let Some(tool_use) = antigravity_tool_use(step) else {
                         return Vec::new();
@@ -1575,18 +1592,7 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
             }
             .filter(|t| !t.trim().is_empty());
             let usage = result.get("usage");
-            let count = |key: &str| {
-                usage
-                    .and_then(|u| u.get(key))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0)
-            };
-            let breakdown = ChatTokenBreakdown {
-                input: count("input_tokens"),
-                output: count("output_tokens").saturating_add(count("thinking_tokens")),
-                cache_read: count("cache_read_tokens"),
-                cache_write: 0,
-            };
+            let breakdown = antigravity_token_breakdown(usage);
             let mut items = Vec::new();
             if !breakdown.is_zero() {
                 items.push(ChatStreamItem::TokenUse {
@@ -1607,6 +1613,34 @@ pub fn parse_antigravity_chat_line(line: &str) -> Vec<ChatStreamItem> {
             .map(|m| vec![ChatStreamItem::Error(m)])
             .unwrap_or_default(),
         _ => Vec::new(),
+    }
+}
+
+/// What an Antigravity model request put in the window: its prompt (fresh and cached input)
+/// and the reply's output (matching ACP's `usage_update.used`). `None` without a usage block
+/// or when it counts nothing.
+fn antigravity_window_tokens(usage: Option<&Value>) -> Option<u64> {
+    let usage = usage?;
+    let total = ["input_tokens", "cache_read_tokens", "output_tokens"]
+        .into_iter()
+        .map(|key| usage.get(key).and_then(Value::as_u64).unwrap_or(0))
+        .fold(0u64, u64::saturating_add);
+    (total > 0).then_some(total)
+}
+
+/// An Antigravity usage block by kind: fresh input, cache reads, and output (with thinking).
+fn antigravity_token_breakdown(usage: Option<&Value>) -> ChatTokenBreakdown {
+    let count = |key: &str| {
+        usage
+            .and_then(|u| u.get(key))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+    };
+    ChatTokenBreakdown {
+        input: count("input_tokens"),
+        output: count("output_tokens").saturating_add(count("thinking_tokens")),
+        cache_read: count("cache_read_tokens"),
+        cache_write: 0,
     }
 }
 
@@ -2489,7 +2523,7 @@ fn run_chat_turn(
     // token deltas never appear unredacted in the live UI (§7).
     let mut delta_redactor = StreamingRedactor::new(Arc::clone(&redactor));
     // Codex streams no token counts; its rollout file records one after each model request.
-    // Claude's requests of this turn: the finished ones' tokens and the latest one's.
+    // Claude's and Antigravity's requests of this turn: the finished ones' tokens and the latest one's.
     let mut finished_requests = ChatTokenBreakdown::default();
     let mut latest_request: Option<ChatTokenBreakdown> = None;
     let mut codex_live = (request.provider == ProviderKind::Codex).then(|| CodexLiveContext {
@@ -4604,6 +4638,142 @@ echo '{{"event":"result","result":{{"conversation_id":"agy-conv-3","status":"SUC
             }]
         );
         assert!(parse_antigravity_chat_line("not json").is_empty());
+    }
+
+    #[test]
+    fn antigravity_streams_how_full_the_window_and_turn_tokens_are() {
+        // A finished tool-calling step reports usage without text.
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":9611,"output_tokens":79,"thinking_tokens":36,"cache_read_tokens":0,"total_tokens":9690}}}"#
+            ),
+            vec![
+                ChatStreamItem::ContextTokens(9_690),
+                ChatStreamItem::RequestStarted(ChatTokenBreakdown {
+                    input: 9_611,
+                    output: 115,
+                    cache_read: 0,
+                    cache_write: 0,
+                }),
+            ]
+        );
+        // A finished reply with both trailing text and usage keeps the text delta first.
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":3,"state":"DONE","step_type":"agent_response","text_delta":"\n","usage":{"input_tokens":2232,"output_tokens":11,"thinking_tokens":9,"cache_read_tokens":7554,"total_tokens":2243}}}"#
+            ),
+            vec![
+                ChatStreamItem::TextDelta("\n".to_owned()),
+                ChatStreamItem::ContextTokens(9_797),
+                ChatStreamItem::RequestStarted(ChatTokenBreakdown {
+                    input: 2_232,
+                    output: 20,
+                    cache_read: 7_554,
+                    cache_write: 0,
+                }),
+            ]
+        );
+        // An ACTIVE delta with partial usage updates the window gauge without double-counting
+        // the request into turn totals.
+        assert_eq!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Hi","usage":{"input_tokens":2000,"output_tokens":5,"cache_read_tokens":7000}}}"#
+            ),
+            vec![
+                ChatStreamItem::TextDelta("Hi".to_owned()),
+                ChatStreamItem::ContextTokens(9_005),
+            ]
+        );
+        assert!(
+            parse_antigravity_chat_line(
+                r#"{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":0,"output_tokens":0}}}"#
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn antigravity_turns_stream_live_context_and_token_use_across_steps() {
+        let temp = TempDir::new().unwrap();
+        let script = r#"#!/bin/sh
+cat > /dev/null
+echo '{"event":"init","conversation_id":"agy-live-1"}'
+echo '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":9611,"output_tokens":79,"thinking_tokens":36,"cache_read_tokens":0,"total_tokens":9690}}}'
+echo '{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hi"}}}}'
+echo '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"echo hi"},"output":"hi"}}}'
+echo '{"event":"step_update","step_update":{"step_index":3,"state":"ACTIVE","step_type":"agent_response","text_delta":"Done"}}'
+echo '{"event":"step_update","step_update":{"step_index":3,"state":"DONE","step_type":"agent_response","text_delta":".","usage":{"input_tokens":2232,"output_tokens":11,"thinking_tokens":9,"cache_read_tokens":7554,"total_tokens":2243}}}'
+echo '{"event":"result","result":{"conversation_id":"agy-live-1","status":"SUCCESS","response":"Done.","usage":{"input_tokens":11843,"output_tokens":90,"thinking_tokens":45,"cache_read_tokens":7554,"total_tokens":11933}}}'
+"#;
+        let agy = write_script(temp.path(), "agy", script);
+        let mut req = request(&temp, ProviderKind::Antigravity, &agy);
+        req.agent = None;
+        req.prompt = "Run echo hi".to_owned();
+
+        let (tx, rx) = mpsc::channel();
+        let status = execute_chat_turn_blocking(&req, &ChatTurnControl::new(), &tx);
+        drop(tx);
+        assert_eq!(status, ChatSessionStatus::Idle);
+
+        let events: Vec<ChatEvent> = rx.into_iter().collect();
+        let context_updates: Vec<u64> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::ContextTokens { used_tokens } => Some(*used_tokens),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(context_updates, vec![9_690, 9_797]);
+
+        let token_updates: Vec<ChatTokenBreakdown> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::TokenUse {
+                    tokens,
+                    scope: TokenScope::Turn,
+                } => Some(*tokens),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            token_updates,
+            vec![
+                // Step 1 alone, before the tool call runs.
+                ChatTokenBreakdown {
+                    input: 9_611,
+                    output: 115,
+                    cache_read: 0,
+                    cache_write: 0,
+                },
+                // Step 1 + Step 3, accumulated live as Step 3 finishes.
+                ChatTokenBreakdown {
+                    input: 11_843,
+                    output: 135,
+                    cache_read: 7_554,
+                    cache_write: 0,
+                },
+                // Settled from the final `result` event (identical).
+                ChatTokenBreakdown {
+                    input: 11_843,
+                    output: 135,
+                    cache_read: 7_554,
+                    cache_write: 0,
+                },
+            ]
+        );
+
+        let mut chat = session();
+        chat.provider = ProviderKind::Antigravity;
+        for event in &events {
+            chat.apply_event(event, 100);
+        }
+        assert_eq!(chat.total_tokens, 19_532);
+        assert_eq!(chat.token_breakdown.total(), 19_532);
+        assert!(chat.turn_tokens.is_zero());
+        assert_eq!(
+            chat.context.as_ref().map(|c| (c.used_tokens, c.live)),
+            Some((9_797, true))
+        );
     }
 
     fn git_repo(dir: &Path) {
