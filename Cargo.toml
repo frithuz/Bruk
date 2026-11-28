@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/factory-types",
+    "crates/factory-flags",
     "crates/factory-machines",
     "crates/factory-github",
     "crates/factory-secrets",
@@ -37,6 +38,7 @@ factory-app = { path = "crates/factory-app" }
 factory-chat = { path = "crates/factory-chat" }
 factory-config = { path = "crates/factory-config" }
 factory-core = { path = "crates/factory-core" }
+factory-flags = { path = "crates/factory-flags" }
 factory-fonts = { path = "crates/factory-fonts" }
 factory-github = { path = "crates/factory-github" }
 factory-logging = { path = "crates/factory-logging" }

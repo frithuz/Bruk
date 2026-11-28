@@ -23,6 +23,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python <3.11 fallback
 DOMAIN_CRATES = frozenset(
     {
         "factory-types",
+        "factory-flags",
         "factory-machines",
         "factory-github",
         "factory-secrets",

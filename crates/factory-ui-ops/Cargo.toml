@@ -9,6 +9,7 @@ doctest = false
 
 [dependencies]
 factory-config.workspace = true
+factory-flags.workspace = true
 factory-logging.workspace = true
 factory-machines.workspace = true
 factory-storage.workspace = true

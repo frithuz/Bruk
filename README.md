@@ -205,7 +205,7 @@ Common tasks are orchestrated with [Task](https://taskfile.dev/) via [Taskfile.y
 
 ```sh
 task                 # List all tasks
-task run             # Run the native macOS app via Cargo (alias: task dev)
+task run             # Run the native macOS app via Cargo with unreleased build flags on (alias: task dev)
 task test            # Run all unit + headless Native Shell UI tests
 task test:core       # Run factory-core unit & SQLite tests
 task test:ui         # Run factory-app headless UI tests
@@ -218,6 +218,16 @@ task run:nsh         # Run with Native Shell CLI
 task package         # Build .nsh/out/Bruk.app
 task package:run     # Build and launch .nsh/out/Bruk.app
 task package:universal # Build a universal (arm64 + x86_64) macOS .app bundle
+```
+
+### Build flags
+
+Work that is not ready to ship sits behind build flags declared in `crates/factory-flags` (currently `machines`, plus `unreleased` for all of them). Flags are Cargo features and are off by default, so `task package` and release builds hide the flagged areas. `task run` turns `unreleased` on; override it with `BRUK_FEATURES`:
+
+```sh
+BRUK_FEATURES= task run                               # exactly what a release ships
+BRUK_FEATURES=machines task run                       # pick individual flags
+cargo build -p factory-desktop --features unreleased  # direct Cargo equivalent
 ```
 
 Direct Cargo / Native Shell commands also work:

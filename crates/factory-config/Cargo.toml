@@ -9,6 +9,7 @@ doctest = false
 
 [dependencies]
 dirs.workspace = true
+factory-flags.workspace = true
 factory-github.workspace = true
 factory-providers.workspace = true
 factory-secrets.workspace = true

@@ -1679,7 +1679,9 @@ fn landing_to_active_view(landing: DefaultLandingView) -> ActiveView {
     match landing {
         DefaultLandingView::Dashboard => ActiveView::Dashboard,
         DefaultLandingView::Inbox => ActiveView::Inbox,
-        DefaultLandingView::Machines => ActiveView::Machines,
+        DefaultLandingView::Machines if factory_flags::machines() => ActiveView::Machines,
+        // A saved Machines landing view from a build that had the flag on.
+        DefaultLandingView::Machines => ActiveView::Dashboard,
         DefaultLandingView::Workspace => ActiveView::Workspace,
     }
 }
@@ -2578,6 +2580,9 @@ pub fn close_menubar_popover() {
 }
 
 pub fn open_machines() {
+    if !factory_flags::machines() {
+        return;
+    }
     state().update(|s| {
         s.active_view = ActiveView::Machines;
         s.status_message = None;
@@ -7402,7 +7407,17 @@ pub fn open_preferences() {
     });
 }
 
+/// Falls back to the default tab when `tab` is hidden by a build flag.
+fn available_preferences_tab(tab: PreferencesTab) -> PreferencesTab {
+    if tab.is_available() {
+        tab
+    } else {
+        PreferencesTab::default()
+    }
+}
+
 pub fn open_preferences_tab(tab: PreferencesTab) {
+    let tab = available_preferences_tab(tab);
     state().update(|s| {
         s.preferences_tab = tab;
         s.preferences_open = true;
@@ -7426,6 +7441,7 @@ pub fn preferences_tab() -> PreferencesTab {
 }
 
 pub fn set_preferences_tab(tab: PreferencesTab) {
+    let tab = available_preferences_tab(tab);
     state().update(|s| {
         s.preferences_tab = tab;
         s.preferences_error = None;

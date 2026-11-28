@@ -10,6 +10,7 @@ doctest = false
 [dependencies]
 factory-chat.workspace = true
 factory-config.workspace = true
+factory-flags.workspace = true
 factory-fonts.workspace = true
 factory-github.workspace = true
 factory-logging.workspace = true

@@ -52,6 +52,19 @@ impl PreferencesTab {
         Self::Advanced,
     ];
 
+    /// Whether this tab exists in the current build (see `factory_flags`).
+    pub fn is_available(self) -> bool {
+        match self {
+            Self::Machines => factory_flags::machines(),
+            _ => true,
+        }
+    }
+
+    /// The tabs to show, in toolbar order.
+    pub fn available() -> impl Iterator<Item = PreferencesTab> {
+        Self::ALL.iter().copied().filter(|tab| tab.is_available())
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::General => "General",
@@ -88,6 +101,19 @@ impl DefaultLandingView {
         Self::Machines,
         Self::Workspace,
     ];
+
+    /// Whether this view exists in the current build (see `factory_flags`).
+    pub fn is_available(self) -> bool {
+        match self {
+            Self::Machines => factory_flags::machines(),
+            _ => true,
+        }
+    }
+
+    /// The landing views to offer, in picker order.
+    pub fn available() -> impl Iterator<Item = DefaultLandingView> {
+        Self::ALL.iter().copied().filter(|view| view.is_available())
+    }
 
     pub fn label(self) -> &'static str {
         match self {

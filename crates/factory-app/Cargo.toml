@@ -7,8 +7,14 @@ publish.workspace = true
 [lib]
 doctest = false
 
+[features]
+# Build flags, forwarded to `factory-flags` (see that crate for what each one gates).
+machines = ["factory-flags/machines"]
+unreleased = ["factory-flags/unreleased"]
+
 [dependencies]
 factory-config.workspace = true
+factory-flags.workspace = true
 factory-fonts.workspace = true
 factory-github.workspace = true
 factory-logging.workspace = true
@@ -27,6 +33,7 @@ nsh-core.workspace = true
 
 [dev-dependencies]
 factory-core.workspace = true
+factory-flags = { workspace = true, features = ["test-override"] }
 nsh-engine.workspace = true
 nsh-testing.workspace = true
 serde_json.workspace = true
