@@ -1069,8 +1069,31 @@ esac
 
     app.press("id:sidebar-chats-1").unwrap();
     app.wait_for("Chat with an agent in agy-chat-repo").unwrap();
-    app.press("id:chat-new-provider").unwrap();
-    app.press("role:option[Antigravity]").unwrap();
+
+    // Only configured providers appear as radio options, grouped above Model & Effort;
+    // Workspace & Access and Agent sit in their own groups.
+    assert!(app.screen().matches("id:chat-new-provider-group").unwrap());
+    assert!(app.screen().matches("id:chat-new-workspace-group").unwrap());
+    assert!(app.screen().matches("id:chat-new-agent-group").unwrap());
+    assert!(app.screen().matches("id:chat-new-provider-claude").unwrap());
+    assert!(
+        app.screen()
+            .matches("id:chat-new-provider-antigravity")
+            .unwrap()
+    );
+    assert!(!app.screen().matches("id:chat-new-provider-codex").unwrap());
+    assert!(app.screen().matches("id:chat-new-model").unwrap());
+    assert!(app.screen().matches("id:chat-new-effort").unwrap());
+
+    // Selecting Antigravity hides the separate Effort picker because the model defines effort.
+    app.press("id:chat-new-provider-antigravity").unwrap();
+    app.wait_for("id:chat-new-effort-note").unwrap();
+    assert!(app.screen().matches("id:chat-new-model").unwrap());
+    assert!(!app.screen().matches("id:chat-new-effort").unwrap());
+    assert!(
+        app.screen()
+            .shows("Effort is determined by the selected Antigravity model.")
+    );
 
     // Turn 1 settles context via ACP (4.2K / 1M) and records 1,234 tokens.
     app.type_text("id:chat-composer-input", "First turn")

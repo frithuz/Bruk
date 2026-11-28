@@ -663,16 +663,16 @@ pub fn default_step_runtime_dir(run_id: &str, step_index: usize) -> PathBuf {
 pub const CLAUDE_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// Effort levels Codex's `model_reasoning_effort` takes.
 pub const CODEX_EFFORT_LEVELS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
-/// Effort levels `agy --effort` takes.
-pub const ANTIGRAVITY_EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 
-/// The reasoning effort levels a provider's CLI accepts, lowest first.
+/// The reasoning effort levels a provider's CLI accepts as a separate setting, lowest first.
+///
+/// Antigravity encodes effort in the model identifier itself (for example `gemini-4-neon-high`),
+/// so it exposes no separate effort levels.
 pub fn provider_effort_levels(provider: ProviderKind) -> &'static [&'static str] {
     match provider {
         ProviderKind::Claude => &CLAUDE_EFFORT_LEVELS,
         ProviderKind::Codex => &CODEX_EFFORT_LEVELS,
-        ProviderKind::Antigravity => &ANTIGRAVITY_EFFORT_LEVELS,
-        ProviderKind::OpenRouter => &[],
+        ProviderKind::Antigravity | ProviderKind::OpenRouter => &[],
     }
 }
 
@@ -998,15 +998,8 @@ pub fn build_isolated_antigravity_spawn_plan(
         args.push("--model".to_owned());
         args.push(model.to_owned());
     }
-    if let Some(effort) = bundle
-        .reasoning_effort
-        .as_deref()
-        .map(str::trim)
-        .filter(|e| ANTIGRAVITY_EFFORT_LEVELS.contains(e))
-    {
-        args.push("--effort".to_owned());
-        args.push(effort.to_owned());
-    }
+    // Antigravity encodes reasoning effort in the model itself (e.g. `gemini-4-neon-high`),
+    // so no separate `--effort` flag is passed.
     args.push("--disable-slash-commands".to_owned());
     // Antigravity reports MCP servers that fail to start only in its log.
     args.push(format!(
