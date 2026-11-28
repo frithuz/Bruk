@@ -13,7 +13,7 @@ use factory_types::{
     AppearanceSettings, DEFAULT_MONO_FONT_FAMILY, DEFAULT_UI_FONT_FAMILY, FontPreference,
 };
 use nsh_core::{
-    element::{FONT_MONO, FONT_SANS, Root, Tokens},
+    element::{AssetFile, FONT_MONO, FONT_SANS, Root, Tokens},
     prelude::*,
 };
 
@@ -116,6 +116,13 @@ pub const EMBEDDED_FONTS: &[&[u8]] = &[
         "../assets/fonts/atkinson-hyperlegible-mono/AtkinsonHyperlegibleMono-ExtraBoldItalic.otf"
     ),
 ];
+
+/// Native Shell asset descriptors for all embedded Atkinson Hyperlegible font files.
+///
+/// Defined in `factory-fonts` because `assets!()` scans the calling crate's `assets/` directory;
+/// `factory-app`'s `#[native_module]` registers these so `nsh run` and `nsh package` bundle and
+/// register the fonts before the first frame.
+pub const FONT_ASSETS: &[AssetFile] = assets!();
 
 /// Builds design tokens with `nsh-base`'s defaults plus the user's configured UI and monospace fonts.
 pub fn tokens_for_appearance(appearance: &AppearanceSettings) -> Tokens {
