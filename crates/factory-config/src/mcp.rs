@@ -1377,6 +1377,25 @@ pub fn antigravity_mcp_delivery(
     let file = sources.project.file();
     if file == Some(ProjectMcpFile::AgentsMcpConfig) && !set.project_trusted {
         delivery.deny_all_mcp = true;
+        // Antigravity starts the enabled servers in `.agents/mcp_config.json` on its own, even with
+        // their tools denied, so it mustn't run while that file isn't approved (or project servers
+        // are turned off): that would run commands from the repository nobody approved.
+        for problem in set.problems.iter_mut().filter(|p| {
+            p.server.is_none()
+                && p.origin == Some(McpOrigin::Project(ProjectMcpFile::AgentsMcpConfig))
+        }) {
+            let note = match problem.fix {
+                McpFix::ApproveProjectServers => {
+                    " Antigravity starts them itself, so it won't run here until they're approved; Claude and Codex can run without them."
+                }
+                McpFix::AllowProjectServers => {
+                    " Antigravity starts them itself, so it can't run in this project while they're off; use Claude or Codex."
+                }
+                _ => continue,
+            };
+            problem.blocking = true;
+            problem.reason.push_str(note);
+        }
     }
     // Antigravity (`agy` v1.5.16) launches enabled `.agents/mcp_config.json` servers on its own
     // (even under `permissions.deny: ["mcp(*)"]`) and performs ZERO `${VAR}` expansion anywhere.
@@ -1846,7 +1865,7 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_refuses_project_only_and_denies_unapproved_servers() {
+    fn antigravity_refuses_project_only_and_unapproved_or_disallowed_servers() {
         let mut sources = trusted(loaded(
             ProjectMcpFile::AgentsMcpConfig,
             vec![stdio("p", "x")],
@@ -1857,6 +1876,32 @@ mod tests {
         let delivery = antigravity_mcp_delivery(&mut set, &sources, &[]);
         assert!(delivery.deny_all_mcp);
         assert!(set.servers.is_empty(), "extras can't reach Antigravity");
+        // Antigravity would start the unapproved servers itself, so it doesn't run at all.
+        assert!(
+            set.problems
+                .iter()
+                .any(|p| p.blocking && p.fix == McpFix::ApproveProjectServers),
+            "{:?}",
+            set.problems
+        );
+
+        let mut off = trusted(loaded(
+            ProjectMcpFile::AgentsMcpConfig,
+            vec![stdio("p", "x")],
+        ));
+        off.allow_project_servers = false;
+        let mut set = resolve_mcp_servers(&off, McpSourcesPolicy::All, &[]);
+        antigravity_mcp_delivery(&mut set, &off, &[]);
+        assert!(
+            set.problems
+                .iter()
+                .any(|p| p.blocking && p.fix == McpFix::AllowProjectServers),
+            "{:?}",
+            set.problems
+        );
+
+        // Claude and Codex just go without unapproved servers.
+        let set = resolve_mcp_servers(&sources, McpSourcesPolicy::All, &[]);
         assert!(!set.has_blocking_problem());
 
         let sources = trusted(loaded(
