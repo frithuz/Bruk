@@ -1157,3 +1157,72 @@ fn real_workflow_run_executes_shell_and_approval_gate_via_inbox_and_persists_to_
     assert_eq!(runs[0].workflow_id, "shell-and-approve");
     assert_eq!(runs[0].status, factory_core::RunExecutionState::Succeeded);
 }
+
+#[test]
+fn two_runs_of_one_workflow_at_once_keep_their_own_gates_numbers_and_records() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("runner-repo");
+
+    std::fs::create_dir_all(repo_dir.join(".agents/bruk/workflows")).unwrap();
+    std::fs::write(
+        repo_dir.join(".agents/bruk/workflows/shell-and-approve.yaml"),
+        "id: shell-and-approve\nname: Shell And Approve\ndescription: Runs a real shell command then waits in Inbox\ntriggers:\n  work_queue: false\n  ad_hoc: true\nnodes:\n  - kind: shell_command\n    id: hello\n    name: Run check\n    command: echo 'hello from real runner'\n  - kind: approval_gate\n    id: gate\n    name: Final approval\n    prompt: Please approve the real run\n",
+    )
+    .unwrap();
+
+    let mut app = start_with_db(db_path.clone());
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "runner-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'runner-repo'").unwrap();
+
+    // Start the same workflow twice; both pause at their approval gate.
+    for summary in ["First run", "Second run"] {
+        app.press("id:sidebar-workflows-1").unwrap();
+        app.wait_for("Shell And Approve").unwrap();
+        app.press("id:wfo-row-shell-and-approve").unwrap();
+        app.press("id:wfo-inspector-adhoc").unwrap();
+        app.wait_for("id:wfo-adhoc-input").unwrap();
+        app.type_text("id:wfo-adhoc-input", summary).unwrap();
+        app.press("id:wfo-adhoc-start").unwrap();
+        app.wait_for("Review required").unwrap();
+    }
+
+    let finished_runs = |app: &mut nsh_testing::Headless, count: usize| {
+        for _ in 0..100 {
+            let runs = factory_core::ProjectDatabase::open(&db_path)
+                .unwrap()
+                .list_all_workflow_runs()
+                .unwrap();
+            if runs.len() >= count {
+                return runs;
+            }
+            app.idle(std::time::Duration::from_millis(100)).unwrap();
+        }
+        panic!("expected {count} finished run(s)");
+    };
+
+    // Approving one run's gate finishes that run only, and the other run's gate still works.
+    app.press("id:sidebar-inbox-btn").unwrap();
+    app.wait_for("Final approval").unwrap();
+    app.press("id:inbox-approve-review").unwrap();
+    assert_eq!(finished_runs(&mut app, 1).len(), 1);
+    app.wait_for("Final approval").unwrap();
+    app.press("id:inbox-approve-review").unwrap();
+    let runs = finished_runs(&mut app, 2);
+
+    let mut numbers: Vec<u32> = runs.iter().map(|r| r.run_number).collect();
+    numbers.sort_unstable();
+    assert_eq!(numbers, [1, 2]);
+    assert!(
+        runs.iter()
+            .all(|r| r.status == factory_core::RunExecutionState::Succeeded)
+    );
+    // Each run's record holds its own view, not one shared by both.
+    assert!(runs.iter().all(|r| r.view.run_number == r.run_number));
+}
