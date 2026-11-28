@@ -4412,6 +4412,18 @@ echo "{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":$((40 * turns))
                 .any(|w| w == ["-c", "model_reasoning_effort=\"minimal\""]),
             "{args:?}"
         );
+
+        let agy = write_script(temp.path(), "agy", "#!/bin/sh\n");
+        let mut req = request(&temp, ProviderKind::Antigravity, &agy);
+        req.model = Some("gemini-4-neon-high".to_owned());
+        req.reasoning_effort = Some("high".to_owned());
+        let args = command_args(&req);
+        assert!(
+            args.windows(2)
+                .any(|w| w == ["--model", "gemini-4-neon-high"]),
+            "{args:?}"
+        );
+        assert!(!args.iter().any(|a| a == "--effort"), "{args:?}");
     }
 
     fn attach(temp: &TempDir, req: &mut ChatTurnRequest, files: &[(&str, &[u8])]) {

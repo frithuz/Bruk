@@ -31,6 +31,7 @@ use factory_ui_kit::{icons, palette};
 
 const LIST_WIDTH: f32 = 252.0;
 const TRANSCRIPT_MAX_WIDTH: f32 = 780.0;
+const NEW_CHAT_SETUP_MAX_WIDTH: f32 = 580.0;
 const NO_AGENT_VALUE: &str = "__no_agent__";
 const DEFAULT_MODEL_VALUE: &str = "__default_model__";
 const DEFAULT_EFFORT_VALUE: &str = "__default_effort__";
@@ -323,9 +324,10 @@ fn new_chat_intro() -> impl IntoElement {
         .min_h(px(0.0))
         .items_center()
         .justify_center()
-        .px(px(32.0))
-        .gap(px(12.0))
-        .child(icons::chat_bubbles(30.0, palette::text_muted()))
+        .px(px(28.0))
+        .py(px(16.0))
+        .gap(px(10.0))
+        .child(icons::chat_bubbles(28.0, palette::text_muted()))
         .child(
             text(move || match store::selected_project() {
                 Some(project) => format!("Chat with an agent in {}", project.name),
@@ -344,42 +346,306 @@ fn new_chat_intro() -> impl IntoElement {
         )
         .child(when(
             || store::selected_project_id().is_some(),
-            || {
-                view()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_center()
-                    .gap(px(8.0))
-                    .pt(px(6.0))
-                    .child(provider_picker())
-                    .child(agent_picker())
-                    .child(model_picker())
-                    .child(effort_picker())
-                    .child(sandbox_picker(
-                        "chat-new-access",
-                        store::chat_new_sandbox,
-                        store::set_chat_new_sandbox,
-                    ))
-                    .child(when(store::chat_worktree_available, workspace_picker))
-            },
+            new_chat_setup_panel,
         ))
+}
+
+fn new_chat_setup_panel() -> impl IntoElement {
+    view()
+        .w_full()
+        .max_w(px(NEW_CHAT_SETUP_MAX_WIDTH))
+        .pt(px(6.0))
+        .gap(px(10.0))
+        .child(provider_and_model_card())
+        .child(workspace_and_access_card())
+        .child(agent_card())
+}
+
+fn setup_section_heading(label: &'static str) -> impl IntoElement {
+    text(label)
+        .text_size(px(10.5))
+        .font_weight(FontWeight::SEMIBOLD)
+        .text_color(palette::text_muted())
+}
+
+fn setup_field_label(label: &'static str) -> impl IntoElement {
+    text(label)
+        .text_size(px(11.0))
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(palette::text_muted())
+}
+
+fn provider_and_model_card() -> impl IntoElement {
+    view()
+        .test_id("chat-new-provider-group")
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .overflow_hidden()
+        .child(
+            view()
+                .px(px(14.0))
+                .py(px(12.0))
+                .gap(px(8.0))
+                .child(setup_section_heading("PROVIDER"))
+                .child(provider_radio_group()),
+        )
+        .child(
+            view()
+                .px(px(14.0))
+                .py(px(11.0))
+                .border_t_1()
+                .border_color(palette::divider_color())
+                .bg(palette::card_inset_bg())
+                .child(dynamic(|| {
+                    let has_effort = !store::chat_effort_options().is_empty();
+                    if has_effort {
+                        view()
+                            .flex_row()
+                            .items_start()
+                            .gap(px(10.0))
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap(px(4.0))
+                                    .child(setup_field_label("Model"))
+                                    .child(model_picker()),
+                            )
+                            .child(
+                                view()
+                                    .flex_1()
+                                    .min_w(px(0.0))
+                                    .gap(px(4.0))
+                                    .child(setup_field_label("Effort"))
+                                    .child(effort_picker()),
+                            )
+                            .into_element()
+                    } else {
+                        view()
+                            .gap(px(5.0))
+                            .child(setup_field_label("Model"))
+                            .child(model_picker())
+                            .child(
+                                text("Effort is determined by the selected Antigravity model.")
+                                    .test_id("chat-new-effort-note")
+                                    .text_size(px(11.0))
+                                    .text_color(palette::text_muted()),
+                            )
+                            .into_element()
+                    }
+                })),
+        )
+}
+
+fn provider_radio_group() -> impl IntoElement {
+    view().test_id("chat-new-provider").child(dynamic(|| {
+        let providers = store::chat_provider_options();
+        let single = providers.len() <= 1;
+        let mut row = view().flex_row().items_stretch().gap(px(8.0));
+        for provider in providers {
+            row = row.child(provider_radio_option(provider, single));
+        }
+        row.into_element()
+    }))
+}
+
+fn provider_radio_option(provider: ProviderKind, single: bool) -> impl IntoElement {
+    let is_selected = move || store::chat_new_provider() == provider;
+    let is_selected_bg = is_selected;
+    let is_selected_border = is_selected;
+    let is_selected_badge = is_selected;
+    let is_selected_text = is_selected;
+
+    let tile = button()
+        .test_id(&format!("chat-new-provider-{}", provider.slug()))
+        .accessibility_label(provider.label())
+        .on_press(move || store::set_chat_new_provider(provider))
+        .flex_row()
+        .items_center()
+        .gap(px(8.0))
+        .px(px(11.0))
+        .py(px(8.5))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(move || {
+            if is_selected_border() {
+                palette::card_selected_border()
+            } else {
+                palette::border_color()
+            }
+        })
+        .bg(move || {
+            if is_selected_bg() {
+                palette::card_selected_bg()
+            } else {
+                palette::control_bg()
+            }
+        })
+        .hover(move |s| {
+            if is_selected() {
+                s
+            } else {
+                s.bg(palette::subtle_surface_bg())
+            }
+        })
+        .active(|s| s.opacity(0.85))
+        .child(dynamic(move || radio_circle(is_selected())))
+        .child(
+            view()
+                .w(px(22.0))
+                .h(px(22.0))
+                .rounded(px(5.5))
+                .flex_shrink_0()
+                .items_center()
+                .justify_center()
+                .bg(move || {
+                    if is_selected_badge() {
+                        palette::nav_active_bg()
+                    } else {
+                        palette::provider_badge_bg()
+                    }
+                })
+                .child(
+                    text(provider.badge())
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(move || {
+                            if is_selected_badge() {
+                                palette::nav_active_fg()
+                            } else {
+                                palette::text_secondary()
+                            }
+                        }),
+                ),
+        )
+        .child(
+            text(provider.label())
+                .truncate()
+                .text_size(px(12.5))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(move || {
+                    if is_selected_text() {
+                        palette::text_primary()
+                    } else {
+                        palette::text_secondary()
+                    }
+                }),
+        );
+
+    if single {
+        tile.min_w(px(164.0))
+    } else {
+        tile.flex_1().min_w(px(0.0))
+    }
+}
+
+fn radio_circle(selected: bool) -> impl IntoElement {
+    let outer = view()
+        .w(px(15.0))
+        .h(px(15.0))
+        .rounded_full()
+        .flex_shrink_0()
+        .items_center()
+        .justify_center();
+
+    if selected {
+        outer.bg(palette::nav_active_bg()).child(
+            view()
+                .w(px(5.5))
+                .h(px(5.5))
+                .rounded_full()
+                .bg(palette::nav_active_fg()),
+        )
+    } else {
+        outer
+            .border_1()
+            .border_color(palette::border_color())
+            .bg(palette::card_inset_bg())
+    }
+}
+
+fn workspace_and_access_card() -> impl IntoElement {
+    view()
+        .test_id("chat-new-workspace-group")
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .px(px(14.0))
+        .py(px(11.0))
+        .gap(px(8.0))
+        .child(setup_section_heading("WORKSPACE & ACCESS"))
+        .child(
+            view()
+                .flex_row()
+                .items_start()
+                .gap(px(10.0))
+                .child(when(store::chat_worktree_available, || {
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(4.0))
+                        .child(setup_field_label("Work in"))
+                        .child(workspace_picker())
+                }))
+                .child(
+                    view()
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .gap(px(4.0))
+                        .child(setup_field_label("Access"))
+                        .child(sandbox_field_picker(
+                            "chat-new-access",
+                            store::chat_new_sandbox,
+                            store::set_chat_new_sandbox,
+                        )),
+                ),
+        )
         .child(when(
             || store::chat_new_workspace() == ChatWorkspace::Worktree,
             || {
                 text("The agent gets a new branch from HEAD in a folder of its own, so your checkout stays as it is.")
-                    .max_w(px(470.0))
-                    .text_center()
-                    .text_size(px(11.5))
+                    .text_size(px(11.0))
                     .text_color(palette::text_muted())
             },
         ))
+}
+
+fn agent_card() -> impl IntoElement {
+    view()
+        .test_id("chat-new-agent-group")
+        .rounded(px(12.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::card_bg())
+        .px(px(14.0))
+        .py(px(10.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(12.0))
+        .child(
+            view()
+                .flex_1()
+                .min_w(px(0.0))
+                .gap(px(2.0))
+                .child(setup_section_heading("AGENT"))
+                .child(
+                    text("Optional persona and instructions")
+                        .text_size(px(11.5))
+                        .text_color(palette::text_muted()),
+                ),
+        )
+        .child(view().w(px(220.0)).flex_shrink_0().child(agent_picker()))
 }
 
 fn workspace_picker() -> impl IntoElement {
     styled_select()
         .test_id("chat-new-workspace")
         .accessibility_label("Work in")
+        .w_full()
         .items(|| {
             [ChatWorkspace::Checkout, ChatWorkspace::Worktree]
                 .into_iter()
@@ -395,9 +661,35 @@ fn workspace_picker() -> impl IntoElement {
             };
             store::set_chat_new_workspace(workspace);
         })
-        .trigger(picker_trigger("Work in", || {
+        .trigger(field_picker_trigger(|| {
             store::chat_new_workspace().label().to_owned()
         }))
+}
+
+fn field_picker_trigger(value: impl Fn() -> String + 'static) -> impl IntoElement {
+    view()
+        .w_full()
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(8.0))
+        .h(px(30.0))
+        .px(px(10.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .child(
+            text(value)
+                .flex_1()
+                .min_w(px(0.0))
+                .truncate()
+                .text_size(px(12.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_primary()),
+        )
+        .child(icons::chevron_down(palette::text_muted()))
 }
 
 fn picker_trigger(caption: &'static str, value: impl Fn() -> String + 'static) -> impl IntoElement {
@@ -436,34 +728,11 @@ fn styled_select() -> nsh_base::SelectElement {
         .item_class("px-2.5 py-1.5 rounded-md text-xs text-popover-foreground focus:bg-accent selected:font-medium")
 }
 
-fn provider_picker() -> impl IntoElement {
-    styled_select()
-        .test_id("chat-new-provider")
-        .accessibility_label("Provider")
-        .items(|| {
-            store::chat_provider_options()
-                .into_iter()
-                .map(|p| SelectItem::new(p.label(), p.label()))
-                .collect::<Vec<_>>()
-        })
-        .value(|| SelectValue::from(store::chat_new_provider().label().to_owned()))
-        .on_change(|value: &Option<SharedString>| {
-            let provider = ProviderKind::CLI_PROVIDERS
-                .iter()
-                .copied()
-                .find(|p| value.as_deref() == Some(p.label()))
-                .unwrap_or(ProviderKind::Claude);
-            store::set_chat_new_provider(provider);
-        })
-        .trigger(picker_trigger("Provider", || {
-            store::chat_new_provider().label().to_owned()
-        }))
-}
-
 fn agent_picker() -> impl IntoElement {
     styled_select()
         .test_id("chat-new-agent")
         .accessibility_label("Agent")
+        .w_full()
         .items(|| {
             let mut items = vec![SelectItem::new(NO_AGENT_VALUE, "No agent")];
             for (reference, name) in store::chat_agent_options() {
@@ -478,7 +747,7 @@ fn agent_picker() -> impl IntoElement {
             None | Some(NO_AGENT_VALUE) => store::set_chat_new_agent(None),
             Some(reference) => store::set_chat_new_agent(Some(reference.to_owned())),
         })
-        .trigger(picker_trigger("Agent", || {
+        .trigger(field_picker_trigger(|| {
             let selected = store::chat_new_agent();
             selected
                 .and_then(|reference| {
@@ -487,7 +756,7 @@ fn agent_picker() -> impl IntoElement {
                         .find(|(r, _)| *r == reference)
                         .map(|(_, name)| name)
                 })
-                .unwrap_or_else(|| "None".to_owned())
+                .unwrap_or_else(|| "No agent".to_owned())
         }))
 }
 
@@ -495,6 +764,7 @@ fn model_picker() -> impl IntoElement {
     styled_select()
         .test_id("chat-new-model")
         .accessibility_label("Model")
+        .w_full()
         .items(|| {
             let mut items = vec![SelectItem::new(
                 DEFAULT_MODEL_VALUE,
@@ -522,13 +792,13 @@ fn model_picker() -> impl IntoElement {
             None | Some(DEFAULT_MODEL_VALUE) => store::set_chat_new_model(None),
             Some(model) => store::set_chat_new_model(Some(model.to_owned())),
         })
-        .trigger(picker_trigger("Model", || match store::chat_new_model() {
+        .trigger(field_picker_trigger(|| match store::chat_new_model() {
             Some(model) => store::chat_model_options()
                 .into_iter()
                 .find(|(value, _)| *value == model)
                 .map(|(_, name)| name)
                 .unwrap_or(model),
-            None => "Default".to_owned(),
+            None => format!("Default ({})", store::chat_default_model_label()),
         }))
 }
 
@@ -536,6 +806,7 @@ fn effort_picker() -> impl IntoElement {
     styled_select()
         .test_id("chat-new-effort")
         .accessibility_label("Effort")
+        .w_full()
         .items(|| {
             let mut items = vec![SelectItem::new(
                 DEFAULT_EFFORT_VALUE,
@@ -555,10 +826,17 @@ fn effort_picker() -> impl IntoElement {
             None | Some(DEFAULT_EFFORT_VALUE) => store::set_chat_new_effort(None),
             Some(level) => store::set_chat_new_effort(Some(level.to_owned())),
         })
-        .trigger(picker_trigger("Effort", || {
+        .trigger(field_picker_trigger(|| {
             store::chat_new_effort()
                 .map(|level| effort_label(&level))
-                .unwrap_or_else(|| "Default".to_owned())
+                .unwrap_or_else(|| {
+                    let default = store::chat_default_effort_label();
+                    if default == "provider default" {
+                        "Default".to_owned()
+                    } else {
+                        format!("Default ({})", effort_label(&default))
+                    }
+                })
         }))
 }
 
@@ -574,6 +852,33 @@ fn effort_label(level: &str) -> String {
             }
         }
     }
+}
+
+fn sandbox_field_picker(
+    test_id: &'static str,
+    current: impl Fn() -> ProjectSandboxMode + Copy + 'static,
+    set: impl Fn(ProjectSandboxMode) + Copy + 'static,
+) -> impl IntoElement {
+    styled_select()
+        .test_id(test_id)
+        .accessibility_label("Access")
+        .w_full()
+        .items(|| {
+            ProjectSandboxMode::ALL
+                .iter()
+                .map(|mode| SelectItem::new(mode.label(), mode.label()))
+                .collect::<Vec<_>>()
+        })
+        .value(move || SelectValue::from(current().label().to_owned()))
+        .on_change(move |value: &Option<SharedString>| {
+            if let Some(mode) = ProjectSandboxMode::ALL
+                .iter()
+                .find(|mode| Some(mode.label()) == value.as_deref())
+            {
+                set(*mode);
+            }
+        })
+        .trigger(field_picker_trigger(move || current().label().to_owned()))
 }
 
 fn sandbox_picker(
