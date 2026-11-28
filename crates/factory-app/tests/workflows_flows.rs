@@ -837,6 +837,15 @@ fn github_intake_syncs_real_issues_persists_settings_and_updates_working_label()
             .success()
     );
 
+    // A shell-only stand-in for the builtin Fix issue workflow, so starting an issue runs a real
+    // workflow without an agent CLI.
+    std::fs::create_dir_all(repo_dir.join(".agents/bruk/workflows")).unwrap();
+    std::fs::write(
+        repo_dir.join(".agents/bruk/workflows/fix-issue.yaml"),
+        "id: fix-issue\nname: Fix issue\ndescription: Stand-in for the builtin\ntriggers:\n  work_queue: true\n  ad_hoc: true\n  issue_labels:\n    - bug\nnodes:\n  - kind: shell_command\n    id: check\n    name: Check\n    command: echo checked\n",
+    )
+    .unwrap();
+
     // Fake `gh` CLI in isolated PATH that logs invocations and returns realistic issue JSON.
     let gh_script = format!(
         r#"#!/bin/sh
@@ -912,15 +921,29 @@ exit 0
 
         // Start #101 -> should invoke `gh issue edit 101 --repo acme/billing-api --add-label agent-working`.
         app.press("id:wq-inspector-start-now").unwrap();
-        app.wait_for("Started issue #101 as run #1").unwrap();
+        // The issue's workflow really runs (as run #1), and when it ends the issue leaves In
+        // progress. The one-step run finishes at once, so its "Started" message is soon replaced.
+        app.wait_for("Run #1 succeeded").unwrap();
+        assert!(app.screen().shows("Fix issue · run #1"));
+
+        // Start Next Queued Issue starts #102, which goes to a workflow that doesn't exist, so
+        // it's held in Needs setup with the reason instead of taking a slot with nothing running.
+        app.press_key("alt+mod+enter").unwrap();
+        app.wait_for(
+            "Couldn't start #102: Could not resolve workflow 'Triage new issues' for 'billing-api'",
+        )
+        .unwrap();
     }
 
     // Confirm `gh` received both `issue list` and `issue edit --add-label agent-working`.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let log = std::fs::read_to_string(&gh_log).unwrap_or_default();
-        if log.contains("issue edit 101 --repo acme/billing-api --add-label agent-working") {
+        if log.contains("issue edit 101 --repo acme/billing-api --add-label agent-working")
+            && log.contains("issue edit 101 --repo acme/billing-api --remove-label agent-working")
+        {
             assert!(log.contains("issue list --repo acme/billing-api --state open"));
+            assert!(!log.contains("issue edit 102"), "{log}");
             break;
         }
         assert!(

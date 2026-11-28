@@ -13,6 +13,6 @@ pub use github_intake::{
     remove_github_issue_label, resolve_gh_binary,
 };
 pub use work_queue::{
-    GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, UnmatchedIssue,
-    WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
+    GitHubIntakeDiff, IntakeRule, ProjectWorkQueue, ProjectWorkflowSummary, QueueRunOutcome,
+    UnmatchedIssue, WorkQueueError, WorkQueueItem, WorkQueueStage, WorkQueueViewMode,
 };

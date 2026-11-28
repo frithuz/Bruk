@@ -34,8 +34,9 @@ use factory_config::{
 };
 use factory_github::{
     AGENT_WORKING_LABEL, GitHubAuth, GitHubFilterClause, IntakeRule, ProjectWorkQueue,
-    WorkQueueStage, WorkQueueViewMode, add_github_issue_label, detect_git_remote_info,
-    fetch_github_open_issues_with_filter, remove_github_issue_label, resolve_gh_binary,
+    QueueRunOutcome, WorkQueueStage, WorkQueueViewMode, add_github_issue_label,
+    detect_git_remote_info, fetch_github_open_issues_with_filter, remove_github_issue_label,
+    resolve_gh_binary,
 };
 use factory_machines::{
     CoreUpdatePolicy, MachineAgentKind, MachinePlatform, MachineRecord, MachinesFleet,
@@ -88,6 +89,9 @@ struct RunnerRegistry {
     active_runs: BTreeMap<String, RunControlHandle>,
     /// Pending approval gates by gate id, with the id of the run each belongs to.
     gates_by_id: BTreeMap<String, (RunControlHandle, String)>,
+    /// The work queue item (project name, issue number) each run started from the queue is for,
+    /// by run id. Kept here rather than in the app state so a state rebuild doesn't lose it.
+    queue_items: BTreeMap<String, (String, u32)>,
     run_seq: u64,
     /// The next run number to hand out per project, by the project's root path (one process
     /// can open more than one database, whose project ids overlap). A run's row is only written
@@ -870,6 +874,19 @@ impl AppState {
                         .and_then(|guard| guard.load_project_work_queue(project.id).ok().flatten());
                     let mut queue =
                         loaded_queue.unwrap_or_else(|| ProjectWorkQueue::empty(&project.name));
+                    // Items left In progress by a run that isn't going any more (Bruk quit during
+                    // it) go back to Ready for agents instead of holding a slot forever.
+                    let running: BTreeSet<u32> = runner_registry()
+                        .lock()
+                        .map(|reg| {
+                            reg.queue_items
+                                .values()
+                                .filter(|(queue_project, _)| *queue_project == project.name)
+                                .map(|(_, issue)| *issue)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    queue.requeue_interrupted_runs(|issue| running.contains(&issue));
                     if !settings.github_repo.trim().is_empty()
                         || !settings.intake_filters.is_empty()
                         || !settings.intake_rules.is_empty()
@@ -5592,17 +5609,11 @@ fn spawn_github_working_label_update(issue_number: u32, add: bool) {
 }
 
 pub fn start_work_queue_issue(issue_number: u32) {
-    let mut started = false;
-    let mut real_run_args: Option<(String, String, String, u32)> = None;
+    let mut real_run = None;
     state().update(|s| {
         let name = s.selected_project_name();
         let demo = s.demo_mode;
         let queue = s.ensure_queue_mut(&name);
-        let issue_meta = queue
-            .items
-            .iter()
-            .find(|i| i.issue_number == issue_number)
-            .map(|i| (i.workflow_name.clone(), i.title.clone()));
         match queue.start_issue(issue_number) {
             Ok(run_number) => {
                 s.work_queue_selected_issue = Some(issue_number);
@@ -5610,9 +5621,8 @@ pub fn start_work_queue_issue(issue_number: u32) {
                     "Started issue #{issue_number} as run #{run_number}"
                 ));
                 s.persist_active_work_queue();
-                started = true;
-                if !demo && let Some((wf_name, title)) = issue_meta {
-                    real_run_args = Some((name, wf_name, title, issue_number));
+                if !demo {
+                    real_run = Some(name);
                 }
             }
             Err(err) => {
@@ -5620,17 +5630,77 @@ pub fn start_work_queue_issue(issue_number: u32) {
             }
         }
     });
-    if started {
-        spawn_github_working_label_update(issue_number, true);
+    if let Some(project_name) = real_run {
+        start_queue_item_run(&project_name, issue_number, true, true);
     }
-    if let Some((project_name, wf_name, title, issue_no)) = real_run_args {
-        let _ = spawn_real_workflow_run(
-            &project_name,
-            &wf_name,
-            &format!("Issue #{issue_no}: {title}"),
-            Some(issue_no),
-            false,
-        );
+}
+
+/// Starts the workflow run for a work queue item the queue has just moved to In progress, and
+/// remembers which run it is so the item moves on when the run ends. A GitHub issue's run is
+/// linked to the issue and gets the working label. When the run can't start, the item is held in
+/// Needs setup with the reason instead of holding a slot with nothing running.
+fn start_queue_item_run(project_name: &str, issue_number: u32, github_issue: bool, announce: bool) {
+    let item = state().with_untracked(|s| {
+        s.queue_for_name(project_name)
+            .items
+            .iter()
+            .find(|item| item.issue_number == issue_number)
+            .map(|item| (item.workflow_name.clone(), item.title.clone()))
+    });
+    let Some((workflow_name, title)) = item else {
+        return;
+    };
+    let prompt = if github_issue {
+        format!("Issue #{issue_number}: {title}")
+    } else {
+        title.clone()
+    };
+    let result = spawn_real_workflow_run(
+        project_name,
+        &workflow_name,
+        &prompt,
+        github_issue.then_some(issue_number),
+        false,
+    );
+    if let Ok((run_id, _)) = &result
+        && let Ok(mut reg) = runner_registry().lock()
+    {
+        reg.queue_items.retain(|_, (queue_project, issue)| {
+            !(queue_project == project_name && *issue == issue_number)
+        });
+        reg.queue_items
+            .insert(run_id.clone(), (project_name.to_owned(), issue_number));
+    }
+    state().update(|s| {
+        let queue = s.ensure_queue_mut(project_name);
+        match &result {
+            Ok((_, run_number)) => {
+                if let Some(item) = queue
+                    .items
+                    .iter_mut()
+                    .find(|item| item.issue_number == issue_number)
+                {
+                    item.run_number = Some(*run_number);
+                }
+                if announce {
+                    s.status_message = Some(if github_issue {
+                        format!("Started issue #{issue_number} as run #{run_number}")
+                    } else {
+                        format!("Started ad-hoc run #{run_number} ({workflow_name}): {title}")
+                    });
+                }
+            }
+            Err(reason) => {
+                queue.hold_item_for_setup(issue_number, reason);
+                if announce {
+                    s.status_message = Some(format!("Couldn't start #{issue_number}: {reason}"));
+                }
+            }
+        }
+        s.persist_work_queue_by_name(project_name);
+    });
+    if github_issue && result.is_ok() {
+        spawn_github_working_label_update(issue_number, true);
     }
 }
 
@@ -5638,6 +5708,7 @@ pub fn start_next_queued_issue() {
     let mut started_issue = None;
     state().update(|s| {
         let name = s.selected_project_name();
+        let demo = s.demo_mode;
         let queue = s.ensure_queue_mut(&name);
         match queue.start_next_queued() {
             Ok((issue_number, run_number)) => {
@@ -5647,15 +5718,17 @@ pub fn start_next_queued_issue() {
                     "Started next queued issue #{issue_number} as run #{run_number}"
                 ));
                 s.persist_active_work_queue();
-                started_issue = Some(issue_number);
+                if !demo {
+                    started_issue = Some((name, issue_number));
+                }
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
             }
         }
     });
-    if let Some(issue_number) = started_issue {
-        spawn_github_working_label_update(issue_number, true);
+    if let Some((project_name, issue_number)) = started_issue {
+        start_queue_item_run(&project_name, issue_number, true, true);
     }
 }
 
@@ -6036,7 +6109,7 @@ fn sync_github_issues_for_active_project(from_settings: bool) {
                 });
 
                 for issue_no in auto_started_issues {
-                    spawn_github_working_label_update(issue_no, true);
+                    start_queue_item_run(&project_name, issue_no, true, false);
                 }
             });
         });
@@ -6047,8 +6120,10 @@ pub fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
     let wf = workflow_name.to_owned();
     let prompt = title.to_owned();
     let mut launched = false;
+    let mut real_run = None;
     state().update(|s| {
         let name = s.selected_project_name();
+        let demo = s.demo_mode;
         let queue = s.ensure_queue_mut(&name);
         match queue.launch_ad_hoc(&wf, &prompt) {
             Ok((issue_no, run_no)) => {
@@ -6060,12 +6135,19 @@ pub fn launch_ad_hoc_work_run(workflow_name: &str, title: &str) -> bool {
                 ));
                 s.persist_active_work_queue();
                 launched = true;
+                if !demo {
+                    real_run = Some((name, issue_no));
+                }
             }
             Err(err) => {
                 s.status_message = Some(err.to_string());
             }
         }
     });
+    // An ad-hoc item isn't a GitHub issue, so its run isn't linked to one.
+    if let Some((project_name, item_no)) = real_run {
+        start_queue_item_run(&project_name, item_no, false, true);
+    }
     launched
 }
 
@@ -11737,7 +11819,7 @@ pub fn launch_overview_ad_hoc_run(id: &str, summary: &str) -> bool {
         }
     });
     if let Some((project, wf_id, prompt)) = real_launch {
-        return spawn_real_workflow_run(&project, &wf_id, &prompt, None, true);
+        return spawn_real_workflow_run(&project, &wf_id, &prompt, None, true).is_ok();
     }
     started
 }
@@ -12396,7 +12478,7 @@ pub fn launch_editor_ad_hoc_run(summary: &str) -> bool {
         }
     });
     if let Some((project, wf_id, prompt_text)) = real_launch {
-        return spawn_real_workflow_run(&project, &wf_id, &prompt_text, None, true);
+        return spawn_real_workflow_run(&project, &wf_id, &prompt_text, None, true).is_ok();
     }
     launched
 }
@@ -12445,7 +12527,7 @@ fn spawn_real_workflow_run(
     prompt: &str,
     issue_number: Option<u32>,
     open_run_view: bool,
-) -> bool {
+) -> Result<(String, u32), String> {
     let setup = state().with_untracked(|s| {
         let project = s
             .factory
@@ -12578,18 +12660,16 @@ fn spawn_real_workflow_run(
             target: "bruk::workflow",
             "workflow.launch.unresolved project={project_name:?} workflow={workflow_id_or_name:?}"
         );
+        let message =
+            format!("Could not resolve workflow '{workflow_id_or_name}' for '{project_name}'");
         if open_run_view {
-            state().update(|s| {
-                s.status_message = Some(format!(
-                    "Could not resolve workflow '{workflow_id_or_name}' for '{project_name}'"
-                ));
-            });
+            state().update(|s| s.status_message = Some(message.clone()));
         }
-        return false;
+        return Err(message);
     };
 
-    // When triggered implicitly from the work queue without a configured provider CLI binary,
-    // keep the queue transition intact instead of immediately failing and yanking the working label.
+    // A run started from the work queue without an agent CLI would fail at its first agent step;
+    // report that instead, so the queue can hold the item until one is set up.
     if !open_run_view
         && request.claude_binary.is_none()
         && request.codex_binary.is_none()
@@ -12601,11 +12681,14 @@ fn spawn_real_workflow_run(
             "workflow.launch.skipped_no_provider project={project_name:?} workflow={:?}",
             request.workflow.name
         );
-        return false;
+        return Err(
+            "no agent CLI is set up; add Claude, Codex or Antigravity in Settings".to_owned(),
+        );
     }
 
     let run_id = request.run_id.clone();
     let run_number = request.run_number;
+    let launched = (run_id.clone(), run_number);
     let project_id = request.project_id;
     let proj_name = request.project_name.clone();
     let wf_id = request.workflow.id.clone();
@@ -12894,6 +12977,22 @@ fn spawn_real_workflow_run(
                                 finished_issue_cleanup = Some(issue_no);
                             }
                         }
+                        let queue_item = runner_registry()
+                            .lock()
+                            .ok()
+                            .and_then(|mut reg| reg.queue_items.remove(&run_id));
+                        if let Some((queue_project, item_no)) = queue_item {
+                            let outcome = match status {
+                                RunExecutionState::Succeeded => QueueRunOutcome::Succeeded,
+                                RunExecutionState::Stopped => QueueRunOutcome::Stopped,
+                                _ => QueueRunOutcome::Failed,
+                            };
+                            if s.ensure_queue_mut(&queue_project)
+                                .finish_item_run(item_no, run_number, outcome)
+                            {
+                                s.persist_work_queue_by_name(&queue_project);
+                            }
+                        }
                         s.status_message = Some(summary.clone());
                         s.background_run_views.remove(&run_id);
                     }
@@ -12914,7 +13013,7 @@ fn spawn_real_workflow_run(
         });
     });
 
-    true
+    Ok(launched)
 }
 
 // --- Secrets & Secret Managers ----------------------------------------------------------
