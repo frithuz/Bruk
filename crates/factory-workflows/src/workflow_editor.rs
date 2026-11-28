@@ -391,6 +391,16 @@ pub struct WorkflowEditorDocument {
     pub selected: EditorSelection,
     pub revisions: Vec<EditorRevision>,
     next_id_counter: u32,
+    /// The workflow this document was opened from, so saving keeps what the editor can't edit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    loaded_from: Option<Box<LoadedWorkflow>>,
+}
+
+/// A workflow as it was opened in the editor, and how the editor showed its nodes then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct LoadedWorkflow {
+    workflow: WorkflowDef,
+    nodes: Vec<EditorNode>,
 }
 
 impl WorkflowEditorDocument {
@@ -528,6 +538,7 @@ impl WorkflowEditorDocument {
                 },
             ],
             next_id_counter: 10,
+            loaded_from: None,
         }
     }
 
@@ -671,6 +682,7 @@ impl WorkflowEditorDocument {
                 timestamp: entry.edited_label.clone(),
             }],
             next_id_counter: counter + 10,
+            loaded_from: None,
         }
     }
 
@@ -700,6 +712,7 @@ impl WorkflowEditorDocument {
             selected: EditorSelection::Trigger,
             revisions: Vec::new(),
             next_id_counter: 1,
+            loaded_from: None,
         }
     }
 
@@ -1406,6 +1419,10 @@ impl WorkflowEditorDocument {
             .origin
             .display_path("workflows", &format!("{}.yaml", workflow.id));
 
+        let loaded_from = Some(Box::new(LoadedWorkflow {
+            workflow: workflow.clone(),
+            nodes: nodes.clone(),
+        }));
         Self {
             project_name: project_name.to_owned(),
             workflow_id: workflow.id.clone(),
@@ -1433,25 +1450,45 @@ impl WorkflowEditorDocument {
                 timestamp: workflow.origin.badge_label(),
             }],
             next_id_counter: 20,
+            loaded_from,
         }
     }
 
     /// Converts this editor document back into a serializable [`WorkflowDef`] for
     /// `.agents/bruk/workflows/<id>.yaml`.
+    ///
+    /// A document opened from a workflow keeps what the editor doesn't edit (its inputs, intake
+    /// labels and id, and each step's settings the editor doesn't show), and writes back steps
+    /// that weren't touched exactly as they were.
     pub fn to_workflow_def(&self) -> WorkflowDef {
-        let id = {
-            let clean = slugify_kebab(&self.workflow_id);
-            if clean.is_empty() {
-                slugify_kebab(&self.workflow_name)
-            } else {
-                clean
+        let loaded = self.loaded_from.as_deref();
+        let id = match loaded {
+            Some(loaded) if loaded.workflow.id == self.workflow_id => loaded.workflow.id.clone(),
+            _ => {
+                let clean = slugify_kebab(&self.workflow_id);
+                if clean.is_empty() {
+                    slugify_kebab(&self.workflow_name)
+                } else {
+                    clean
+                }
             }
         };
         let nodes = self
             .nodes
             .iter()
-            .map(editor_node_to_workflow_node)
+            .map(|node| match loaded {
+                Some(loaded) => merge_editor_node(node, loaded),
+                None => editor_node_to_workflow_node(node),
+            })
             .collect();
+        let (issue_labels, inputs) = loaded
+            .map(|loaded| {
+                (
+                    loaded.workflow.triggers.issue_labels.clone(),
+                    loaded.workflow.inputs.clone(),
+                )
+            })
+            .unwrap_or_default();
         WorkflowDef {
             id,
             name: self.workflow_name.clone(),
@@ -1460,9 +1497,9 @@ impl WorkflowEditorDocument {
             triggers: WorkflowTriggersDef {
                 work_queue: self.trigger.work_queue_enabled,
                 ad_hoc: self.trigger.ad_hoc_allowed,
-                issue_labels: Vec::new(),
+                issue_labels,
             },
-            inputs: BTreeMap::new(),
+            inputs,
             mcp_sources: self.mcp_sources,
             nodes,
             origin: self.origin.clone().unwrap_or_default(),
@@ -1733,6 +1770,132 @@ fn editor_step_from_node(node: &WorkflowNodeDef, catalog: &BrukCatalog) -> Edito
     }
 }
 
+fn editor_node_id(node: &EditorNode) -> &str {
+    match node {
+        EditorNode::Step(step) => &step.id,
+        EditorNode::Loop(lp) => &lp.id,
+    }
+}
+
+/// The node with `id` in `nodes`, looking inside loops too.
+fn find_workflow_node<'a>(nodes: &'a [WorkflowNodeDef], id: &str) -> Option<&'a WorkflowNodeDef> {
+    nodes.iter().find_map(|node| {
+        if node.id() == id {
+            return Some(node);
+        }
+        match node {
+            WorkflowNodeDef::Loop(lp) => find_workflow_node(&lp.steps, id),
+            _ => None,
+        }
+    })
+}
+
+/// The editor step with `id` in `nodes`, looking inside loops too.
+fn find_editor_step<'a>(nodes: &'a [EditorNode], id: &str) -> Option<&'a EditorStep> {
+    nodes.iter().find_map(|node| match node {
+        EditorNode::Step(step) => (step.id == id).then_some(step),
+        EditorNode::Loop(lp) => lp.steps.iter().find(|step| step.id == id),
+    })
+}
+
+fn rename_workflow_node(node: &mut WorkflowNodeDef, name: &str) {
+    let slot = match node {
+        WorkflowNodeDef::AgentTask(s) => &mut s.name,
+        WorkflowNodeDef::ShellCommand(s) => &mut s.name,
+        WorkflowNodeDef::ApprovalGate(s) => &mut s.name,
+        WorkflowNodeDef::Composite(s) => &mut s.name,
+        WorkflowNodeDef::Loop(s) => &mut s.name,
+        WorkflowNodeDef::CommentOnIssue(s) => &mut s.name,
+        WorkflowNodeDef::SetIssueStatus(s) => &mut s.name,
+        WorkflowNodeDef::OpenPullRequest(s) => &mut s.name,
+        WorkflowNodeDef::Condition(s) => &mut s.name,
+    };
+    *slot = name.to_owned();
+}
+
+/// Converts an editor node back into a workflow node, starting from the node with the same id in
+/// the workflow the document was opened from: an untouched node is written back as it was, and
+/// an edited one keeps the settings the editor doesn't show.
+fn merge_editor_node(node: &EditorNode, loaded: &LoadedWorkflow) -> WorkflowNodeDef {
+    let id = editor_node_id(node);
+    let original = loaded
+        .nodes
+        .iter()
+        .find(|original| editor_node_id(original) == id);
+    let source = find_workflow_node(&loaded.workflow.nodes, id);
+    match (node, source) {
+        (_, Some(source)) if original == Some(node) => source.clone(),
+        (EditorNode::Loop(lp), Some(WorkflowNodeDef::Loop(source_loop))) => {
+            let WorkflowNodeDef::Loop(mut merged) = editor_node_to_workflow_node(node) else {
+                unreachable!("an editor loop converts to a loop");
+            };
+            if let Some(fallback) = source_loop.fallback.as_deref() {
+                let mut fallback = fallback.clone();
+                let renamed = match original {
+                    Some(EditorNode::Loop(original)) => original.fallback.name != lp.fallback.name,
+                    _ => false,
+                };
+                if renamed {
+                    rename_workflow_node(&mut fallback, &lp.fallback.name);
+                }
+                merged.fallback = Some(Box::new(fallback));
+            }
+            merged.steps = lp
+                .steps
+                .iter()
+                .map(|step| merge_editor_step(step, loaded))
+                .collect();
+            WorkflowNodeDef::Loop(merged)
+        }
+        (EditorNode::Step(step), _) => merge_editor_step(step, loaded),
+        (EditorNode::Loop(_), _) => editor_node_to_workflow_node(node),
+    }
+}
+
+fn merge_editor_step(step: &EditorStep, loaded: &LoadedWorkflow) -> WorkflowNodeDef {
+    let Some(source) = find_workflow_node(&loaded.workflow.nodes, &step.id) else {
+        return editor_step_to_workflow_node(step);
+    };
+    let original = find_editor_step(&loaded.nodes, &step.id);
+    if original == Some(step) {
+        return source.clone();
+    }
+    // The editor shows a loop inside a loop as a single step; keep it, under its new name.
+    if step.kind == StepTypeKind::Loop
+        && let WorkflowNodeDef::Loop(source_loop) = source
+    {
+        let mut kept = WorkflowNodeDef::Loop(source_loop.clone());
+        rename_workflow_node(&mut kept, &step.name);
+        return kept;
+    }
+    let kind_unchanged = original.is_some_and(|original| original.kind == step.kind);
+    let mut converted = editor_step_to_workflow_node(step);
+    match (&mut converted, source) {
+        (WorkflowNodeDef::AgentTask(new), WorkflowNodeDef::AgentTask(old)) => {
+            new.model = old.model.clone();
+            new.inputs = old.inputs.clone();
+            new.outputs = old.outputs.clone();
+            if kind_unchanged {
+                new.provider = old.provider;
+            }
+        }
+        (WorkflowNodeDef::Composite(new), WorkflowNodeDef::Composite(old))
+            if new.uses == old.uses =>
+        {
+            new.with = old.with.clone();
+        }
+        (WorkflowNodeDef::SetIssueStatus(new), WorkflowNodeDef::SetIssueStatus(old)) => {
+            new.remove_labels = old.remove_labels.clone();
+        }
+        (WorkflowNodeDef::OpenPullRequest(new), WorkflowNodeDef::OpenPullRequest(old)) => {
+            new.body = old.body.clone();
+            new.draft = old.draft;
+        }
+        _ => {}
+    }
+    converted
+}
+
 fn editor_node_to_workflow_node(node: &EditorNode) -> WorkflowNodeDef {
     match node {
         EditorNode::Step(step) => editor_step_to_workflow_node(step),
@@ -1954,6 +2117,67 @@ fn slugify_kebab(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::workflows_overview::ProjectWorkflowsOverview;
+
+    #[test]
+    fn opening_and_saving_a_builtin_workflow_changes_nothing() {
+        let catalog = BrukCatalog::builtin_only();
+        let workflows = catalog.effective_workflows();
+        assert!(!workflows.is_empty());
+        for workflow in workflows {
+            let doc = WorkflowEditorDocument::from_workflow_def("app", workflow, &catalog);
+            assert_eq!(&doc.to_workflow_def(), workflow, "{}", workflow.id);
+        }
+    }
+
+    #[test]
+    fn saving_an_edited_workflow_keeps_what_the_editor_does_not_edit() {
+        let catalog = BrukCatalog::builtin_only();
+        let original = catalog
+            .resolve_workflow_by_id_or_name("fix-issue")
+            .unwrap()
+            .clone();
+        let mut doc = WorkflowEditorDocument::from_workflow_def("app", &original, &catalog);
+        for node in &mut doc.nodes {
+            if let EditorNode::Step(step) = node {
+                step.name = format!("{} (edited)", step.name);
+                if step.id == "read_plan" {
+                    step.detail = "Plan it.".to_owned();
+                }
+            }
+        }
+
+        let saved = doc.to_workflow_def();
+        assert_eq!(saved.id, original.id);
+        assert_eq!(saved.inputs, original.inputs);
+        assert_eq!(saved.triggers.issue_labels, original.triggers.issue_labels);
+        let composites: Vec<&CompositeStepDef> = saved
+            .nodes
+            .iter()
+            .filter_map(|node| match node {
+                WorkflowNodeDef::Composite(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        let fix_loop = composites.iter().find(|c| c.id == "fix_loop").unwrap();
+        assert_eq!(fix_loop.name, "Fix until tests pass (edited)");
+        assert_eq!(
+            fix_loop.with.get("plan").map(String::as_str),
+            Some("{{ steps.read_plan.output }}")
+        );
+        let Some(WorkflowNodeDef::AgentTask(plan)) =
+            saved.nodes.iter().find(|node| node.id() == "read_plan")
+        else {
+            panic!("read_plan should stay an agent step");
+        };
+        let Some(WorkflowNodeDef::AgentTask(original_plan)) =
+            original.nodes.iter().find(|node| node.id() == "read_plan")
+        else {
+            unreachable!();
+        };
+        assert_eq!(plan.prompt, "Plan it.");
+        assert_eq!(plan.provider, original_plan.provider);
+        assert_eq!(plan.model, original_plan.model);
+    }
 
     #[test]
     fn sample_fix_issue_matches_reference_screenshot_structure() {
