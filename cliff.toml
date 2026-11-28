@@ -4,9 +4,9 @@
 #   Version-Bump: Major | Minor | Patch
 #   Changelog: <user-facing sentence>
 #
-# Version bump level is computed by `scripts/compute-release-bump.sh` from the
-# `Version-Bump` trailers since the previous `v*` tag and passed to git-cliff
-# via `--bump <major|minor|patch>`.
+# Version bump level and next tag are computed by `scripts/compute-release-bump.sh`
+# and `scripts/compute-next-tag.sh` from the `Version-Bump` trailers since the
+# previous `v*` tag, then passed to git-cliff via `--unreleased --tag <next-tag>`.
 
 [changelog]
 body = """

@@ -2,21 +2,26 @@
 set -euo pipefail
 
 # Computes the highest SemVer bump requested by `Version-Bump` git trailers
-# since the latest reachable `v*` tag.
+# since the latest reachable `v*` tag (or across an explicit `<from>..<to>`
+# git revision range).
 #
 # Output (stdout):
 #   major | minor | patch | none
 #
 # Usage:
-#   scripts/compute-release-bump.sh [<target-ref>]
+#   scripts/compute-release-bump.sh [<target-ref-or-rev-range>]
 
 target_ref="${1:-HEAD}"
 
-prev_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$target_ref" 2>/dev/null || true)"
-if [ -n "$prev_tag" ]; then
-  rev_range="${prev_tag}..${target_ref}"
-else
+if [[ "$target_ref" == *".."* ]]; then
   rev_range="$target_ref"
+else
+  prev_tag="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$target_ref" 2>/dev/null || true)"
+  if [ -n "$prev_tag" ]; then
+    rev_range="${prev_tag}..${target_ref}"
+  else
+    rev_range="$target_ref"
+  fi
 fi
 
 # rank: 0 = none, 1 = patch, 2 = minor, 3 = major

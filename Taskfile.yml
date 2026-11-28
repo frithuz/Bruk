@@ -143,7 +143,7 @@ tasks:
           echo "No commits with Version-Bump trailers since the last tag."
           exit 0
         fi
-        next_tag="$(git-cliff --bump "$bump" --bumped-version)"
+        next_tag="$(bash scripts/compute-next-tag.sh "$bump" HEAD)"
         echo "Next tag:  ${next_tag}"
         echo ""
         git-cliff --unreleased --tag "$next_tag"
