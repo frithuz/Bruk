@@ -14,7 +14,9 @@
 //!
 //! Development runs (`cargo run`, `nsh run`, and headless UI tests) have no packaged `.app`
 //! bundle with `nsh-updater.json`, so update checks cleanly report `Unavailable` without
-//! touching disk or mutating anything.
+//! touching disk or mutating anything. Locally packaged bundles (`task package`) do ship
+//! `nsh-updater.json`, but with the unstamped version `0.0.0`, so they report
+//! `Unavailable` the same way instead of always finding the latest release newer.
 
 use std::{
     fs::{self, OpenOptions},
@@ -42,6 +44,12 @@ const MAX_REDIRECTS: usize = 10;
 const DOWNLOAD_CHUNK_BYTES: usize = 64 * 1024;
 /// Minimum interval between UI progress callbacks during download.
 const PROGRESS_THROTTLE: Duration = Duration::from_millis(80);
+/// Version of every build that is not a release. `nsh.json` stays at `0.0.0` on `main` and only
+/// the release workflow stamps a real version into it (`scripts/stamp-version.sh`), so a bundle
+/// packaged locally carries this version and every published release would look newer.
+const DEV_BUILD_VERSION: &str = "0.0.0";
+/// Reason shown when a check is skipped because the bundle is a development build.
+const DEV_BUILD_REASON: &str = "Update checks are off in development builds.";
 
 /// Metadata for an available newer release on GitHub Releases.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -224,6 +232,9 @@ pub fn check_for_update() -> Result<CheckOutcome, String> {
             "Auto-updates are only available in packaged Bruk.app releases.".to_owned(),
         ));
     };
+    if is_dev_build(&shipped.config) {
+        return Ok(CheckOutcome::Unavailable(DEV_BUILD_REASON.to_owned()));
+    }
 
     let installation = Installation::of(&shipped.exe, &shipped.config.id, &shipped.raw);
     if let Some(inst) = &installation {
@@ -237,6 +248,11 @@ pub fn check_for_update() -> Result<CheckOutcome, String> {
         installation.as_ref(),
         &shipped.exe,
     )
+}
+
+/// Whether the bundle was packaged without a release version stamped into it.
+fn is_dev_build(config: &Config) -> bool {
+    config.version == DEV_BUILD_VERSION
 }
 
 fn check_with_config(
@@ -854,6 +870,23 @@ mod tests {
                 .as_deref()
                 .is_some_and(|msg| msg.contains("/Applications"))
         );
+    }
+
+    #[test]
+    fn unstamped_bundles_are_dev_builds() {
+        let config_for = |version: &str| {
+            let json = serde_json::to_vec(&serde_json::json!({
+                "id": "dev.frithuz.bruk",
+                "version": version,
+                "github": "frithuz/Bruk",
+            }))
+            .unwrap();
+            Config::parse(&json).unwrap()
+        };
+
+        assert!(is_dev_build(&config_for("0.0.0")));
+        assert!(!is_dev_build(&config_for("0.1.0")));
+        assert!(!is_dev_build(&config_for("1.0.0")));
     }
 
     #[test]
