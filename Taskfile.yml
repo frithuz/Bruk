@@ -67,7 +67,7 @@ tasks:
     cmds:
       - '"{{.NSH_BIN}}" package --target macos {{.CLI_ARGS}}'
       - bash scripts/apply-macos-icon.sh ".nsh/out/Bruk.app" "assets/Bruk.icon"
-      - open ".nsh/out/Bruk.app"
+      - open -n ".nsh/out/Bruk.app"
 
   package:universal:
     desc: Package a universal (arm64 + x86_64) macOS .app bundle
