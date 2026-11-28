@@ -84,8 +84,10 @@ use secrecy::{ExposeSecret, SecretString};
 
 #[derive(Default)]
 struct RunnerRegistry {
-    active_by_key: BTreeMap<(String, String), RunControlHandle>,
-    gates_by_id: BTreeMap<String, (RunControlHandle, (String, String))>,
+    /// Control handles of runs that are still going, by run id.
+    active_runs: BTreeMap<String, RunControlHandle>,
+    /// Pending approval gates by gate id, with the id of the run each belongs to.
+    gates_by_id: BTreeMap<String, (RunControlHandle, String)>,
     run_seq: u64,
     /// The next run number to hand out per project, by the project's root path (one process
     /// can open more than one database, whose project ids overlap). A run's row is only written
@@ -267,6 +269,10 @@ struct AppState {
     workflow_editor_validation: Option<ValidationReport>,
     workflow_runs_detail: BTreeMap<(String, String), WorkflowRunViewData>,
     active_workflow_run_key: (String, String),
+    /// The run each workflow's run view shows (its latest), by (project name, workflow name).
+    workflow_run_slots: BTreeMap<(String, String), String>,
+    /// Views of runs still going whose workflow's run view a newer run of it took over, by run id.
+    background_run_views: BTreeMap<String, WorkflowRunViewData>,
     workflow_run_selected_step: usize,
     workflow_run_tab: RunDetailTab,
     workflow_run_inspector_visible: bool,
@@ -1109,6 +1115,8 @@ impl AppState {
             workflow_editor_validation: None,
             workflow_runs_detail,
             active_workflow_run_key,
+            workflow_run_slots: BTreeMap::new(),
+            background_run_views: BTreeMap::new(),
             workflow_run_selected_step,
             workflow_run_tab: RunDetailTab::Output,
             workflow_run_inspector_visible: true,
@@ -1519,6 +1527,17 @@ impl AppState {
                 WorkflowRunViewData::empty(project_name, workflow_name)
             }
         })
+    }
+
+    /// The control handle of the run the active run view shows, while that run is still going.
+    fn active_run_control(&self) -> Option<RunControlHandle> {
+        let run_id = self.workflow_run_slots.get(&self.active_workflow_run_key)?;
+        runner_registry()
+            .lock()
+            .ok()?
+            .active_runs
+            .get(run_id)
+            .cloned()
     }
 
     fn active_workflow_run_clone(&self) -> WorkflowRunViewData {
@@ -2844,10 +2863,10 @@ pub fn toggle_pause_workflow_run() {
 }
 
 pub fn stop_workflow_run() {
-    let mut stop_key = None;
+    let mut control = None;
     state().update(|s| {
+        control = s.active_run_control();
         let (project, workflow) = s.active_workflow_run_key.clone();
-        stop_key = Some((project.clone(), workflow.clone()));
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.stop() {
             let run_no = run.run_number;
@@ -2858,24 +2877,22 @@ pub fn stop_workflow_run() {
             s.status_message = Some(format!("Stopped run #{run_no} ({workflow})"));
         }
     });
-    if let Some(key) = stop_key
-        && let Ok(reg) = runner_registry().lock()
-        && let Some(handle) = reg.active_by_key.get(&key)
-    {
+    if let Some(handle) = control {
         handle.stop();
     }
 }
 
 pub fn steer_workflow_run_step(instruction: &str) -> bool {
     let mut sent = false;
-    let mut steer_key = None;
+    let mut control = None;
     state().update(|s| {
+        let active_control = s.active_run_control();
         let step_index = s.workflow_run_selected_step;
         let (project, workflow) = s.active_workflow_run_key.clone();
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         match run.steer_step(step_index, instruction) {
             Ok(()) => {
-                steer_key = Some((project, workflow));
+                control = active_control;
                 s.workflow_run_tab = RunDetailTab::Output;
                 s.status_message = Some(format!(
                     "Sent steering instruction to step {}",
@@ -2888,11 +2905,7 @@ pub fn steer_workflow_run_step(instruction: &str) -> bool {
             }
         }
     });
-    if sent
-        && let Some(key) = steer_key
-        && let Ok(reg) = runner_registry().lock()
-        && let Some(handle) = reg.active_by_key.get(&key)
-    {
+    if sent && let Some(handle) = control {
         handle.push_steering(instruction.to_owned());
     }
     sent
@@ -2907,10 +2920,10 @@ pub fn toggle_workflow_run_budget_pause() {
 }
 
 pub fn approve_workflow_run_review_gate() {
-    let mut approve_key = None;
+    let mut control = None;
     state().update(|s| {
+        control = s.active_run_control();
         let (project, workflow) = s.active_workflow_run_key.clone();
-        approve_key = Some((project.clone(), workflow.clone()));
         let run = s.ensure_workflow_run_mut(&project, &workflow);
         if run.approve_review_gate() {
             let run_no = run.run_number;
@@ -2922,14 +2935,8 @@ pub fn approve_workflow_run_review_gate() {
             s.status_message = Some(format!("Approved review gate for run #{run_no}"));
         }
     });
-    if let Some(key) = approve_key {
-        let handle = runner_registry()
-            .lock()
-            .ok()
-            .and_then(|reg| reg.active_by_key.get(&key).cloned());
-        if let Some(h) = handle {
-            h.resolve_gate(GateDecision::Approve { note: None });
-        }
+    if let Some(handle) = control {
+        handle.resolve_gate(GateDecision::Approve { note: None });
     }
 }
 
@@ -12562,7 +12569,7 @@ fn spawn_real_workflow_run(
 
     let (control, rx) = spawn_workflow_run(request);
     if let Ok(mut reg) = runner_registry().lock() {
-        reg.active_by_key.insert(run_key.clone(), control.clone());
+        reg.active_runs.insert(run_id.clone(), control.clone());
     }
 
     state().update(|s| {
@@ -12570,6 +12577,16 @@ fn spawn_real_workflow_run(
         initial_view.run_number = run_number;
         initial_view.execution_state = RunExecutionState::Running;
         initial_view.subtitle = format!("Starting run #{run_number}…");
+        // This run takes over the workflow's run view. A run of the workflow that is still going
+        // keeps its own view (and its events keep going there) instead of sharing this one.
+        if let Some(previous) = s.workflow_run_slots.insert(run_key.clone(), run_id.clone())
+            && let Some(previous_view) = s.workflow_runs_detail.remove(&run_key)
+            && runner_registry()
+                .lock()
+                .is_ok_and(|reg| reg.active_runs.contains_key(&previous))
+        {
+            s.background_run_views.insert(previous, previous_view);
+        }
         s.workflow_runs_detail.insert(run_key.clone(), initial_view);
         s.active_workflow_run_key = run_key.clone();
         s.workflow_run_selected_step = 0;
@@ -12663,10 +12680,8 @@ fn spawn_real_workflow_run(
                 } = event
                 {
                     if let Ok(mut reg) = runner_registry().lock() {
-                        reg.gates_by_id.insert(
-                            gate_id.clone(),
-                            (control_for_gates.clone(), run_key.clone()),
-                        );
+                        reg.gates_by_id
+                            .insert(gate_id.clone(), (control_for_gates.clone(), run_id.clone()));
                     }
                     let req = AttentionRequest {
                         id: gate_id.clone(),
@@ -12707,12 +12722,20 @@ fn spawn_real_workflow_run(
 
                 let mut finished_issue_cleanup = None;
                 state().update(|s| {
-                    let view = s
-                        .workflow_runs_detail
-                        .entry(run_key.clone())
-                        .or_insert_with(|| WorkflowRunViewData::empty(&proj_name, &wf_name));
+                    let shown = s.workflow_run_slots.get(&run_key) == Some(&run_id);
+                    let view = if shown {
+                        s.workflow_runs_detail
+                            .entry(run_key.clone())
+                            .or_insert_with(|| WorkflowRunViewData::empty(&proj_name, &wf_name))
+                    } else {
+                        s.background_run_views
+                            .entry(run_id.clone())
+                            .or_insert_with(|| WorkflowRunViewData::empty(&proj_name, &wf_name))
+                    };
                     apply_runner_event_to_view_data(view, &event, budget_limit_cents);
-                    s.workflow_run_selected_step = view.active_step_index;
+                    if shown && s.active_workflow_run_key == run_key {
+                        s.workflow_run_selected_step = view.active_step_index;
+                    }
 
                     if let RunnerEvent::RunFinished {
                         status,
@@ -12825,6 +12848,7 @@ fn spawn_real_workflow_run(
                             }
                         }
                         s.status_message = Some(summary.clone());
+                        s.background_run_views.remove(&run_id);
                     }
                 });
 
@@ -12834,8 +12858,8 @@ fn spawn_real_workflow_run(
 
                 if is_finished {
                     if let Ok(mut reg) = runner_registry().lock() {
-                        reg.active_by_key.remove(&run_key);
-                        reg.gates_by_id.retain(|_, (_, k)| *k != run_key);
+                        reg.active_runs.remove(&run_id);
+                        reg.gates_by_id.retain(|_, (_, id)| *id != run_id);
                     }
                     break;
                 }
