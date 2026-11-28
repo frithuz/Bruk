@@ -3096,6 +3096,27 @@ fn register_project_with_branch(name: &str, path: &str, default_branch: &str) ->
     created
 }
 
+/// `wanted`, or `wanted (2)`, `wanted (3)`, … when a project already uses that name (project
+/// names are unique, ignoring case).
+fn unused_project_name(wanted: &str) -> String {
+    state().with_untracked(|s| {
+        let taken = |candidate: &str| {
+            !s.using_sample_projects
+                && s.factory
+                    .projects()
+                    .iter()
+                    .any(|p| p.name.eq_ignore_ascii_case(candidate))
+        };
+        if !taken(wanted) {
+            return wanted.to_owned();
+        }
+        (2..)
+            .map(|n| format!("{wanted} ({n})"))
+            .find(|candidate| !taken(candidate))
+            .expect("an unused name exists")
+    })
+}
+
 /// Opens an existing project matching `path`, or registers it in SQLite and opens its workspace.
 pub fn open_or_register_project_path(path: &Path) -> bool {
     let existing = state().with_untracked(|s| {
@@ -3110,13 +3131,14 @@ pub fn open_or_register_project_path(path: &Path) -> bool {
         return true;
     }
 
-    let name = path
+    let folder_name = path
         .file_name()
         .and_then(|segment| segment.to_str())
         .filter(|segment| !segment.trim().is_empty())
         .unwrap_or("project");
+    let name = unused_project_name(folder_name);
     let path_str = path.display().to_string();
-    if register_project(name, &path_str) {
+    if register_project(&name, &path_str) {
         open_workspace();
         true
     } else {
@@ -3156,6 +3178,18 @@ pub fn remove_project(id: ProjectId) {
         s.refresh_secrets_state();
 
         s.factory.remove_project(id);
+        // Per-project state is kept by name; a project added later under this name starts fresh.
+        if let Some(name) = project_name.as_deref() {
+            s.project_settings.remove(name);
+            s.work_queues.remove(name);
+            s.catalogs.remove(name);
+            s.workflows_overviews.remove(name);
+            s.workflow_editors.retain(|(project, _), _| project != name);
+            s.workflow_runs_detail
+                .retain(|(project, _), _| project != name);
+            s.workflow_run_slots
+                .retain(|(project, _), _| project != name);
+        }
         let removed_chats: Vec<String> = s
             .chat_sessions
             .values()

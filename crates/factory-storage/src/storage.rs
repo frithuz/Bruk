@@ -64,6 +64,8 @@ pub enum StorageError {
     EmptyProjectPath,
     #[error("a project is already registered for repository path '{0}'")]
     DuplicateRepositoryPath(PathBuf),
+    #[error("a project named '{0}' is already registered; pick another name")]
+    DuplicateProjectName(String),
     #[error("{0}")]
     Secret(String),
     #[error("{0}")]
@@ -145,6 +147,7 @@ impl ProjectDatabase {
             path: Some(path.clone()),
         };
         db.init_schema()?;
+        db.ensure_unique_project_names()?;
         log::info!("db.open path={}", path.display());
         Ok(db)
     }
@@ -154,12 +157,53 @@ impl ProjectDatabase {
         let conn = Connection::open_in_memory()?;
         let db = Self { conn, path: None };
         db.init_schema()?;
+        db.ensure_unique_project_names()?;
         Ok(db)
     }
 
     /// Returns the filesystem path of the SQLite database, if file-backed.
     pub fn path(&self) -> Option<&Path> {
         self.path.as_deref()
+    }
+
+    /// Renames projects that share a name (older databases allowed it) to `name (2)`,
+    /// `name (3)`, …, keeping the earliest registered one as it is, then makes names unique
+    /// (ignoring ASCII case), since the app keys each project's settings, work queue and
+    /// workflows by its name.
+    fn ensure_unique_project_names(&self) -> Result<(), StorageError> {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, name FROM projects ORDER BY id")?;
+            stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .collect::<Result<_, _>>()?
+        };
+        let mut all_names: BTreeSet<String> = rows
+            .iter()
+            .map(|(_, name)| name.to_ascii_lowercase())
+            .collect();
+        let mut seen = BTreeSet::new();
+        for (id, name) in rows {
+            if seen.insert(name.to_ascii_lowercase()) {
+                continue;
+            }
+            let renamed = (2..)
+                .map(|n| format!("{name} ({n})"))
+                .find(|candidate| !all_names.contains(&candidate.to_ascii_lowercase()))
+                .expect("an unused name exists");
+            all_names.insert(renamed.to_ascii_lowercase());
+            self.conn.execute(
+                "UPDATE projects SET name = ?1 WHERE id = ?2",
+                params![renamed, id],
+            )?;
+            log::warn!(
+                "db.project_renamed id={id} from={name:?} to={renamed:?} reason=duplicate_name"
+            );
+        }
+        self.conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS projects_name_unique ON projects (name COLLATE NOCASE)",
+        )?;
+        Ok(())
     }
 
     fn init_schema(&self) -> Result<(), StorageError> {
@@ -310,6 +354,16 @@ impl ProjectDatabase {
         let default_branch = if branch.is_empty() { "main" } else { branch };
         let description = description.trim();
 
+        // Per-project state in the app is keyed by name, so names must be unique.
+        let name_taken: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM projects WHERE name = ?1 COLLATE NOCASE)",
+            params![name],
+            |row| row.get(0),
+        )?;
+        if name_taken {
+            return Err(StorageError::DuplicateProjectName(name.to_owned()));
+        }
+
         let insert_result = self.conn.execute(
             "INSERT INTO projects (name, root_path, default_branch, description)
              VALUES (?1, ?2, ?3, ?4)",
@@ -318,9 +372,15 @@ impl ProjectDatabase {
 
         match insert_result {
             Ok(_) => {}
-            Err(rusqlite::Error::SqliteFailure(err, _))
+            Err(rusqlite::Error::SqliteFailure(err, message))
                 if err.code == ErrorCode::ConstraintViolation =>
             {
+                if message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("projects.name"))
+                {
+                    return Err(StorageError::DuplicateProjectName(name.to_owned()));
+                }
                 return Err(StorageError::DuplicateRepositoryPath(PathBuf::from(
                     trimmed_path,
                 )));
@@ -1838,6 +1898,55 @@ mod tests {
         assert!(matches!(
             db.register_project("repo-a-dup", "/repo/a", "main", ""),
             Err(StorageError::DuplicateRepositoryPath(path)) if path == Path::new("/repo/a")
+        ));
+    }
+
+    #[test]
+    fn rejects_a_project_name_already_in_use_whatever_its_case() {
+        let db = ProjectDatabase::open_in_memory().unwrap();
+        db.register_project("app", "/repo/a", "main", "").unwrap();
+        assert!(matches!(
+            db.register_project("App", "/repo/b", "main", ""),
+            Err(StorageError::DuplicateProjectName(name)) if name == "App"
+        ));
+        db.register_project("app-b", "/repo/b", "main", "").unwrap();
+    }
+
+    #[test]
+    fn renames_projects_sharing_a_name_when_the_database_opens() {
+        let temp = TempDir::new().unwrap();
+        let db_path = temp.path().join("bruk.db");
+        {
+            // A database from before names had to be unique.
+            let db = ProjectDatabase::open(&db_path).unwrap();
+            db.conn
+                .execute_batch(
+                    "DROP INDEX projects_name_unique;
+                     INSERT INTO projects (name, root_path) VALUES ('app', '/repo/a');
+                     INSERT INTO projects (name, root_path) VALUES ('App', '/repo/b');
+                     INSERT INTO projects (name, root_path) VALUES ('app (2)', '/repo/c');
+                     INSERT INTO projects (name, root_path) VALUES ('web', '/repo/d');",
+                )
+                .unwrap();
+        }
+
+        let db = ProjectDatabase::open(&db_path).unwrap();
+        let names: Vec<String> = db
+            .list_projects()
+            .unwrap()
+            .into_iter()
+            .map(|p| p.name)
+            .collect();
+        assert_eq!(names.len(), 4);
+        for name in ["app", "App (3)", "app (2)", "web"] {
+            assert!(
+                names.iter().any(|n| n == name),
+                "{name} missing from {names:?}"
+            );
+        }
+        assert!(matches!(
+            db.register_project("WEB", "/repo/e", "main", ""),
+            Err(StorageError::DuplicateProjectName(_))
         ));
     }
 
