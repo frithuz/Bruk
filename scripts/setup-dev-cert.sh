@@ -68,5 +68,5 @@ security add-trusted-cert -p codeSign -k "$LOGIN_KEYCHAIN" "$TMP_DIR/cert.pem"
 
 echo ""
 echo "Installed local code-signing identity \"$CERT_NAME\"."
-echo "Local `task run` and `task package` runs will now sign Bruk with --identifier dev.frithuz.bruk."
+echo "Local \`task run\` and \`task package\` runs will now sign Bruk with --identifier dev.frithuz.bruk."
 security find-identity -v -p codesigning | grep -F "\"$CERT_NAME\"" || true
