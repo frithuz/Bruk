@@ -983,3 +983,121 @@ esac
     assert!(gh_args.contains("pr create"));
     assert!(gh_args.contains("Add hello module"));
 }
+
+#[cfg(unix)]
+#[test]
+fn antigravity_chats_stream_live_context_and_token_use_in_sidebar() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("agy-chat-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+echo '{"loggedIn":false,"authMethod":"none","configDirectory":"/tmp/.claude"}'
+exit 1
+"#,
+    );
+    write_fake_claude(
+        &bin_dir,
+        "agy",
+        r#"#!/bin/sh
+[ "$AGY_CLI_DISABLE_AUTO_UPDATE" = true ] || exit 9
+case "$*" in
+  models)
+    printf 'gemini-4-neon-low\tGemini 4 Neon (Low)\n'
+    ;;
+  *--print=/usage*)
+    echo '{"status":"SUCCESS","command":{"name":"usage","data":{"groups":[{"name":"Gemini Models","buckets":[{"window":"5h","remaining_fraction":0.9,"reset_time":"2099-11-24T17:15:19Z"}]}]}}}'
+    ;;
+  acp*)
+    read init
+    echo '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+    read load
+    echo '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"agy-sess-1"}}'
+    echo '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"agy-sess-1","update":{"sessionUpdate":"usage_update","used":4200,"size":1048576}}}'
+    sleep 5
+    ;;
+  *--output-format\ stream-json*)
+    input=$(cat)
+    echo '{"event":"init","conversation_id":"agy-sess-1","init":{"model":"gemini-4-neon-low"}}'
+    case "$input" in
+      *"Second turn"*)
+        echo '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","usage":{"input_tokens":500,"output_tokens":40,"thinking_tokens":10,"cache_read_tokens":6000,"total_tokens":540}}}'
+        sleep 3
+        echo '{"event":"step_update","step_update":{"step_index":2,"state":"ACTIVE","step_type":"agent_response","text_delta":"All set"}}'
+        echo '{"event":"step_update","step_update":{"step_index":2,"state":"DONE","step_type":"agent_response","text_delta":".","usage":{"input_tokens":100,"output_tokens":20,"thinking_tokens":5,"cache_read_tokens":6500,"total_tokens":120}}}'
+        echo '{"event":"result","result":{"conversation_id":"agy-sess-1","status":"SUCCESS","response":"All set.","usage":{"input_tokens":600,"output_tokens":60,"thinking_tokens":15,"cache_read_tokens":12500,"total_tokens":660}}}'
+        ;;
+      *)
+        echo '{"event":"step_update","step_update":{"step_index":1,"state":"ACTIVE","step_type":"agent_response","text_delta":"First reply"}}'
+        echo '{"event":"step_update","step_update":{"step_index":1,"state":"DONE","step_type":"agent_response","text_delta":".","usage":{"input_tokens":1200,"output_tokens":34,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":1234}}}'
+        echo '{"event":"result","result":{"conversation_id":"agy-sess-1","status":"SUCCESS","response":"First reply.","usage":{"input_tokens":1200,"output_tokens":34,"thinking_tokens":0,"cache_read_tokens":0,"total_tokens":1234}}}'
+        ;;
+    esac
+    ;;
+esac
+"#,
+    );
+
+    let mut app = start_with_db_and_claude_path(db_path, bin_dir.as_os_str().to_os_string());
+    // Add the Antigravity CLI account.
+    app.press_key("mod+,").unwrap();
+    app.wait_for("No Antigravity account configured").unwrap();
+    app.press("role:button[Add Account]").unwrap();
+    app.wait_for("Add Antigravity CLI account...").unwrap();
+    app.press("role:button[Add Antigravity CLI account...]")
+        .unwrap();
+    app.wait_for("Add Antigravity CLI account").unwrap();
+    app.press("id:prefs-new-antigravity-submit").unwrap();
+    app.wait_for("90% remaining").unwrap();
+    app.press_key("mod+w").unwrap();
+
+    // Link a project and open Chats with Antigravity selected.
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "agy-chat-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'agy-chat-repo'").unwrap();
+
+    app.press("id:sidebar-chats-1").unwrap();
+    app.wait_for("Chat with an agent in agy-chat-repo").unwrap();
+    app.press("id:chat-new-provider").unwrap();
+    app.press("role:option[Antigravity]").unwrap();
+
+    // Turn 1 settles context via ACP (4.2K / 1M) and records 1,234 tokens.
+    app.type_text("id:chat-composer-input", "First turn")
+        .unwrap();
+    app.press("id:chat-send-btn").unwrap();
+    app.wait_for("First reply.").unwrap();
+    app.wait_for("4.2K / 1M").unwrap();
+
+    app.press("id:chat-context-btn").unwrap();
+    app.wait_for("4.2K of 1M tokens").unwrap();
+    assert!(app.screen().matches("id:chat-tokens-table").unwrap());
+    assert!(app.screen().shows("1,234"));
+    assert!(!app.screen().shows("Live"));
+
+    // Turn 2 emits step 1 usage before sleeping: both context window and token table update live.
+    // Step 1 window = 500 + 6000 + 40 = 6,540 (6.5K / 1M);
+    // Live total = 1,234 + (500 + 40 + 10 + 6000) = 7,784.
+    app.type_text("id:chat-composer-input", "Second turn")
+        .unwrap();
+    app.submit("id:chat-composer-input").unwrap();
+    app.wait_for("6.5K / 1M").unwrap();
+    app.wait_for("7,784").unwrap();
+    assert!(app.screen().matches("id:chat-tokens-live").unwrap());
+    assert!(app.screen().shows("6,000"));
+
+    // After Turn 2 finishes, settled total = 1,234 + (600 + 60 + 15 + 12500) = 14,409.
+    app.wait_for("All set.").unwrap();
+    app.wait_for("14,409").unwrap();
+    app.wait_for("4.2K / 1M").unwrap();
+}
