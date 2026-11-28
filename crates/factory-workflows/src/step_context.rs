@@ -1860,7 +1860,7 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_denies_mcp_tools_until_the_project_file_is_approved() {
+    fn antigravity_waits_for_the_project_file_to_be_approved() {
         let temp = TempDir::new().unwrap();
         let repo = temp.path().join("repo-no-vars");
         fs::create_dir_all(repo.join(".agents")).unwrap();
@@ -1899,7 +1899,12 @@ mod tests {
                 },
             )
             .unwrap();
-            assert!(!bundle.mcp.has_blocking_problem());
+            // Antigravity starts the file's servers itself, so it can't run until they're approved.
+            assert_eq!(
+                bundle.mcp.has_blocking_problem(),
+                !approved,
+                "{sandbox:?} approved={approved}"
+            );
             let mat = materialize_step_context(bundle, temp.path().join("rt"), None).unwrap();
             let plan = build_isolated_antigravity_spawn_plan("/bin/agy", None, &repo, &mat, &env);
             let settings = plan.args.iter().find(|a| a.contains("permissions"));

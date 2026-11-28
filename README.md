@@ -187,8 +187,9 @@ Per provider:
   The ChatGPT account's connectors are always off (`features.apps=false`): they're your own and
   would otherwise load even in Bruk's isolated `CODEX_HOME`.
 - **Antigravity** reads `.agents/mcp_config.json` itself, so it doesn't see `.mcp.json` or your
-  extra servers, and can't run project-only workflows (it also loads `~/.gemini/config`). Until
-  the file is approved, its MCP tools are denied.
+  extra servers, and can't run project-only workflows (it also loads `~/.gemini/config`). It
+  starts that file's servers on its own, so until the file is approved (and while project servers
+  are turned off) Antigravity steps and chats don't start in that project.
 
 ## Prerequisites
 
