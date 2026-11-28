@@ -12402,16 +12402,29 @@ pub fn launch_editor_ad_hoc_run(summary: &str) -> bool {
 }
 
 fn workflow_requires_agent(workflow: &WorkflowDef, catalog: &BrukCatalog) -> bool {
-    nodes_require_agent(&workflow.nodes, catalog)
+    nodes_require_agent(&workflow.nodes, catalog, &mut Vec::new())
 }
 
-fn nodes_require_agent(nodes: &[WorkflowNodeDef], catalog: &BrukCatalog) -> bool {
+/// Whether `nodes` run an agent; `composite_stack` holds the composites being looked into, so a
+/// composite that uses itself isn't looked into again.
+fn nodes_require_agent(
+    nodes: &[WorkflowNodeDef],
+    catalog: &BrukCatalog,
+    composite_stack: &mut Vec<String>,
+) -> bool {
     nodes.iter().any(|node| match node {
         WorkflowNodeDef::AgentTask(_) => true,
-        WorkflowNodeDef::Loop(lp) => nodes_require_agent(&lp.steps, catalog),
-        WorkflowNodeDef::Composite(c) => catalog
-            .resolve_composite(&c.uses)
-            .is_some_and(|comp| nodes_require_agent(&comp.nodes, catalog)),
+        WorkflowNodeDef::Loop(lp) => nodes_require_agent(&lp.steps, catalog, composite_stack),
+        WorkflowNodeDef::Composite(c) => catalog.resolve_composite(&c.uses).is_some_and(|comp| {
+            let id = comp.canonical_id();
+            if composite_stack.contains(&id) {
+                return false;
+            }
+            composite_stack.push(id);
+            let needs_agent = nodes_require_agent(&comp.nodes, catalog, composite_stack);
+            composite_stack.pop();
+            needs_agent
+        }),
         _ => false,
     })
 }
@@ -14268,6 +14281,39 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn agent_check_stops_at_a_composite_that_uses_itself() {
+        let temp = TempDir::new().unwrap();
+        let composites = temp.path().join(".agents/bruk/composites");
+        std::fs::create_dir_all(&composites).unwrap();
+        std::fs::write(
+            composites.join("again.yaml"),
+            "id: again\nname: Again\nnodes:\n  - kind: shell_command\n    id: touch\n    name: Touch\n    command: \"true\"\n  - kind: composite\n    id: recurse\n    name: Recurse\n    uses: again\n",
+        )
+        .unwrap();
+        let catalog = BrukCatalog::load_for_project(temp.path());
+        assert!(catalog.resolve_composite("again").is_some());
+        let workflow = WorkflowDef {
+            id: "loops".to_owned(),
+            name: "Loops".to_owned(),
+            description: String::new(),
+            draft: false,
+            triggers: Default::default(),
+            inputs: BTreeMap::new(),
+            mcp_sources: Default::default(),
+            nodes: vec![WorkflowNodeDef::Composite(
+                factory_workflows::definitions::CompositeStepDef {
+                    id: "outer".to_owned(),
+                    name: "Outer".to_owned(),
+                    uses: "again".to_owned(),
+                    with: BTreeMap::new(),
+                },
+            )],
+            origin: Default::default(),
+        };
+        assert!(!workflow_requires_agent(&workflow, &catalog));
+    }
 
     #[test]
     fn overlapping_runs_get_distinct_run_numbers() {
