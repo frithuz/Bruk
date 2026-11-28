@@ -1123,6 +1123,29 @@ fn run_git_diff(working_dir: &Path, diff_args: &[&str]) -> Vec<DiffFileChange> {
     parse_unified_diff(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// Every untracked, not ignored file in `working_dir`. The status keeps only the first
+/// [`MAX_UNTRACKED_FILES`] of them, for its preview.
+fn list_untracked_files(working_dir: &Path) -> Result<Vec<String>, ChatGitError> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .current_dir(working_dir)
+        .output()
+        .map_err(|err| ChatGitError::CommandFailed(format!("couldn't list new files: {err}")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(ChatGitError::CommandFailed(
+            last_lines(&stderr, 3).unwrap_or_else(|| "couldn't list new files".to_owned()),
+        ));
+    }
+    Ok(output
+        .stdout
+        .split(|&b| b == 0)
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| String::from_utf8_lossy(entry).into_owned())
+        .filter(|rel| working_dir.join(rel).is_file())
+        .collect())
+}
+
 fn apply_uncommitted_worktree_changes(
     project_root: &Path,
     worktree_dir: &Path,
@@ -1152,7 +1175,8 @@ fn apply_uncommitted_worktree_changes(
     }
 
     // Verify untracked files won't clobber different files already in the main checkout.
-    for rel in &status.untracked_paths {
+    let untracked = list_untracked_files(worktree_dir)?;
+    for rel in &untracked {
         let src = worktree_dir.join(rel);
         let dst = project_root.join(rel);
         if dst.exists() {
@@ -1177,7 +1201,7 @@ fn apply_uncommitted_worktree_changes(
     }
 
     // Copy untracked files into the project checkout.
-    for rel in &status.untracked_paths {
+    for rel in &untracked {
         let src = worktree_dir.join(rel);
         let dst = project_root.join(rel);
         if let Some(parent) = dst.parent() {
@@ -1193,7 +1217,12 @@ fn apply_uncommitted_worktree_changes(
         })?;
     }
 
-    let files_applied = status.uncommitted_file_count();
+    let tracked_files = status
+        .uncommitted_diffs
+        .iter()
+        .filter(|diff| !status.untracked_paths.contains(&diff.path))
+        .count();
+    let files_applied = tracked_files + untracked.len();
     let noun = if files_applied == 1 { "file" } else { "files" };
     let summary = format!("Applied {files_applied} {noun} to the project checkout.");
 
@@ -1449,6 +1478,39 @@ mod tests {
             fs::read_to_string(repo.join("src/helper.rs")).unwrap(),
             "pub fn ok() -> bool { true }\n"
         );
+    }
+
+    #[test]
+    fn applies_every_new_file_not_just_those_the_preview_shows() {
+        let temp = TempDir::new().unwrap();
+        let repo = temp.path().join("repo");
+        let worktree = temp.path().join("wt");
+        init_git_repo(&repo);
+        add_worktree(&repo, &worktree, "agent/chat-many-files");
+
+        fs::write(worktree.join("README.md"), "hello\nfrom worktree\n").unwrap();
+        let new_files = MAX_UNTRACKED_FILES + 6;
+        fs::create_dir_all(worktree.join("gen")).unwrap();
+        for n in 0..new_files {
+            fs::write(
+                worktree.join(format!("gen/file_{n:03}.txt")),
+                format!("{n}\n"),
+            )
+            .unwrap();
+        }
+
+        let status = inspect_chat_git_status(&worktree, Some("main"), true).unwrap();
+        assert_eq!(status.untracked_paths.len(), MAX_UNTRACKED_FILES);
+
+        let applied =
+            apply_chat_worktree_to_checkout(&repo, &worktree, Some("main"), None).unwrap();
+        assert_eq!(applied.files_applied, new_files + 1);
+        for n in 0..new_files {
+            assert_eq!(
+                fs::read_to_string(repo.join(format!("gen/file_{n:03}.txt"))).unwrap(),
+                format!("{n}\n")
+            );
+        }
     }
 
     #[test]
