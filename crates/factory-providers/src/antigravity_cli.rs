@@ -58,6 +58,8 @@ const RPC_INIT_ID: u64 = 1;
 const RPC_LOAD_ID: u64 = 2;
 /// How long to keep reading after `session/load` answers, for the trailing `usage_update`.
 const USAGE_GRACE: Duration = Duration::from_millis(1500);
+/// How long to wait for `agy acp`'s stderr after killing it, to explain a failed reading.
+const STDERR_GRACE: Duration = Duration::from_millis(500);
 
 /// Errors returned when locating the `agy` executable.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -467,15 +469,18 @@ pub fn read_antigravity_context(
         .stdout
         .take()
         .ok_or_else(|| "Couldn't read the Antigravity CLI.".to_owned())?;
-    let stderr_reader = child.stderr.take().map(|mut pipe| {
+    // The pipe readers are never joined: helpers `agy` spawned can outlive the kill below and
+    // hold the pipes open, which would stall this call until they exit.
+    let (stderr_tx, stderr_rx) = mpsc::channel::<String>();
+    if let Some(mut pipe) = child.stderr.take() {
         thread::spawn(move || {
             let mut raw = String::new();
             let _ = pipe.read_to_string(&mut raw);
-            raw
-        })
-    });
+            let _ = stderr_tx.send(raw);
+        });
+    }
     let (line_tx, line_rx) = mpsc::channel::<String>();
-    let stdout_reader = thread::spawn(move || {
+    thread::spawn(move || {
         for line in BufReader::new(stdout).lines().map_while(Result::ok) {
             if line_tx.send(line).is_err() {
                 break;
@@ -546,14 +551,11 @@ pub fn read_antigravity_context(
     drop(stdin);
     let _ = child.kill();
     let _ = child.wait();
-    let _ = stdout_reader.join();
-    let stderr_text = stderr_reader
-        .and_then(|handle| handle.join().ok())
-        .unwrap_or_default();
 
     if let Some(reading) = reading {
         return Ok(reading);
     }
+    let stderr_text = stderr_rx.recv_timeout(STDERR_GRACE).unwrap_or_default();
     Err(error
         .or_else(|| first_non_empty(&[&strip_terminal_noise(&stderr_text)]))
         .unwrap_or_else(|| {
@@ -943,8 +945,11 @@ echo '{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpd
 sleep 5
 "#,
         );
+        let started = Instant::now();
         let reading =
             read_antigravity_context(&agy, temp.path(), "conv-1", &[], &BTreeMap::new()).unwrap();
+        // The orphaned `sleep 5` keeps the pipes open; the reading must not wait for it.
+        assert!(started.elapsed() < Duration::from_secs(3));
         assert_eq!(reading.used_tokens, 1200);
         assert_eq!(reading.window_tokens, 1_048_576);
     }
