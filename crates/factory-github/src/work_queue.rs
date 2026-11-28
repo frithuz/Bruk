@@ -168,6 +168,14 @@ pub struct ProjectWorkflowSummary {
     pub has_failed_run: bool,
 }
 
+/// How the workflow run of a work queue item ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueRunOutcome {
+    Succeeded,
+    Failed,
+    Stopped,
+}
+
 /// One issue card in a project's work queue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkQueueItem {
@@ -1492,6 +1500,64 @@ impl ProjectWorkQueue {
         Ok(())
     }
 
+    /// Moves an In progress item on when its workflow run ends: to Done when the run succeeded or
+    /// failed (Re-queue Issue runs it again), or back to Ready for agents when it was stopped.
+    /// Returns whether the item moved; an item no longer In progress is left alone.
+    pub fn finish_item_run(
+        &mut self,
+        issue_number: u32,
+        run_number: u32,
+        outcome: QueueRunOutcome,
+    ) -> bool {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.issue_number == issue_number)
+        else {
+            return false;
+        };
+        if item.stage != WorkQueueStage::InProgress {
+            return false;
+        }
+        match outcome {
+            QueueRunOutcome::Succeeded => {
+                item.stage = WorkQueueStage::DoneThisWeek;
+                item.status_text = format!("Run #{run_number} succeeded");
+            }
+            QueueRunOutcome::Failed => {
+                item.stage = WorkQueueStage::DoneThisWeek;
+                item.status_text = format!("Run #{run_number} failed");
+            }
+            QueueRunOutcome::Stopped => {
+                item.stage = WorkQueueStage::ReadyForAgents;
+                item.status_text = "Queued".to_owned();
+                item.run_number = None;
+                item.agent_provider = None;
+            }
+        }
+        self.refresh_ready_labels();
+        true
+    }
+
+    /// Moves items left In progress by a run that is no longer going (Bruk quit during it) back to
+    /// Ready for agents, and returns their issue numbers.
+    pub fn requeue_interrupted_runs(&mut self, still_running: impl Fn(u32) -> bool) -> Vec<u32> {
+        let mut requeued = Vec::new();
+        for item in &mut self.items {
+            if item.stage == WorkQueueStage::InProgress && !still_running(item.issue_number) {
+                item.stage = WorkQueueStage::ReadyForAgents;
+                item.status_text = "Queued".to_owned();
+                item.run_number = None;
+                item.agent_provider = None;
+                requeued.push(item.issue_number);
+            }
+        }
+        if !requeued.is_empty() {
+            self.refresh_ready_labels();
+        }
+        requeued
+    }
+
     /// Re-queues a `DoneThisWeek` issue back into `ReadyForAgents`.
     pub fn requeue_issue(&mut self, issue_number: u32) -> Result<(), WorkQueueError> {
         let item = self
@@ -1745,6 +1811,43 @@ fn capitalize_first(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn finished_runs_move_their_items_out_of_in_progress() {
+        let mut queue = ProjectWorkQueue::empty("app");
+        let (done, _) = queue.launch_ad_hoc("Fix issue", "Works").unwrap();
+        let (failed, _) = queue.launch_ad_hoc("Fix issue", "Breaks").unwrap();
+        let (stopped, _) = queue.launch_ad_hoc("Fix issue", "Stopped").unwrap();
+        assert_eq!(queue.busy_slots(), 3);
+
+        assert!(queue.finish_item_run(done, 7, QueueRunOutcome::Succeeded));
+        assert!(queue.finish_item_run(failed, 8, QueueRunOutcome::Failed));
+        assert!(queue.finish_item_run(stopped, 9, QueueRunOutcome::Stopped));
+        assert_eq!(queue.busy_slots(), 0);
+
+        fn item(queue: &ProjectWorkQueue, n: u32) -> &WorkQueueItem {
+            queue.items.iter().find(|i| i.issue_number == n).unwrap()
+        }
+        assert_eq!(item(&queue, done).stage, WorkQueueStage::DoneThisWeek);
+        assert_eq!(item(&queue, done).status_text, "Run #7 succeeded");
+        assert_eq!(item(&queue, failed).stage, WorkQueueStage::DoneThisWeek);
+        assert_eq!(item(&queue, failed).status_text, "Run #8 failed");
+        assert_eq!(item(&queue, stopped).stage, WorkQueueStage::ReadyForAgents);
+        // Only an item still In progress moves.
+        assert!(!queue.finish_item_run(done, 7, QueueRunOutcome::Failed));
+        assert_eq!(item(&queue, done).status_text, "Run #7 succeeded");
+    }
+
+    #[test]
+    fn items_whose_run_is_gone_are_requeued() {
+        let mut queue = ProjectWorkQueue::empty("app");
+        let (gone, _) = queue.launch_ad_hoc("Fix issue", "Interrupted").unwrap();
+        let (live, _) = queue.launch_ad_hoc("Fix issue", "Still going").unwrap();
+
+        assert_eq!(queue.requeue_interrupted_runs(|n| n == live), vec![gone]);
+        assert_eq!(queue.busy_slots(), 1);
+        assert_eq!(queue.waiting_count(), 1);
+    }
 
     #[test]
     fn sample_api_gateway_matches_reference_mockup() {
