@@ -133,6 +133,11 @@ fn chat_list_panel(active_id: Memo<Option<String>>) -> impl IntoElement {
             .map(store::chat_summaries_for_project)
             .unwrap_or_default()
     });
+    let archived = computed(|| {
+        store::selected_project_id()
+            .map(store::archived_chat_summaries_for_project)
+            .unwrap_or_default()
+    });
 
     view()
         .w(px(LIST_WIDTH))
@@ -213,9 +218,69 @@ fn chat_list_panel(active_id: Memo<Option<String>>) -> impl IntoElement {
                         move || summaries.get(),
                         |chat: &ChatSessionSummary| chat.id.clone(),
                         move |chat, _| chat_list_row(chat, active_id),
+                    ))
+                    .child(when(
+                        move || !archived.get().is_empty(),
+                        move || archived_chats_section(archived, active_id),
                     )),
             ),
         )
+}
+
+/// The project's archived chats, folded away under their count; unfolded while one is open.
+fn archived_chats_section(
+    archived: Memo<Vec<ChatSessionSummary>>,
+    active_id: Memo<Option<String>>,
+) -> impl IntoElement {
+    let unfolded = signal(false);
+    let viewing_archived = move || {
+        active_id.with(|active| {
+            active
+                .as_deref()
+                .is_some_and(|id| archived.with(|chats| chats.iter().any(|chat| chat.id == id)))
+        })
+    };
+    let open = move || unfolded.get() || viewing_archived();
+
+    view()
+        .pt(px(10.0))
+        .gap(px(2.0))
+        .child(
+            button()
+                .test_id("chat-archived-toggle")
+                .accessibility_label("Archived chats")
+                .on_press(move || {
+                    let now_open = !(unfolded.get_untracked() || viewing_archived());
+                    unfolded.set(now_open);
+                })
+                .flex_row()
+                .items_center()
+                .gap(px(5.0))
+                .px(px(8.0))
+                .py(px(5.0))
+                .rounded(px(7.0))
+                .hover(|s| s.bg(palette::sidebar_hover_bg()))
+                .child(dynamic(move || {
+                    if open() {
+                        icons::chevron_down(palette::text_muted()).into_element()
+                    } else {
+                        icons::chevron_right(palette::text_muted()).into_element()
+                    }
+                }))
+                .child(
+                    text(move || format!("Archived · {}", archived.get().len()))
+                        .text_size(px(11.5))
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(palette::text_muted()),
+                ),
+        )
+        .child(when(open, move || {
+            view().gap(px(2.0)).opacity(0.8).child(each(
+                move || archived.get(),
+                |chat: &ChatSessionSummary| chat.id.clone(),
+                move |chat, _| chat_list_row(chat, active_id),
+            ))
+        }))
 }
 
 fn chat_list_row(
@@ -949,8 +1014,15 @@ fn chat_conversation(draft: Signal<String>) -> impl IntoElement {
                         .min_h(px(0.0))
                         .child(transcript(meta, rows, scroller, following))
                         .child(when(
-                            || store::selected_project_id().is_some(),
+                            move || {
+                                store::selected_project_id().is_some()
+                                    && meta.get().is_some_and(|m| m.archived_at.is_none())
+                            },
                             move || chat_composer(draft),
+                        ))
+                        .child(when(
+                            move || meta.get().is_some_and(|m| m.archived_at.is_some()),
+                            move || archived_chat_banner(meta),
                         )),
                 )
                 .child(when(store::chat_context_open, context_panel))
@@ -1048,7 +1120,17 @@ fn chat_header(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
                 .gap(px(8.0))
                 // While a delete waits for confirmation, its question takes the room.
                 .child(when(
-                    move || !confirming_delete.get(),
+                    move || {
+                        !confirming_delete.get()
+                            && meta.get().is_some_and(|m| m.archived_at.is_some())
+                    },
+                    archived_pill,
+                ))
+                .child(when(
+                    move || {
+                        !confirming_delete.get()
+                            && meta.get().is_some_and(|m| m.archived_at.is_none())
+                    },
                     move || {
                         view()
                             .flex_row()
@@ -1130,21 +1212,148 @@ fn chat_header(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
                             )
                             .into_element()
                     } else {
-                        button()
-                            .test_id("chat-delete-btn")
-                            .accessibility_label("Delete chat")
-                            .on_press(move || confirming_delete.set(true))
-                            .w(px(28.0))
-                            .h(px(28.0))
-                            .rounded(px(7.0))
+                        view()
+                            .flex_row()
                             .items_center()
-                            .justify_center()
-                            .hover(|s| s.bg(palette::subtle_surface_bg()))
-                            .child(icons::close_x(palette::text_muted()))
+                            .gap(px(2.0))
+                            .child(when(
+                                move || meta.get().is_some_and(|m| m.archived_at.is_none()),
+                                move || archive_button(meta),
+                            ))
+                            .child(
+                                button()
+                                    .test_id("chat-delete-btn")
+                                    .accessibility_label("Delete chat")
+                                    .on_press(move || confirming_delete.set(true))
+                                    .w(px(28.0))
+                                    .h(px(28.0))
+                                    .rounded(px(7.0))
+                                    .items_center()
+                                    .justify_center()
+                                    .hover(|s| s.bg(palette::subtle_surface_bg()))
+                                    .child(icons::close_x(palette::text_muted())),
+                            )
                             .into_element()
                     }
                 })),
         )
+}
+
+fn archived_pill() -> impl IntoElement {
+    view()
+        .test_id("chat-archived-pill")
+        .px(px(8.0))
+        .py(px(3.5))
+        .rounded(px(6.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::subtle_surface_bg())
+        .child(
+            text("Archived")
+                .text_size(px(11.0))
+                .font_weight(FontWeight::MEDIUM)
+                .text_color(palette::text_secondary()),
+        )
+}
+
+/// Stands in for the composer of an archived chat: why it's archived, and a way back.
+fn archived_chat_banner(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
+    view()
+        .items_center()
+        .px(px(24.0))
+        .pt(px(6.0))
+        .pb(px(14.0))
+        .child(
+            view()
+                .test_id("chat-archived-banner")
+                .w_full()
+                .max_w(px(TRANSCRIPT_MAX_WIDTH))
+                .flex_row()
+                .items_center()
+                .gap(px(12.0))
+                .px(px(14.0))
+                .py(px(11.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(palette::border_color())
+                .bg(palette::card_inset_bg())
+                .child(
+                    text(move || meta.get().map(|m| archived_note(&m)).unwrap_or_default())
+                        .flex_1()
+                        .min_w(px(0.0))
+                        .text_size(px(12.0))
+                        .text_color(palette::text_secondary()),
+                )
+                .child(
+                    button()
+                        .test_id("chat-unarchive-btn")
+                        .accessibility_label("Unarchive chat")
+                        .on_press(move || {
+                            if let Some(meta) = meta.get_untracked() {
+                                store::unarchive_chat(&meta.id);
+                            }
+                        })
+                        .flex_shrink_0()
+                        .px(px(11.0))
+                        .py(px(5.0))
+                        .rounded(px(7.0))
+                        .border_1()
+                        .border_color(palette::border_color())
+                        .bg(palette::control_bg())
+                        .hover(|s| s.bg(palette::subtle_surface_bg()))
+                        .active(|s| s.opacity(0.8))
+                        .child(
+                            text("Unarchive")
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::text_primary()),
+                        ),
+                ),
+        )
+}
+
+/// Archives the open chat; it stays open, read-only, until unarchived.
+fn archive_button(meta: Memo<Option<ActiveChatMeta>>) -> impl IntoElement {
+    button()
+        .test_id("chat-archive-btn")
+        .accessibility_label("Archive chat")
+        .disabled(move || meta.get().is_none_or(|m| m.status.is_running()))
+        .on_press(move || {
+            if let Some(meta) = meta.get_untracked() {
+                store::archive_chat(&meta.id);
+            }
+        })
+        .w(px(28.0))
+        .h(px(28.0))
+        .rounded(px(7.0))
+        .items_center()
+        .justify_center()
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .disabled_style(|s| s.opacity(0.4))
+        .child(icons::archive_box(palette::text_muted()))
+}
+
+fn archived_note(meta: &ActiveChatMeta) -> String {
+    let when = match meta.archived_at.map(relative_time).as_deref() {
+        Some("now") | None => "just now".to_owned(),
+        Some(ago) => format!("{ago} ago"),
+    };
+    match meta.worktree.as_ref() {
+        // Pruned once its branch merged.
+        Some(worktree) if meta.workspace == ChatWorkspace::Worktree && !worktree.path.exists() => {
+            format!(
+                "Archived {when}: branch {} merged, so its worktree and branch were cleaned up. \
+                 Unarchive to keep chatting; the next message starts a new worktree.",
+                worktree.branch
+            )
+        }
+        Some(worktree) if meta.workspace == ChatWorkspace::Worktree => format!(
+            "Archived {when}. Its worktree on {} stays until the branch merges and is pruned. \
+             Unarchive to keep chatting.",
+            worktree.branch
+        ),
+        _ => format!("Archived {when}. Unarchive to keep chatting."),
+    }
 }
 
 /// The chat's worktree branch; pressing it shows the folder in Finder.

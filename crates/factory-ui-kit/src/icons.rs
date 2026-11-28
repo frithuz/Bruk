@@ -479,6 +479,15 @@ pub fn download_tray(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElemen
     .text_color(color)
 }
 
+/// Archive box: a lidded box with a slot, for putting a chat away.
+pub fn archive_box(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
+    icon_svg(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2.2" y="3" width="11.6" height="3" rx="0.8"/><path d="M3.2 6v6.2a.8.8 0 0 0 .8.8h8a.8.8 0 0 0 .8-.8V6"/><path d="M6.5 8.6h3"/></svg>"#,
+        13.5,
+    )
+    .text_color(color)
+}
+
 /// Info `i` inside a circle for catch-up and informational banners.
 pub fn info_circle(color: impl IntoReactive<AdaptiveColor>) -> impl IntoElement {
     icon_svg(

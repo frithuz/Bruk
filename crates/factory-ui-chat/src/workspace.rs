@@ -5,7 +5,7 @@ use nsh_base::{button, input, theme};
 use nsh_core::prelude::*;
 
 use factory_store as store;
-use factory_ui_kit::palette;
+use factory_ui_kit::{icons, palette};
 
 pub fn workflow_workspace() -> impl IntoElement {
     let task_prompt = signal(String::new());
@@ -120,6 +120,10 @@ fn workflow_selector_card() -> impl IntoElement {
                             .text_size(px(12.0))
                             .text_color(palette::text_muted()),
                         )
+                        .child(when(
+                            store::can_prune_merged_worktrees,
+                            prune_worktrees_button,
+                        ))
                         .child(
                             button()
                                 .test_id("workspace-project-settings")
@@ -164,6 +168,40 @@ fn workflow_selector_card() -> impl IntoElement {
             })
             .text_size(px(12.0))
             .text_color(palette::text_muted()),
+        )
+}
+
+/// Removes the worktrees of chats whose branches merged, and archives those chats.
+fn prune_worktrees_button() -> impl IntoElement {
+    button()
+        .test_id("workspace-prune-worktrees")
+        .accessibility_label("Prune Merged Worktrees")
+        .disabled(store::pruning_merged_worktrees)
+        .on_press(store::prune_merged_worktrees)
+        .flex_row()
+        .items_center()
+        .gap(px(5.0))
+        .px(px(10.0))
+        .py(px(5.0))
+        .rounded(px(7.0))
+        .border_1()
+        .border_color(palette::border_color())
+        .bg(palette::control_bg())
+        .hover(|s| s.bg(palette::subtle_surface_bg()))
+        .active(|s| s.opacity(0.8))
+        .disabled_style(|s| s.opacity(0.5))
+        .child(icons::git_branch(palette::text_secondary()))
+        .child(
+            text(move || {
+                if store::pruning_merged_worktrees() {
+                    "Pruning…"
+                } else {
+                    "Prune Merged Worktrees"
+                }
+            })
+            .text_size(px(12.0))
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(palette::text_primary()),
         )
 }
 

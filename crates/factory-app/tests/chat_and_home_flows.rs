@@ -823,6 +823,207 @@ esac
 
 #[cfg(unix)]
 #[test]
+fn project_page_prunes_merged_chat_worktrees_and_archives_their_chats() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("factory.db");
+    let repo_dir = temp.path().join("prune-repo");
+    std::fs::create_dir_all(&repo_dir).unwrap();
+    std::fs::write(repo_dir.join("README.md"), "demo\n").unwrap();
+    let git = |args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(&repo_dir)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_owned()
+    };
+    git(&["init", "-b", "main"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Test"]);
+    git(&["config", "commit.gpgsign", "false"]);
+    git(&["add", "."]);
+    git(&["commit", "-m", "initial"]);
+    let origin = temp.path().join("origin.git");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&[
+        "init",
+        "--bare",
+        "-b",
+        "main",
+        &origin.display().to_string(),
+    ]);
+    git(&["remote", "add", "origin", &origin.display().to_string()]);
+    git(&["push", "-u", "origin", "main"]);
+    let on_origin = |branch: &str| {
+        std::process::Command::new("git")
+            .args([
+                "rev-parse",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ])
+            .current_dir(&origin)
+            .status()
+            .unwrap()
+            .success()
+    };
+
+    let bin_dir = temp.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    // The agent commits a file named after its chat wherever it runs.
+    write_fake_claude(
+        &bin_dir,
+        "claude",
+        r#"#!/bin/sh
+case " $* " in
+  *" --include-partial-messages "*)
+    cat > /dev/null
+    name="$(basename "$(dirname "$(pwd)")").txt"
+    echo "work" > "$name"
+    git add "$name" && git commit -q -m "Add $name"
+    echo '{"type":"system","subtype":"init","session_id":"prune-sess"}'
+    echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Committed the work"}]}}'
+    echo '{"type":"result","subtype":"success","is_error":false,"result":"done","usage":{"input_tokens":10,"output_tokens":2}}'
+    ;;
+  *" --fork-session "*)
+    cat > /dev/null
+    ;;
+  *)
+    echo '{"loggedIn":true,"authMethod":"claude.ai","email":"chat@example.com"}'
+    ;;
+esac
+"#,
+    );
+    let mut path_env = bin_dir.as_os_str().to_os_string();
+    // The agent's commits need git.
+    path_env.push(":/usr/bin:/bin");
+
+    let mut app = start_with_db_and_claude_path(db_path.clone(), path_env);
+    app.press("id:dashboard-empty-register-project").unwrap();
+    app.wait_for("Add a project").unwrap();
+    app.press("id:register-mode-link").unwrap();
+    app.type_text("text:Project name", "prune-repo").unwrap();
+    app.type_text("text:Repository path", &repo_dir.display().to_string())
+        .unwrap();
+    app.press("role:button[Link Project]").unwrap();
+    app.wait_for("Registered project 'prune-repo'").unwrap();
+
+    app.press("id:sidebar-chats-1").unwrap();
+    for message in ["Add release notes", "Draft the roadmap"] {
+        app.press("id:chat-new-btn").unwrap();
+        app.wait_for("Chat with an agent in prune-repo").unwrap();
+        app.press("id:chat-new-workspace").unwrap();
+        app.press("role:option[New worktree]").unwrap();
+        app.type_text("id:chat-composer-input", message).unwrap();
+        app.press("id:chat-send-btn").unwrap();
+        app.wait_for("Committed the work").unwrap();
+        app.wait_for("Claude · 1 message · 12 tokens").unwrap();
+    }
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let chats = db.list_chat_sessions().unwrap();
+    drop(db);
+    let chat_named = |title: &str| chats.iter().find(|c| c.title == title).unwrap().clone();
+    let merged = chat_named("Add release notes");
+    let open = chat_named("Draft the roadmap");
+    let merged_worktree = merged.worktree.clone().unwrap();
+    let open_worktree = open.worktree.clone().unwrap();
+    assert!(merged_worktree.path.is_dir() && open_worktree.path.is_dir());
+
+    // Only the release notes branch, pushed for review, merges.
+    git(&["push", "-u", "origin", &merged_worktree.branch]);
+    git(&[
+        "merge",
+        "--no-ff",
+        "-m",
+        "Merge release notes",
+        &merged_worktree.branch,
+    ]);
+
+    app.press("id:sidebar-project-1").unwrap();
+    app.wait_for("Prune Merged Worktrees").unwrap();
+    app.press("id:workspace-prune-worktrees").unwrap();
+    app.wait_for(
+        "Pruned 1 merged worktree and archived its chat: 'Add release notes'. Deleted 1 local branch and 1 remote branch. 1 branch not merged yet.",
+    )
+    .unwrap();
+    assert!(!merged_worktree.path.exists());
+    assert!(open_worktree.path.is_dir());
+    // The merged branch is gone here and on origin; the other one stays.
+    assert_eq!(git(&["branch", "--list", &merged_worktree.branch]), "");
+    assert!(!on_origin(&merged_worktree.branch));
+    assert!(on_origin("main"));
+    assert!(!git(&["branch", "--list", &open_worktree.branch]).is_empty());
+
+    // The archived chat moves out of the list, keeps its transcript, and takes no messages.
+    app.press("id:sidebar-chats-1").unwrap();
+    app.wait_for("Archived · 1").unwrap();
+    assert!(
+        app.screen()
+            .matches("role:button[Draft the roadmap]")
+            .unwrap()
+    );
+    assert!(
+        !app.screen()
+            .matches("role:button[Add release notes]")
+            .unwrap()
+    );
+    app.press("id:chat-archived-toggle").unwrap();
+    app.press("role:button[Add release notes]").unwrap();
+    app.wait_for("id:chat-archived-banner").unwrap();
+    assert!(app.screen().shows("Committed the work"));
+    assert!(!app.screen().matches("id:chat-composer-input").unwrap());
+
+    let db = factory_core::ProjectDatabase::open(&db_path).unwrap();
+    let saved = db
+        .list_chat_sessions()
+        .unwrap()
+        .into_iter()
+        .find(|c| c.id == merged.id)
+        .unwrap();
+    drop(db);
+    assert!(saved.archived_at.is_some());
+
+    // Unarchiving brings the composer back.
+    app.press("id:chat-unarchive-btn").unwrap();
+    app.wait_for("Unarchived chat 'Add release notes'").unwrap();
+    app.wait_for("id:chat-composer-input").unwrap();
+    assert!(!app.screen().shows("Archived · 1"));
+
+    // Archiving by hand keeps the worktree, until its branch merges and is pruned.
+    app.press("role:button[Draft the roadmap]").unwrap();
+    app.wait_for("id:chat-archive-btn").unwrap();
+    app.press("id:chat-archive-btn").unwrap();
+    app.wait_for("Archived chat 'Draft the roadmap'").unwrap();
+    app.wait_for("id:chat-archived-banner").unwrap();
+    assert!(app.screen().shows("Archived · 1"));
+    assert!(!app.screen().matches("id:chat-archive-btn").unwrap());
+    assert!(open_worktree.path.is_dir());
+
+    git(&[
+        "merge",
+        "--no-ff",
+        "-m",
+        "Merge roadmap",
+        &open_worktree.branch,
+    ]);
+    app.press("id:sidebar-project-1").unwrap();
+    app.press("id:workspace-prune-worktrees").unwrap();
+    app.wait_for(
+        "Pruned 1 merged worktree and archived its chat: 'Draft the roadmap'. Deleted 1 local branch.",
+    )
+    .unwrap();
+    assert!(!open_worktree.path.exists());
+    assert_eq!(git(&["branch", "--list", &open_worktree.branch]), "");
+}
+
+#[cfg(unix)]
+#[test]
 fn chat_changes_drawer_inspects_diffs_applies_commits_and_opens_pr() {
     let temp = TempDir::new().unwrap();
     let db_path = temp.path().join("factory.db");
